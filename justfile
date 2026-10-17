@@ -10,9 +10,9 @@ build target="" architecture="":
             *) scripts/container run default none just _build ;; \
         esac; \
     elif [[ "{{ target }}" == "apk" && -z "{{ architecture }}" ]]; then \
-        cargo run --locked -p xtask -- android build stable; \
+        cargo run -p xtask -- android build stable; \
     elif [[ "{{ target }}" == "apk-dev" && -z "{{ architecture }}" ]]; then \
-        cargo run --locked -p xtask -- android build development; \
+        cargo run -p xtask -- android build development; \
     elif [[ "{{ target }}" == "headless" && -z "{{ architecture }}" ]]; then \
         scripts/container run default none just _build rufin-controller; \
     elif [[ "{{ target }}" == "arch" && -z "{{ architecture }}" ]]; then \
@@ -30,7 +30,7 @@ build target="" architecture="":
 
 install target:
     @if [[ "{{ target }}" == "android" ]]; then \
-        cargo run --locked -p xtask -- android install; \
+        cargo run -p xtask -- android install; \
     else \
         echo "usage: just install android" >&2; \
         exit 2; \
@@ -263,6 +263,7 @@ check:
     @scripts/container run default none just _check-all
 
 _check-all:
+    @cargo deny --locked check -D unmatched-skip
     @just _check-cmake
     @cargo run --locked -p xtask -- generate flatpak-sources --check
     @cargo run --locked -p xtask -- generate i18n-template --check
@@ -273,8 +274,7 @@ _check-all:
         echo "ast-grep is unavailable; skipping RefCell checks."; \
     fi
     @just _lint
-    @just _test
-    @cargo deny --locked check -D unmatched-skip
+    @just _test --locked
 
 _check-cmake:
     @preset=development; \
@@ -401,7 +401,7 @@ fmt:
 
 # Regenerate the shared desktop and web translation template, or pass --check.
 i18n *args:
-    @scripts/container run default none cargo run --locked -p xtask -- generate i18n-template {{ args }}
+    @scripts/container run default none cargo run -p xtask -- generate i18n-template {{ args }}
 
 test *args:
     @if [[ "{{ args }}" == "android" ]]; then \
@@ -422,10 +422,10 @@ _test *args:
             echo "NEXTEST_JOBS must be a positive integer." >&2; \
             exit 1; \
         fi; \
-        cargo nextest run --config-file nextest.toml --locked --features app-identity/development --test-threads "$nextest_jobs" {{ args }}; \
+        cargo nextest run --config-file nextest.toml --features app-identity/development --test-threads "$nextest_jobs" {{ args }}; \
     else \
-        cargo_args=(--locked --features app-identity/development); \
-        if [[ -z "{{ args }}" ]]; then \
+        cargo_args=(--features app-identity/development); \
+        if [[ -z "{{ args }}" || "{{ args }}" == "--locked" ]]; then \
             cargo_args+=(--lib --bins --tests --benches --examples); \
         fi; \
         echo "cargo-nextest is unavailable; falling back to cargo test." >&2; \
