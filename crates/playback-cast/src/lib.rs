@@ -4,6 +4,7 @@ pub mod plex;
 mod relay;
 mod upnp;
 mod upnp_transport;
+mod visualizer;
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -15,8 +16,8 @@ use std::time::{Duration, Instant};
 use chromecast::GoogleCastController;
 use discovery::{DiscoveredTarget, discover_google_cast, discover_upnp};
 use playback::{
-    BackendCommand, BackendError, BackendEvent, BackendFailure, PlaybackBackend, RemoteOutput,
-    RemoteOutputProtocol,
+    BackendCommand, BackendError, BackendEvent, BackendFailure, PlaybackBackend, ProcessingRequest,
+    RemoteOutput, RemoteOutputProtocol,
 };
 use relay::{
     ArtworkResolver, RelayServer, available_networks, network_address, network_binding_for,
@@ -159,7 +160,11 @@ impl CastManager {
         Ok(outputs)
     }
 
-    pub fn connect(&self, output: &RemoteOutput) -> Result<CastPlaybackBackend, String> {
+    pub fn connect(
+        &self,
+        output: &RemoteOutput,
+        processing: tokio::sync::watch::Receiver<ProcessingRequest>,
+    ) -> Result<CastPlaybackBackend, String> {
         let target = self
             .targets
             .lock()
@@ -177,6 +182,7 @@ impl CastManager {
             Arc::clone(&self.proxy_media),
             network_interface,
             Arc::clone(&self.artwork_resolver),
+            processing,
         )
     }
 }
@@ -193,6 +199,7 @@ impl CastPlaybackBackend {
         proxy_media: Arc<AtomicBool>,
         network_interface: Option<String>,
         artwork_resolver: ArtworkResolver,
+        processing: tokio::sync::watch::Receiver<ProcessingRequest>,
     ) -> Result<Self, String> {
         let (selected_local_address, bound_network_interface) =
             if let Some(network_interface) = network_interface.as_deref() {
@@ -231,7 +238,7 @@ impl CastPlaybackBackend {
         let worker_events = Arc::clone(&events);
         let thread = thread::Builder::new()
             .name("rufin-cast-output".to_string())
-            .spawn(move || run_controller(controller, relay, receiver, worker_events))
+            .spawn(move || run_controller(controller, relay, receiver, worker_events, processing))
             .map_err(|error| error.to_string())?;
         Ok(Self {
             commands,
@@ -339,10 +346,28 @@ impl Controller {
         }
     }
 
+    fn set_processing(
+        &mut self,
+        request: ProcessingRequest,
+        relay: &RelayServer,
+    ) -> Result<Vec<BackendEvent>, String> {
+        match self {
+            Self::Upnp(controller) => controller.set_processing(request, relay),
+            Self::GoogleCast(controller) => controller.set_processing(request, relay),
+        }
+    }
+
     fn shutdown(&mut self) {
         match self {
             Self::Upnp(controller) => controller.shutdown(),
             Self::GoogleCast(controller) => controller.shutdown(),
+        }
+    }
+
+    fn visualizer(&self, relay: &RelayServer) -> Option<BackendEvent> {
+        match self {
+            Self::Upnp(controller) => controller.visualizer(relay),
+            Self::GoogleCast(controller) => controller.visualizer(relay),
         }
     }
 }
@@ -352,11 +377,29 @@ fn run_controller(
     mut relay: RelayServer,
     commands: Receiver<WorkerCommand>,
     events: Arc<Mutex<Vec<BackendEvent>>>,
+    mut processing: tokio::sync::watch::Receiver<ProcessingRequest>,
 ) {
     publish(&events, controller.initial_events());
     let mut last_poll = Instant::now();
+    let mut last_frame = Instant::now();
+    let mut visualizing = false;
+    let mut initial_processing = true;
     loop {
-        match commands.recv_timeout(Duration::from_millis(100)) {
+        let command =
+            commands.recv_timeout(Duration::from_millis(if visualizing { 33 } else { 100 }));
+        if initial_processing || processing.has_changed().unwrap_or(false) {
+            initial_processing = false;
+            let request = processing.borrow_and_update().clone();
+            let output = request.output.clone();
+            match controller.set_processing(request, &relay) {
+                Ok(update) => publish(&events, update),
+                Err(message) => publish(
+                    &events,
+                    vec![BackendEvent::ProcessingFailed { output, message }],
+                ),
+            }
+        }
+        match command {
             Ok(WorkerCommand::Backend(command)) => {
                 let run = command.run().or_else(|| controller.current_run());
                 let requested_playing = match command.as_ref() {
@@ -385,6 +428,14 @@ fn run_controller(
                 Err(error) => publish_error(&events, run, controller.current_run(), None, error),
             }
             last_poll = Instant::now();
+        }
+        if last_frame.elapsed() >= Duration::from_millis(33) {
+            let frame = controller.visualizer(&relay);
+            visualizing = frame.is_some();
+            if let Some(frame) = frame {
+                publish(&events, vec![frame]);
+            }
+            last_frame = Instant::now();
         }
     }
     controller.shutdown();
