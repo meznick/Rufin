@@ -38,6 +38,22 @@ impl SourceSetupFlow for ItunesSetupFlow {
         let (scroller, content, actions, status) =
             setup_scaffold(shell, context, self.presentation);
 
+        // The connect button flips with the library path: the scaffold only
+        // re-evaluates readiness on surface changes, so keep it wired to the
+        // entry text directly.
+        let connect = text_button("rufin-network-server-symbolic", "Connect");
+        connect.add_css_class("suggested-action");
+        connect.set_sensitive(false);
+        let draft_for_ready = Rc::clone(&self.draft);
+        let update_ready: Rc<dyn Fn()> = Rc::new({
+            let connect = connect.downgrade();
+            move || {
+                if let Some(connect) = connect.upgrade() {
+                    connect.set_sensitive(!draft_for_ready.borrow().library.trim().is_empty());
+                }
+            }
+        });
+
         let group = adw::PreferencesGroup::new();
         group.set_title(&tr("iTunes library"));
         group.set_description(Some(&tr(
@@ -50,11 +66,14 @@ impl SourceSetupFlow for ItunesSetupFlow {
         library_row.set_input_purpose(gtk::InputPurpose::Url);
         {
             let draft = Rc::clone(&self.draft);
+            let update_ready = Rc::clone(&update_ready);
             library_row.connect_changed(move |row| {
                 draft.borrow_mut().library = row.text().to_string();
+                update_ready();
             });
         }
         let library_browse = text_button("folder-open-symbolic", "Browse…");
+        library_row.add_suffix(&library_browse);
         {
             let window = shell.window.clone();
             let row = library_row.clone();
@@ -81,11 +100,6 @@ impl SourceSetupFlow for ItunesSetupFlow {
                 });
             });
         }
-        let library_picker = adw::ActionRow::new();
-        library_picker.set_title(&tr("iTunes Library.itl"));
-        library_picker.set_subtitle(&tr("Usually inside the iTunes folder"));
-        library_picker.add_suffix(&library_browse);
-        library_picker.set_activatable_widget(Some(&library_browse));
 
         let media_folder_row = adw::EntryRow::new();
         media_folder_row.set_title(&tr("Media folder (optional)"));
@@ -97,6 +111,7 @@ impl SourceSetupFlow for ItunesSetupFlow {
             });
         }
         let media_folder_browse = text_button("folder-open-symbolic", "Browse…");
+        media_folder_row.add_suffix(&media_folder_browse);
         {
             let window = shell.window.clone();
             let row = media_folder_row.clone();
@@ -116,18 +131,12 @@ impl SourceSetupFlow for ItunesSetupFlow {
                 });
             });
         }
-        let media_folder_picker = adw::ActionRow::new();
-        media_folder_picker.add_suffix(&media_folder_browse);
-        media_folder_picker.set_activatable_widget(Some(&media_folder_browse));
 
         group.add(&library_row);
-        group.add(&library_picker);
         group.add(&media_folder_row);
-        group.add(&media_folder_picker);
         content.append(&group);
 
-        let connect = text_button("rufin-network-server-symbolic", "Connect");
-        connect.add_css_class("suggested-action");
+        update_ready();
         actions.append(&connect);
         content.append(&actions);
         content.append(&status);
