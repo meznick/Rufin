@@ -370,6 +370,16 @@ pub(crate) async fn acquire(
 
     catalog.apply_catalog(&batch, true).await?;
 
+    // Unindex everything this pass did not observe (tracks removed from the
+    // .itl, tracks that lost their location, albums/artists that became
+    // empty). The generic wrapper calls this with an empty kind list, which
+    // only records completeness — the actual absent-row sweep is per kind.
+    if let Some(stamp) = catalog.observed {
+        catalog
+            .complete_source_observation(stamp, &["track", "album", "artist", "genre"], None)
+            .await?;
+    }
+
     // Base rows for tracks no longer in the .itl.
     catalog
         .database

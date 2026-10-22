@@ -104,6 +104,40 @@ async fn itunes_catalog_reads_tracks_albums_and_stats() {
         "no-location track is not imported"
     );
 
+    // Refresh sweeps rows the new observation did not include: a stale
+    // catalog from an older build must not keep no-location tracks visible.
+    {
+        let mut catalog = database.catalog("itunes-test", None).await.unwrap();
+        let mut stale = library::CatalogBatch::default();
+        stale.tracks.push(library::TrackObservation {
+            object_id: format!("itunes:track:{}", no_location.id()),
+            media_uri: Some(missing_uri.clone()),
+            metadata: library::TrackMetadata {
+                title: "stale cloud track".into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        catalog.apply_catalog(&stale, true).await.unwrap();
+    }
+    let (_, with_stale) = database
+        .source_counts(source_key, &ReadCancellation::new())
+        .await
+        .unwrap();
+    assert_eq!(with_stale, report.located + 1, "stale row seeded");
+    source
+        .acquire_catalog(&database, &|_| {}, Arc::clone(&cancelled), true)
+        .await
+        .unwrap();
+    let (_, after_refresh) = database
+        .source_counts(source_key, &ReadCancellation::new())
+        .await
+        .unwrap();
+    assert_eq!(
+        after_refresh, report.located,
+        "refresh unindexes tracks absent from the .itl observation"
+    );
+
     // A rated located track: the rating lands in the native slot and is
     // recorded as the sync base.
     let rated = unique_tracks(&itl)
