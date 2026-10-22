@@ -300,7 +300,7 @@ async fn update_favorite(
     Ok(true)
 }
 
-async fn cleanup_empty_state(
+pub(crate) async fn cleanup_empty_state(
     connection: &mut SqliteConnection,
     media_uri: &str,
 ) -> LibraryResult<()> {

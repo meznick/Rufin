@@ -38,6 +38,8 @@ mod home;
 mod keys;
 mod local;
 mod loudness;
+mod itunes;
+pub use itunes::{ItunesPlayerState};
 mod lyrics;
 mod migration;
 mod playlist_format;

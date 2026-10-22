@@ -93,6 +93,49 @@ impl SourceOwner {
     }
 }
 
+#[cfg_attr(feature = "bindings", uniffi::export)]
+impl SourceOwner {
+    /// Configure (or, with `source_id`, reconfigure) an iTunes source.
+    pub async fn save_itunes(
+        &self,
+        source_id: Option<SourceId>,
+        library: String,
+        media_folder: Option<String>,
+        tz_offset_seconds: Option<i32>,
+    ) -> sources::SourceResult<SourceId> {
+        let library = PathBuf::from(library);
+        let media_folder = media_folder
+            .filter(|value| !value.trim().is_empty())
+            .map(PathBuf::from);
+        let result: Result<SourceId, String> = async {
+            if let Some(source_id) = source_id {
+                let input = SourceSettingsChange::Itunes {
+                    source_id: source_id.clone(),
+                    library,
+                    media_folder,
+                    tz_offset_seconds,
+                };
+                self.update_source(input).recv().await.map_err(string_error)??;
+                Ok(source_id)
+            } else {
+                let input = SourceSetup::Itunes {
+                    name: None,
+                    library,
+                    media_folder,
+                    tz_offset_seconds,
+                };
+                self.configure_source(input)
+                    .recv()
+                    .await
+                    .map_err(string_error)?
+                    .map(|selected| selected.source_id)
+            }
+        }
+        .await;
+        result.map_err(SourceError::Other)
+    }
+}
+
 impl SourceOwner {
     /// Authorize a reusable connection without selecting or scanning a music source.
     pub fn configure_file_integration(

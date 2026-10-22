@@ -16,6 +16,8 @@ bindings = ["dep:uniffi", "library/bindings"]
 
 [dependencies]
 audio-processing.workspace = true
+itl-core = { path = "/home/meznick/Documents/Projects/itl-player/itl-core" }
+itl-sync = { path = "/home/meznick/Documents/Projects/itl-player/itl-sync" }
 uniffi = { workspace = true, optional = true }
 lyrics.workspace = true
 async-channel.workspace = true
@@ -52,7 +54,7 @@ sqlx.workspace = true
 serde_path_to_error.workspace = true
 tempfile.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
+tokio = { workspace = true, features = ["fs", "io-util", "macros", "net", "process", "rt-multi-thread", "sync", "time"] }
 tokio-tungstenite.workspace = true
 tokio-util.workspace = true
 tracing.workspace = true

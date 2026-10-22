@@ -507,7 +507,18 @@ impl PlaybackOwner {
             .record_listen(&listen, Some(current_track), &deliveries)
             .await
         {
-            Ok(_) => self.scrobbler.listen_recorded(deliveries.len()),
+            Ok(_) => {
+                self.scrobbler.listen_recorded(deliveries.len());
+                if let Some(owner) = self.source_owner() {
+                    crate::source::itunes_sync::record_itunes_listen(
+                        &owner,
+                        &listen.media_uri,
+                        listen.skipped,
+                        listen.started_at,
+                    )
+                    .await;
+                }
+            }
             Err(error) => warn!(%error, "could not record Rufin Activity"),
         }
     }

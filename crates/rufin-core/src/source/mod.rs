@@ -4,6 +4,7 @@ mod availability;
 mod download;
 pub mod folders;
 mod integrations;
+pub(crate) mod itunes_sync;
 mod pins;
 pub mod search;
 pub use integrations::FileIntegration;
@@ -130,6 +131,7 @@ pub(crate) struct Shared {
     playback: Mutex<Weak<PlaybackOwner>>,
     connect: Mutex<Weak<crate::connect::ConnectOwner>>,
     maintenance: Arc<tokio::sync::Notify>,
+    pub(crate) itunes_sync: itunes_sync::ItunesSync,
     started: AtomicBool,
 }
 
@@ -448,6 +450,11 @@ impl SourceOwner {
         let home_variation = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |elapsed| elapsed.as_nanos() as i64);
+        let itunes_sync = itunes_sync::ItunesSync::new(
+            Arc::clone(&database),
+            settings.clone(),
+            runtime.clone(),
+        );
         let shared = Arc::new(Shared {
             catalog_changed: tokio::sync::watch::channel(CatalogRevision::default()).0,
             configuration_changed: tokio::sync::watch::channel(()).0,
@@ -475,6 +482,7 @@ impl SourceOwner {
             playback: Mutex::new(Weak::new()),
             connect: Mutex::new(Weak::new()),
             maintenance: Arc::new(tokio::sync::Notify::new()),
+            itunes_sync,
             started: AtomicBool::new(false),
         });
         let weak = Arc::downgrade(&shared);
@@ -3099,7 +3107,17 @@ impl SourceOwner {
                     }
                 }
                 _ if !local => {
-                    if let Some((_, object_id)) = favorite_object(&source_id, &target)
+                    // iTunes sources write back through the debounced
+                    // `itl-sync` service (the user slot is already
+                    // committed above); remote providers push directly.
+                    if self
+                        .configuration(&source_id)
+                        .is_some_and(|configuration| {
+                            configuration.kind == sources::ITUNES_SOURCE_ID
+                        })
+                    {
+                        self.shared.itunes_sync.mark_rating(&source_id, target.media_uri());
+                    } else if let Some((_, object_id)) = favorite_object(&source_id, &target)
                         && let Err(error) = source.set_rating(&object_id, rating).await
                     {
                         warn!(%error, "could not write source rating");
@@ -3477,7 +3495,7 @@ fn source_error_is_temporary(error: &SourceError) -> bool {
         )
 }
 
-fn configured_source(
+pub(crate) fn configured_source(
     settings: &crate::settings::SourceSettings,
     source_id: &SourceId,
 ) -> Result<ConfiguredSource, String> {

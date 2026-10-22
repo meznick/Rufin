@@ -14,7 +14,7 @@ pub(crate) async fn pragma(
 }
 pub(crate) const STORE_SCHEMA: &str = r#"PRAGMA application_id = 1381320270;
 
-PRAGMA user_version = 55;
+PRAGMA user_version = 56;
 
 CREATE TABLE IF NOT EXISTS queue_contexts (
     context_key INTEGER PRIMARY KEY,
@@ -707,11 +707,17 @@ CREATE TABLE IF NOT EXISTS native_playlist_pending (
     position INTEGER NOT NULL,
     PRIMARY KEY(playlist_key,object_id)
 ) STRICT;
+
+CREATE TABLE IF NOT EXISTS itunes_sync_base (
+    source_key INTEGER NOT NULL REFERENCES sources ON DELETE CASCADE,
+    media_uri TEXT PRIMARY KEY,
+    rating INTEGER
+) STRICT;
 "#;
 
 pub(crate) async fn initialize_durable(connection: &mut SqliteConnection) -> LibraryResult<()> {
     let version = pragma(connection, "user_version").await?;
-    if !matches!(version, 0 | 47 | 48 | 49 | 50 | 51 | 53 | 54 | 55) {
+    if !matches!(version, 0 | 47 | 48 | 49 | 50 | 51 | 53 | 54 | 55 | 56) {
         return Err(crate::LibraryError::Migration(format!(
             "unsupported library schema {version}"
         )));

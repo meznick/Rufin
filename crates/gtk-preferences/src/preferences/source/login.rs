@@ -1,5 +1,6 @@
 mod files;
 pub use files::{bind_integrations, choose_integration};
+mod itunes;
 mod jellyfin_emby;
 mod plex;
 
@@ -88,8 +89,13 @@ static PLEX: SourcePresentation = SourcePresentation {
     setup_flow: plex::setup_flow,
     settings_group: Some(plex::settings_group),
 };
-static SOURCE_PRESENTATIONS: [&SourcePresentation; 8] = [
-    &JELLYFIN, &NAVIDROME, &SUBSONIC, &EMBY, &PLEX, &WEBDAV, &SMB, &LOCAL,
+static ITUNES: SourcePresentation = SourcePresentation {
+    kind: sources::ITUNES_SOURCE_ID,
+    setup_flow: itunes::setup_flow,
+    settings_group: None,
+};
+static SOURCE_PRESENTATIONS: [&SourcePresentation; 9] = [
+    &JELLYFIN, &NAVIDROME, &SUBSONIC, &EMBY, &PLEX, &WEBDAV, &SMB, &LOCAL, &ITUNES,
 ];
 
 fn source_presentations() -> &'static [&'static SourcePresentation] {
@@ -843,7 +849,7 @@ fn source_choice_selector(shell: &Rc<Preferences>, context: &SetupViewContext) -
             mount_setup_flow(&shell, &context);
         });
         match presentation.kind {
-            LOCAL_SOURCE_KIND => device_sources.add(&row),
+            LOCAL_SOURCE_KIND | sources::ITUNES_SOURCE_ID => device_sources.add(&row),
             "webdav" | "smb" => remote_sources.add(&row),
             _ => server_sources.add(&row),
         }

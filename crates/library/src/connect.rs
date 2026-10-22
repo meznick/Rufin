@@ -1950,6 +1950,12 @@ mod tests {
         {
             let mut reader = database.acquire_reader().await.unwrap();
             assert_eq!(
+                crate::schema::pragma(&mut reader, "user_version")
+                    .await
+                    .unwrap(),
+                56
+            );
+            assert_eq!(
                 sqlx::query_scalar::<_, i64>(
                     "SELECT local_play_count FROM tracks WHERE track_key=?1"
                 )

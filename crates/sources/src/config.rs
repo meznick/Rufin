@@ -83,6 +83,12 @@ pub enum SourceSetup {
     Local {
         roots: Vec<PathBuf>,
     },
+    Itunes {
+        name: Option<String>,
+        library: PathBuf,
+        media_folder: Option<PathBuf>,
+        tz_offset_seconds: Option<i32>,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
@@ -143,6 +149,12 @@ pub enum SourceSettingsChange {
         authentication: crate::SubsonicAuthentication,
         credentials: CredentialInput,
     },
+    Itunes {
+        source_id: SourceId,
+        library: PathBuf,
+        media_folder: Option<PathBuf>,
+        tz_offset_seconds: Option<i32>,
+    },
 }
 
 impl SourceSettingsChange {
@@ -155,7 +167,8 @@ impl SourceSettingsChange {
             | Self::Plex { source_id, .. }
             | Self::Files { source_id, .. }
             | Self::JellyfinEmby { source_id, .. }
-            | Self::OpenSubsonic { source_id, .. } => source_id,
+            | Self::OpenSubsonic { source_id, .. }
+            | Self::Itunes { source_id, .. } => source_id,
         }
     }
 }
@@ -360,6 +373,16 @@ impl SourceConfiguration {
                 if library_version > 0 {
                     digest_part(&mut digest, b"navidrome-library");
                     digest.update(&library_version.to_le_bytes());
+                }
+            }
+            crate::itunes::ITUNES_SOURCE_ID => {
+                let config = crate::itunes::ItunesSourceConfig::from_configuration(self)?;
+                digest_part(&mut digest, config.library.to_string_lossy().as_bytes());
+                if let Some(media_folder) = &config.media_folder {
+                    digest_part(&mut digest, media_folder.to_string_lossy().as_bytes());
+                }
+                if let Some(tz) = config.tz_offset_seconds {
+                    digest.update(&tz.to_le_bytes());
                 }
             }
             kind => {
