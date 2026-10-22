@@ -1,13 +1,14 @@
-// Round-trip write-back test: plays a listen + rating against a COPY of
-// the DEV library, flushes through `itl-sync`, and verifies the `.itl`
+// Round-trip write-back test: rates and plays one located track against a
+// COPY of the library, flushes through `itl-sync`, and verifies the `.itl`
 // facts change and stay stable across a refresh (no double-counting).
 // Gated by `ITL_TEST_PATH` and the `itl-sync` binary (env `ITL_SYNC_BIN`,
-// else the itl-player debug build).
+// else the itl-player debug build). Corpus-agnostic.
 
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
+use itl_sync::paths::{MappedLocation, MediaMapping};
 use library::{Database, FavoriteTarget, ReadCancellation, source_entity_uri};
 use sources::{Source, SourceId, SourceSetup};
 
@@ -30,7 +31,7 @@ fn sync_binary() -> Option<PathBuf> {
 
 #[tokio::test]
 async fn itunes_write_back_updates_the_itl_and_refresh_does_not_double_count() {
-    let Some(library) = test_library() else {
+    let Some(library_path) = test_library() else {
         eprintln!("ITL_TEST_PATH missing — skipping iTunes write-back integration test");
         return;
     };
@@ -38,12 +39,23 @@ async fn itunes_write_back_updates_the_itl_and_refresh_does_not_double_count() {
         eprintln!("itl-sync binary not found — skipping iTunes write-back integration test");
         return;
     };
+    // Pick a located track (its id is patchable through itl-sync).
+    let itl = itl_core::ItlFile::open(&library_path).unwrap();
+    let media_root = library_path.parent().unwrap().to_path_buf();
+    let mapping = MediaMapping::new(&itl, &media_root).expect("corpus maps");
+    let track = itl_sync::survey::unique_tracks(&itl)
+        .into_iter()
+        .find(|track| matches!(mapping.to_local(track), MappedLocation::Mapped { .. }))
+        .expect("a located track in the corpus");
+    let track_id = track.id();
+    let new_rating = if track.rating() == 80 { 60 } else { 80 };
+    let new_plays = track.play_count() + 1;
+    let played_at = 1_800_000_000_i64;
+
     // Work on a copy: the corpus .itl must never be written.
     let directory = tempfile::tempdir().unwrap();
-    let library_dir = directory.path().join("iTunes DEV");
-    std::fs::create_dir(&library_dir).unwrap();
-    let copy = library_dir.join("iTunes Library.itl");
-    std::fs::copy(&library, &copy).unwrap();
+    let copy = directory.path().join("iTunes Library.itl");
+    std::fs::copy(&library_path, &copy).unwrap();
 
     let database = Database::open(directory.path().join("library.sqlite"))
         .await
@@ -53,7 +65,7 @@ async fn itunes_write_back_updates_the_itl_and_refresh_does_not_double_count() {
         SourceSetup::Itunes {
             name: None,
             library: copy,
-            media_folder: None,
+            media_folder: Some(media_root),
             tz_offset_seconds: None,
         },
         "",
@@ -76,51 +88,54 @@ async fn itunes_write_back_updates_the_itl_and_refresh_does_not_double_count() {
         .await
         .unwrap();
 
-    // The known corpus track: #515 (rating 100, 3 plays).
-    let media_uri = source_entity_uri(&SourceId::new("itunes-test"), "track", "itunes:track:515");
+    let media_uri = source_entity_uri(
+        &SourceId::new("itunes-test"),
+        "track",
+        &format!("itunes:track:{track_id}"),
+    );
     let state = database
         .itunes_player_state(&media_uri, &ReadCancellation::new())
         .await
         .unwrap();
-    assert_eq!(state.play_count, Some(3));
-    assert_eq!(state.native_rating, Some(100));
+    assert_eq!(state.play_count, Some(i64::from(track.play_count())));
 
-    // User action: rate 8 stars, record a listen.
+    // User action: rate, record a listen.
     database
-        .set_rating(&FavoriteTarget::Track(media_uri.clone()), Some(8))
+        .set_rating(
+            &FavoriteTarget::Track(media_uri.clone()),
+            Some((new_rating / 10) as u8),
+        )
         .await
         .unwrap();
     database
-        .record_native_listen(&media_uri, false, 1_800_000_000)
+        .record_native_listen(&media_uri, false, played_at)
         .await
         .unwrap();
     let state = database
         .itunes_player_state(&media_uri, &ReadCancellation::new())
         .await
         .unwrap();
-    assert_eq!(state.play_count, Some(4), "native counter bumped");
-    assert_eq!(state.user_rating, Some(80), "user rating stored");
+    assert_eq!(state.play_count, Some(i64::from(new_plays)));
+    assert_eq!(state.user_rating, Some(i64::from(new_rating)));
 
     // Flush through itl-sync (the runtime service path).
     let config = sources::itunes::ItunesSourceConfig::from_configuration(&configuration).unwrap();
     let patch = sources::itunes::write::ItunesPatch {
-        track_id: 515,
-        rating: Some(80),
-        play_count: Some(4),
+        track_id,
+        rating: Some(new_rating as u8),
+        play_count: Some(new_plays),
         skip_count: None,
-        play_date_unix: Some(1_800_000_000),
+        play_date_unix: Some(played_at),
     };
-    // The write path resolves the binary from ITL_SYNC_BIN; the test passes
-    // it explicitly instead.
     sources::itunes::write::write_patches_with(&config, &[patch], &binary)
         .await
         .unwrap();
 
-    // The .itl now holds the new values.
-    let itl = itl_core::ItlFile::open(&config.library).unwrap();
-    let track = itl.track_by_id(515).unwrap();
-    assert_eq!(track.play_count(), 4);
-    assert_eq!(track.rating(), 80);
+    // The copy now holds the new values.
+    let written = itl_core::ItlFile::open(&config.library).unwrap();
+    let written_track = written.track_by_id(track_id).unwrap();
+    assert_eq!(written_track.play_count(), new_plays);
+    assert_eq!(written_track.rating(), new_rating);
 
     // Refresh: no double-counting — the itl value is authoritative and the
     // native slot matches it.
@@ -132,7 +147,11 @@ async fn itunes_write_back_updates_the_itl_and_refresh_does_not_double_count() {
         .itunes_player_state(&media_uri, &ReadCancellation::new())
         .await
         .unwrap();
-    assert_eq!(state.play_count, Some(4), "no double-count after refresh");
-    assert_eq!(state.native_rating, Some(80));
-    assert_eq!(state.user_rating, Some(80));
+    assert_eq!(
+        state.play_count,
+        Some(i64::from(new_plays)),
+        "no double-count after refresh"
+    );
+    assert_eq!(state.native_rating, Some(i64::from(new_rating)));
+    assert_eq!(state.user_rating, Some(i64::from(new_rating)));
 }

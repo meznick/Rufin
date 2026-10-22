@@ -44,8 +44,19 @@ pub(crate) async fn acquire(
         )
     })?;
 
-    let tracks = unique_tracks(&itl);
-    let total = tracks.len();
+    // Tracks with no location at all (purchased but not downloaded — the
+    // cloud items) have no file to play: they are not published into the
+    // catalog. They reappear automatically on the first refresh after iTunes
+    // downloads them; `itl-sync survey` keeps reporting them as
+    // `no location` / `no_location_cloud`.
+    let located = unique_tracks(&itl)
+        .into_iter()
+        .filter_map(|track| {
+            let mapped = mapping.to_local(track);
+            (!matches!(mapped, MappedLocation::NoLocation)).then_some((track, mapped))
+        })
+        .collect::<Vec<_>>();
+    let total = located.len();
     progress(SourceReadProgress {
         stage: SourceReadStage::Albums,
         completed: 0,
@@ -68,7 +79,7 @@ pub(crate) async fn acquire(
     // Albums referenced by tracks (identity from the album persistent id,
     // falling back to the name; title/artist/year from the first track).
     let mut albums: BTreeMap<String, (String, String, Option<i64>)> = BTreeMap::new();
-    for track in &tracks {
+    for (track, _) in &located {
         let name = track.album().unwrap_or("").to_string();
         let pid = track.album_persistent_id();
         let id = album_object_id(pid, &name);
@@ -93,7 +104,7 @@ pub(crate) async fn acquire(
     let genre_id = |name: &str| format!("itunes:genre:{name}");
     let mut artists: BTreeMap<String, String> = BTreeMap::new();
     let mut genres: BTreeMap<String, String> = BTreeMap::new();
-    for track in &tracks {
+    for (track, _) in &located {
         if let Some(name) = track.artist().filter(|name| !name.is_empty()) {
             artists.entry(name.to_string()).or_insert_with(|| name.to_string());
         }
@@ -172,10 +183,10 @@ pub(crate) async fn acquire(
         .database
         .itunes_base(catalog.source, &ReadCancellation::new())
         .await?;
-    let mut observed_uris = Vec::with_capacity(tracks.len());
+    let mut observed_uris = Vec::with_capacity(located.len());
     let mut patches: Vec<(String, ItunesPatch)> = Vec::new();
 
-    for (index, track) in tracks.iter().enumerate() {
+    for (index, (track, mapped)) in located.iter().enumerate() {
         if index % 128 == 0 && cancelled() {
             return Err(SourceError::Cancelled);
         }
@@ -252,10 +263,8 @@ pub(crate) async fn acquire(
             patches.push((media_uri.clone(), patch));
         }
 
-        let local_path = match mapping.to_local(track) {
-            MappedLocation::Mapped { path, .. } => {
-                Some(path.to_string_lossy().into_owned())
-            }
+        let local_path = match mapped {
+            MappedLocation::Mapped { path, .. } => Some(path.to_string_lossy().into_owned()),
             MappedLocation::NoLocation | MappedLocation::OutsideMediaFolder { .. } => None,
         };
         let title = track.title().unwrap_or("").to_string();
