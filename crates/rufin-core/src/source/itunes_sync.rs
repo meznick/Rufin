@@ -122,6 +122,11 @@ impl ItunesSync {
             notified.insert(source_id.as_str().to_string(), true).is_none()
         };
         if fresh {
+            tracing::warn!(
+                %source_id,
+                %source_key,
+                "the iTunes library is open in iTunes — write-back stays pending until it closes",
+            );
             let _ = self
                 .events
                 .send(SourceEvent::Notice(SourceNotice {
