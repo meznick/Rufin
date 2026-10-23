@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use itl_sync::paths::{MappedLocation, MediaMapping};
 use library::{Database, ReadCancellation, source_entity_uri};
-use sources::{Source, SourceId, SourceSetup};
+use sources::{LocalImageRef, Source, SourceId, SourceImageRequest, SourceSetup};
 
 fn test_library() -> Option<PathBuf> {
     std::env::var_os("ITL_TEST_PATH").map(PathBuf::from).or_else(|| {
@@ -268,4 +268,205 @@ async fn itunes_catalog_reads_tracks_albums_and_stats() {
 
 fn unique_tracks(itl: &itl_core::ItlFile) -> Vec<&itl_core::Track> {
     itl_sync::survey::unique_tracks(itl)
+}
+
+/// Whether a readable file carries an embedded picture, judged exactly like
+/// the source's inspector: a successful lofty read without pictures means
+/// the source publishes no binding for the track.
+fn has_embedded_picture(path: &std::path::Path) -> Option<bool> {
+    use lofty::config::ParseOptions;
+    use lofty::file::TaggedFileExt;
+    use lofty::probe::Probe;
+    let file = std::fs::File::open(path).ok()?;
+    let tagged = Probe::new(std::io::BufReader::new(file))
+        .options(ParseOptions::new().read_cover_art(true))
+        .guess_file_type()
+        .ok()?
+        .read()
+        .ok()?;
+    let tag = tagged.primary_tag().or_else(|| tagged.first_tag())?;
+    Some(!tag.pictures().is_empty())
+}
+
+/// The `Local` candidate of a published binding, as the artwork pipeline
+/// hands it to `Source::image`.
+fn local_reference(binding: &[u8]) -> LocalImageRef {
+    let candidates: Vec<library::ArtworkCandidate> = serde_json::from_slice(binding).unwrap();
+    let candidate = candidates
+        .iter()
+        .find(|candidate| matches!(candidate.image, library::ArtworkImage::Local { .. }))
+        .expect("binding holds a Local candidate");
+    match &candidate.image {
+        library::ArtworkImage::Local {
+            source_id,
+            path,
+            revision,
+            picture_index,
+        } => match picture_index {
+            Some(picture_index) => LocalImageRef::Embedded {
+                source_id: source_id.clone(),
+                path: path.clone(),
+                revision: revision.clone(),
+                picture_index: *picture_index,
+            },
+            None => LocalImageRef::File {
+                source_id: source_id.clone(),
+                path: path.clone(),
+                revision: revision.clone(),
+            },
+        },
+        _ => unreachable!("matched Local above"),
+    }
+}
+
+#[tokio::test]
+async fn itunes_embedded_artwork_publishes_bindings_and_serves_images() {
+    let Some(library_path) = test_library() else {
+        eprintln!("ITL_TEST_PATH missing — skipping iTunes source integration test");
+        return;
+    };
+    let itl = itl_core::ItlFile::open(&library_path).unwrap();
+    let media_root = library_path.parent().unwrap().to_path_buf();
+    let mapping = MediaMapping::new(&itl, &media_root).expect("corpus maps under the media folder");
+
+    // Classify located tracks by their embedded pictures.
+    let mut with_picture: Option<u32> = None;
+    let mut without_picture: Option<u32> = None;
+    for track in unique_tracks(&itl) {
+        let MappedLocation::Mapped { path, .. } = mapping.to_local(track) else {
+            continue;
+        };
+        match has_embedded_picture(&path) {
+            Some(true) => with_picture.get_or_insert(track.id()),
+            Some(false) => without_picture.get_or_insert(track.id()),
+            None => continue,
+        };
+        if with_picture.is_some() && without_picture.is_some() {
+            break;
+        }
+    }
+
+    let directory = tempfile::tempdir().unwrap();
+    let database_path = directory.path().join("library.sqlite");
+    let database = Database::open(&database_path).await.unwrap();
+    let connected = Source::connect(
+        SourceId::new("itunes-art-test"),
+        SourceSetup::Itunes {
+            name: None,
+            library: library_path.clone(),
+            media_folder: None,
+            tz_offset_seconds: None,
+        },
+        "",
+    )
+    .await
+    .unwrap();
+    let (_configuration, source, _credential) = connected.into_parts();
+    database
+        .reconcile_source(
+            &SourceId::new("itunes-art-test"),
+            sources::ITUNES_SOURCE_ID,
+            "iTunes",
+        )
+        .await
+        .unwrap();
+    let source_key = database
+        .source_identity_key(&SourceId::new("itunes-art-test"))
+        .await
+        .unwrap()
+        .unwrap();
+
+    let cancelled = Arc::new(AtomicBool::new(false));
+    source
+        .acquire_catalog(&database, &|_| {}, Arc::clone(&cancelled), true)
+        .await
+        .unwrap();
+
+    let uri_for = |id: u32| {
+        source_entity_uri(
+            &SourceId::new("itunes-art-test"),
+            "track",
+            &format!("itunes:track:{id}"),
+        )
+    };
+    let bindings = database
+        .itunes_artwork_bindings(source_key, &ReadCancellation::new())
+        .await
+        .unwrap();
+
+    // A track with an embedded picture publishes a Local binding, and
+    // `Source::image` serves the picture bytes.
+    let picture_id = with_picture.expect("corpus has a located track with an embedded picture");
+    let picture_uri = uri_for(picture_id);
+    let binding = bindings
+        .get(&picture_uri)
+        .expect("artwork binding published for the picture track");
+    let image = source
+        .image(SourceImageRequest::Local(local_reference(binding)))
+        .await
+        .unwrap();
+    assert!(!image.bytes.is_empty(), "served picture is not empty");
+    assert!(
+        image
+            .content_type
+            .as_deref()
+            .is_some_and(|content_type| content_type.starts_with("image/")),
+        "picture content type: {:?}",
+        image.content_type
+    );
+    assert!(
+        image.bytes.starts_with(b"\xFF\xD8") || image.bytes.starts_with(b"\x89PNG"),
+        "picture bytes carry a JPEG/PNG magic"
+    );
+
+    // A pictureless located track publishes no binding, and the
+    // authoritative observation leaves no native artwork behind.
+    if let Some(id) = without_picture {
+        let uri = uri_for(id);
+        assert!(
+            !bindings.contains_key(&uri),
+            "no binding for the pictureless track"
+        );
+        use sqlx::Connection as _;
+        let mut connection = sqlx::SqliteConnection::connect_with(
+            &sqlx::sqlite::SqliteConnectOptions::new().filename(&database_path),
+        )
+        .await
+        .unwrap();
+        let native_artwork: Option<Vec<u8>> = sqlx::query_scalar(
+            "SELECT native_artwork FROM tracks WHERE source_key=?1 AND media_uri=?2",
+        )
+        .bind(source_key.raw())
+        .bind(&uri)
+        .fetch_one(&mut connection)
+        .await
+        .unwrap();
+        assert!(
+            native_artwork.is_none(),
+            "pictureless track has no native artwork"
+        );
+    }
+
+    // A refresh reuses the cached binding verbatim (the file revision is
+    // unchanged), and the picture is still served.
+    source
+        .acquire_catalog(&database, &|_| {}, Arc::clone(&cancelled), true)
+        .await
+        .unwrap();
+    let refreshed = database
+        .itunes_artwork_bindings(source_key, &ReadCancellation::new())
+        .await
+        .unwrap();
+    assert_eq!(
+        refreshed.get(&picture_uri),
+        bindings.get(&picture_uri),
+        "cached binding reused across refreshes"
+    );
+    let image = source
+        .image(SourceImageRequest::Local(local_reference(
+            &refreshed[&picture_uri],
+        )))
+        .await
+        .unwrap();
+    assert!(!image.bytes.is_empty(), "cached picture still served");
 }

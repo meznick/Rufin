@@ -1413,7 +1413,17 @@ impl Source {
                 }
                 SourceImageRequest::Local(_) => Err(SourceError::NotFound),
             },
-            Implementation::Itunes(_) => Err(SourceError::NotFound),
+            Implementation::Itunes(source) => match request {
+                SourceImageRequest::Local(reference) => {
+                    let (LocalImageRef::File { path, .. } | LocalImageRef::Embedded { path, .. }) =
+                        &reference;
+                    if !std::path::Path::new(path).starts_with(source.config().local_root()) {
+                        return Err(SourceError::NotFound);
+                    }
+                    crate::file::local::read_local_image(&reference)
+                }
+                SourceImageRequest::Native { .. } => Err(SourceError::NotFound),
+            },
         }
     }
 

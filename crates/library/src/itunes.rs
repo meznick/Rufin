@@ -118,6 +118,26 @@ impl Database {
         Ok(())
     }
 
+    /// Embedded-artwork bindings the last observation published for one
+    /// source's tracks, keyed by media URI. The iTunes catalog reuses a
+    /// binding verbatim while the track file revision (size + mtime) is
+    /// unchanged, so refreshes only `stat` already-inspected files.
+    pub async fn itunes_artwork_bindings(
+        &self,
+        source_key: SourceKey,
+        cancellation: &ReadCancellation,
+    ) -> LibraryResult<HashMap<String, Vec<u8>>> {
+        let (_permit, mut connection) = self.acquire_general(cancellation).await?;
+        let rows: Vec<(String, Vec<u8>)> = sqlx::query_as(
+            "SELECT media_uri,native_artwork FROM tracks
+             WHERE source_key=?1 AND native_artwork IS NOT NULL",
+        )
+        .bind(source_key.raw())
+        .fetch_all(&mut *connection)
+        .await?;
+        Ok(rows.into_iter().collect())
+    }
+
     /// Rating sync base rows of one source, keyed by media URI.
     pub async fn itunes_base(
         &self,

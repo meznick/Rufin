@@ -2,13 +2,14 @@
 //! three-way stats merge (`.itl` / player / sync base).
 
 use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 
 use itl_sync::paths::{MappedLocation, MediaMapping};
 use itl_sync::survey::unique_tracks;
 use library::{
-    AlbumMetadata, ArtistCredit, ArtistMetadata, ArtistObservation, AlbumObservation,
-    CatalogBatch, GenreObservation, NativeUserState, ReadCancellation, SourceId, TagMetadata,
-    TagReference, TrackMetadata, TrackObservation,
+    AlbumMetadata, AlbumObservation, ArtistCredit, ArtistMetadata, ArtistObservation,
+    ArtworkCandidate, ArtworkImage, CatalogBatch, GenreObservation, NativeUserState,
+    ReadCancellation, SourceId, TagMetadata, TagReference, TrackMetadata, TrackObservation,
 };
 
 use crate::source::{SourceReadProgress, SourceReadStage};
@@ -191,6 +192,16 @@ pub(crate) async fn acquire(
         .database
         .itunes_base(catalog.source, &ReadCancellation::new())
         .await?;
+    // Embedded artwork: reuse the previous observation's binding while the
+    // file revision (size + mtime) is unchanged; inspect the rest in
+    // batches. First scan reads the tags (a few seconds), later refreshes
+    // only `stat`.
+    let cached_bindings = catalog
+        .database
+        .itunes_artwork_bindings(catalog.source, &ReadCancellation::new())
+        .await?;
+    let artwork = embedded_bindings(catalog.source_id, &located, &cached_bindings, cancelled)
+        .await?;
     let mut observed_uris = Vec::with_capacity(located.len());
     let mut patches: Vec<(String, ItunesPatch)> = Vec::new();
 
@@ -356,7 +367,7 @@ pub(crate) async fn acquire(
             cue_end_millis: None,
             first_seen_at: None,
             loudness_analysis_key: [0; 32],
-            artwork_binding: None,
+            artwork_binding: artwork[index].clone(),
             user_data: NativeUserState {
                 favorite: None,
                 rating: Some(final_rating),
@@ -456,4 +467,94 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
     let month = (if mp < 10 { mp + 3 } else { mp - 9 }) as u32;
     let year = y + i64::from(month <= 2);
     (year, month, day)
+}
+
+/// Embedded-artwork bindings for the located tracks, aligned with `located`.
+/// A cached binding whose `Local` candidate still matches the file revision
+/// (size + mtime) is reused verbatim; everything else gets its tags
+/// inspected in `spawn_blocking` batches. Tracks without a picture (or
+/// without a readable file) publish `None`, which the authoritative
+/// observation clears.
+async fn embedded_bindings(
+    source_id: &str,
+    located: &[(&itl_core::Track, MappedLocation)],
+    cached: &std::collections::HashMap<String, Vec<u8>>,
+    cancelled: &(dyn Fn() -> bool + Send + Sync),
+) -> SourceResult<Vec<Option<Vec<u8>>>> {
+    const INSPECT_BATCH: usize = 64;
+    let media_uri_for = |id: u32| {
+        library::source_entity_uri(
+            &SourceId::new(source_id),
+            "track",
+            &format!("itunes:track:{id}"),
+        )
+    };
+    let mut bindings = vec![None; located.len()];
+    let mut pending: Vec<(usize, PathBuf)> = Vec::new();
+    for (index, (track, mapped)) in located.iter().enumerate() {
+        let MappedLocation::Mapped { path, .. } = mapped else {
+            continue;
+        };
+        let Some(revision) = crate::file::local::artwork::revision(path) else {
+            continue;
+        };
+        let media_uri = media_uri_for(track.id());
+        if let Some(binding) = cached.get(&media_uri)
+            && same_local_asset(binding, path, &revision)
+        {
+            bindings[index] = Some(binding.clone());
+            continue;
+        }
+        pending.push((index, path.clone()));
+    }
+    for chunk in pending.chunks(INSPECT_BATCH) {
+        if cancelled() {
+            return Err(SourceError::Cancelled);
+        }
+        let inspected = tokio::task::spawn_blocking({
+            let chunk = chunk.to_vec();
+            let source_id = source_id.to_string();
+            move || {
+                let mut discoverer = crate::file::discovery::Reader::default();
+                chunk
+                    .into_iter()
+                    .map(|(_, path)| {
+                        let revision =
+                            crate::file::local::artwork::revision(&path).unwrap_or_default();
+                        crate::file::local::artwork::inspect_embedded(
+                            &source_id,
+                            &mut discoverer,
+                            &path,
+                            revision,
+                        )
+                        .map(|reference| reference.artwork_binding())
+                    })
+                    .collect::<Vec<Option<Vec<u8>>>>()
+            }
+        })
+        .await
+        .map_err(|error| SourceError::Other(error.to_string()))?;
+        for ((index, _), binding) in chunk.iter().zip(inspected) {
+            bindings[*index] = binding;
+        }
+    }
+    Ok(bindings)
+}
+
+/// The cached binding already points at this file revision: reuse its bytes.
+fn same_local_asset(binding: &[u8], path: &Path, revision: &str) -> bool {
+    serde_json::from_slice::<Vec<ArtworkCandidate>>(binding)
+        .ok()
+        .is_some_and(|candidates| {
+            candidates.iter().any(|candidate| {
+                matches!(
+                    &candidate.image,
+                    ArtworkImage::Local {
+                        path: cached_path,
+                        revision: cached_revision,
+                        ..
+                    } if cached_path == &path.to_string_lossy() && cached_revision == revision
+                )
+            })
+        })
 }
