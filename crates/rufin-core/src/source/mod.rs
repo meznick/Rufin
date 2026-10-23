@@ -456,7 +456,6 @@ impl SourceOwner {
             runtime.clone(),
             outputs.events.clone(),
         );
-        itunes_sync.startup_check();
         let shared = Arc::new(Shared {
             catalog_changed: tokio::sync::watch::channel(CatalogRevision::default()).0,
             configuration_changed: tokio::sync::watch::channel(()).0,
@@ -527,6 +526,12 @@ impl SourceOwner {
             let owner = self.clone();
             self.shared.runtime.spawn(async move {
                 let _ = owner.select_source(source_id).await;
+                // `select_source` enqueues `SourceEvent::Selected` before it
+                // returns, so a notice sent now reaches the shell after the
+                // selection is known — the selected-source toast filter sees
+                // the real state instead of dropping the notice. Emitting
+                // earlier (before selection restore) loses it deterministically.
+                owner.shared.itunes_sync.startup_check();
             });
         }
         let owner = self.clone();
