@@ -38,6 +38,17 @@ struct ItunesSourcePayload {
 }
 
 impl ItunesSourceConfig {
+    /// Whether iTunes currently has the library open, per its own `sentinel`
+    /// busy marker (verified semantics: zeroed = open, token = closed). The
+    /// authoritative check happens inside `itl-sync` on every write; this is
+    /// the cheap in-process pre-check used for user-facing notices.
+    pub fn library_busy(&self) -> bool {
+        matches!(
+            itl_sync::sentinel_state(&self.library),
+            Ok(itl_sync::SentinelState::Busy)
+        )
+    }
+
     pub fn from_configuration(stored: &SourceConfiguration) -> SourceResult<Self> {
         if stored.kind != ITUNES_SOURCE_ID {
             return Err(SourceError::InvalidConfig(format!(

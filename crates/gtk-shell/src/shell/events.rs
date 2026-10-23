@@ -439,6 +439,9 @@ fn apply_source_notice(shell: &Rc<Shell>, notice: SourceNotice) {
         .show_feedback_toast(match notice.kind {
             SourceNoticeKind::ServerUnreachable => tr("Server is unreachable"),
             SourceNoticeKind::FavoriteRejected => tr("Could not update favorites"),
+            SourceNoticeKind::ItunesLibraryBusy => tr(
+                "iTunes has this library open — changes stay pending until it closes",
+            ),
         });
 }
 

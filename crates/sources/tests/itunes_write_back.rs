@@ -159,3 +159,58 @@ async fn itunes_write_back_updates_the_itl_and_refresh_does_not_double_count() {
     assert_eq!(state.native_rating, Some(i64::from(new_rating)));
     assert_eq!(state.user_rating, Some(i64::from(new_rating)));
 }
+
+#[tokio::test]
+async fn itunes_write_back_refuses_while_the_library_is_open_in_itunes() {
+    let Some(library_path) = test_library() else {
+        eprintln!("ITL_TEST_PATH missing — skipping iTunes write-back integration test");
+        return;
+    };
+    let Some(binary) = sync_binary() else {
+        eprintln!("itl-sync binary not found — skipping iTunes write-back integration test");
+        return;
+    };
+    let itl = itl_core::ItlFile::open(&library_path).unwrap();
+    let media_root = library_path.parent().unwrap().to_path_buf();
+    let mapping = MediaMapping::new(&itl, &media_root).expect("corpus maps");
+    let track = itl_sync::survey::unique_tracks(&itl)
+        .into_iter()
+        .find(|track| matches!(mapping.to_local(track), MappedLocation::Mapped { .. }))
+        .expect("a located track in the corpus");
+
+    // A copy with a zeroed sentinel: iTunes has this library open.
+    let directory = tempfile::tempdir().unwrap();
+    let copy = directory.path().join("iTunes Library.itl");
+    std::fs::copy(&library_path, &copy).unwrap();
+    std::fs::write(directory.path().join("sentinel"), [0u8; 8]).unwrap();
+
+    let config = sources::itunes::ItunesSourceConfig {
+        library: copy.clone(),
+        media_folder: Some(media_root),
+        tz_offset_seconds: None,
+    };
+    assert!(
+        config.library_busy(),
+        "the pre-check sees the zeroed sentinel"
+    );
+
+    let patch = sources::itunes::write::ItunesPatch {
+        track_id: track.id(),
+        rating: Some(80),
+        play_count: Some(track.play_count() + 1),
+        skip_count: None,
+        play_date_unix: None,
+    };
+    let error = sources::itunes::write::write_patches_with(&config, &[patch], &binary)
+        .await
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("open in iTunes"),
+        "refusal names the open library, got: {error}"
+    );
+
+    // The refused write left the copy untouched.
+    let written = itl_core::ItlFile::open(&copy).unwrap();
+    let written_track = written.track_by_id(track.id()).unwrap();
+    assert_eq!(written_track.play_count(), track.play_count());
+}

@@ -13,11 +13,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use library::{Database, ReadCancellation};
+use async_channel::Sender;
+use library::{Database, ReadCancellation, SourceKey};
 use sources::itunes::write::{ItunesPatch, write_patches};
 use sources::itunes::{ITUNES_SOURCE_ID, ItunesSourceConfig};
 use sources::SourceId;
 
+use crate::runtime::{SourceEvent, SourceNotice, SourceNoticeKind};
 use crate::settings::SettingsFile;
 use crate::source::configured_source;
 
@@ -46,6 +48,10 @@ struct Pending {
 struct Inner {
     pending: Mutex<Pending>,
     flushing: AtomicBool,
+    /// Source ids already notified about the current busy period (the latch
+    /// clears when a flush eventually succeeds, so the next busy period
+    /// notifies again instead of spamming a toast per action).
+    busy_notified: Mutex<BTreeMap<String, bool>>,
 }
 
 /// Owned by the runtime shared state; created once per app start.
@@ -55,6 +61,7 @@ pub(crate) struct ItunesSync {
     database: Arc<Database>,
     settings: SettingsFile,
     runtime: tokio::runtime::Handle,
+    events: Sender<SourceEvent>,
 }
 
 impl ItunesSync {
@@ -62,12 +69,66 @@ impl ItunesSync {
         database: Arc<Database>,
         settings: SettingsFile,
         runtime: tokio::runtime::Handle,
+        events: Sender<SourceEvent>,
     ) -> Self {
         Self {
             inner: Arc::new(Inner::default()),
             database,
             settings,
             runtime,
+            events,
+        }
+    }
+
+    /// One pass at app start: if any configured iTunes library is currently
+    /// open in iTunes, tell the user (writes stay pending until it closes).
+    pub(crate) fn startup_check(&self) {
+        let service = self.clone();
+        self.runtime.spawn(async move {
+            let stored = service.settings.load();
+            for item in &stored.sources.configured {
+                if item.configuration.kind != ITUNES_SOURCE_ID {
+                    continue;
+                }
+                let Ok(config) = ItunesSourceConfig::from_configuration(&item.configuration) else {
+                    continue;
+                };
+                if !config.library_busy() {
+                    continue;
+                }
+                let source_id = item.configuration.source_id.clone();
+                let Some(source_key) = service
+                    .database
+                    .source_identity_key(&source_id)
+                    .await
+                    .ok()
+                    .flatten()
+                else {
+                    continue;
+                };
+                service.notify_busy(&source_id, source_key).await;
+            }
+        });
+    }
+
+    /// Tell the user the library is open in iTunes, once per busy period.
+    async fn notify_busy(&self, source_id: &SourceId, source_key: SourceKey) {
+        let fresh = {
+            let mut notified = self
+                .inner
+                .busy_notified
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            notified.insert(source_id.as_str().to_string(), true).is_none()
+        };
+        if fresh {
+            let _ = self
+                .events
+                .send(SourceEvent::Notice(SourceNotice {
+                    source_key,
+                    kind: SourceNoticeKind::ItunesLibraryBusy,
+                }))
+                .await;
         }
     }
 
@@ -171,6 +232,25 @@ impl ItunesSync {
             return;
         };
 
+        if config.library_busy() {
+            // iTunes has the library open: keep the batch dirty and tell the
+            // user once per busy period. The authoritative refusal happens in
+            // itl-sync anyway; this skips spawning the binary just to fail.
+            {
+                let mut pending = self
+                    .inner
+                    .pending
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                let entry = pending.by_source.entry(source_id.as_str().to_string()).or_default();
+                for (media_uri, flags) in &dirty {
+                    entry.entry(media_uri.clone()).or_default().merge(*flags);
+                }
+            }
+            self.notify_busy(source_id, source_key.clone()).await;
+            return;
+        }
+
         let mut patches = Vec::new();
         let mut base_ratings: Vec<(String, i64)> = Vec::new();
         for (media_uri, flags) in &dirty {
@@ -213,6 +293,13 @@ impl ItunesSync {
         }
         match write_patches(&config, &patches).await {
             Ok(()) => {
+                // the library was writable: reset the busy-notice latch so a
+                // future busy period notifies again
+                self.inner
+                    .busy_notified
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .remove(source_id.as_str());
                 for (media_uri, rating) in &base_ratings {
                     if let Err(error) = self
                         .database
@@ -233,20 +320,26 @@ impl ItunesSync {
             Err(error) => {
                 // Keep the batch dirty: the next user action or refresh
                 // re-derives the same deltas from the player state.
-                let mut pending = self
-                    .inner
-                    .pending
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner());
-                let entry = pending.by_source.entry(source_id.as_str().to_string()).or_default();
-                for (media_uri, flags) in dirty {
-                    entry.entry(media_uri).or_default().merge(flags);
+                {
+                    let mut pending = self
+                        .inner
+                        .pending
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    let entry = pending.by_source.entry(source_id.as_str().to_string()).or_default();
+                    for (media_uri, flags) in dirty {
+                        entry.entry(media_uri).or_default().merge(flags);
+                    }
+                }
+                // a sentinel appearing between the pre-check and the binary
+                // run is a busy refusal too — tell the user about it
+                if config.library_busy() {
+                    self.notify_busy(source_id, source_key.clone()).await;
                 }
                 tracing::warn!(
                     %error,
                     %source_id,
-                    "iTunes write-back failed; {} tracks stay pending",
-                    entry.len()
+                    "iTunes write-back failed; the batch stays pending",
                 );
             }
         }

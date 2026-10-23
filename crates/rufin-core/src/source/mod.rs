@@ -454,7 +454,9 @@ impl SourceOwner {
             Arc::clone(&database),
             settings.clone(),
             runtime.clone(),
+            outputs.events.clone(),
         );
+        itunes_sync.startup_check();
         let shared = Arc::new(Shared {
             catalog_changed: tokio::sync::watch::channel(CatalogRevision::default()).0,
             configuration_changed: tokio::sync::watch::channel(()).0,
