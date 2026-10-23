@@ -25,12 +25,8 @@ fn sync_binary() -> Option<PathBuf> {
     }
     // The fork sits next to itl-player (crates/sources/…/tests → ../../..).
     let relative = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../itl-player/target/debug/itl_sync");
-    if relative.exists() {
-        return Some(relative);
-    }
-    let home = PathBuf::from("/home/meznick/Documents/Projects/itl-player/target/debug/itl_sync");
-    home.exists().then_some(home)
+        .join("../../../itl-player/target/debug/itl-sync");
+    relative.exists().then_some(relative)
 }
 
 #[tokio::test]

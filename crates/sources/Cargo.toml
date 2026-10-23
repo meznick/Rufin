@@ -70,3 +70,11 @@ winsafe.workspace = true
 
 [lints]
 workspace = true
+
+[[test]]
+name = "itunes_catalog"
+path = "tests/itunes_catalog.rs"
+
+[[test]]
+name = "itunes_write_back"
+path = "tests/itunes_write_back.rs"
