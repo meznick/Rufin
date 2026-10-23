@@ -68,34 +68,42 @@ pub(crate) async fn acquire(
     let media_uri_for = |object_id: &str| {
         library::source_entity_uri(&source_id, "track", object_id)
     };
-    let album_object_id = |pid: u64, name: &str| {
-        if pid != 0 {
-            format!("itunes:album:{pid}")
+    // Albums: iTunes groups tracks by (Album, Album Artist). The mith album
+    // id (@0x9C) is absent on most tracks (zeros), and `album_persistent_id`
+    // reads the wrong header range (the date-added bytes) — so the identity
+    // is the normalized (name, album-artist) pair, mirroring the local
+    // source (`file/media.rs::album_id`). Tracks without an album name
+    // share one "Unknown Album" per album artist (remote-source behavior;
+    // iTunes itself shows them only in Songs).
+    const UNKNOWN_ALBUM: &str = "Unknown Album";
+    let album_identity = |name: &str, artist: &str| {
+        (artist.to_lowercase(), name.to_lowercase())
+    };
+    let album_object_id = |identity: &(String, String)| {
+        format!("itunes:album:{}:{}", identity.0, identity.1)
+    };
+    let album_of = |track: &itl_core::Track| {
+        let name = track.album().unwrap_or("").to_string();
+        let artist = track
+            .album_artist()
+            .or_else(|| track.artist())
+            .unwrap_or("")
+            .to_string();
+        let (title, identity) = if name.is_empty() {
+            (UNKNOWN_ALBUM.to_string(), album_identity(UNKNOWN_ALBUM, &artist))
         } else {
-            format!("itunes:album:name:{name}")
-        }
+            (name.clone(), album_identity(&name, &artist))
+        };
+        (title, artist, identity)
     };
 
-    // Albums referenced by tracks (identity from the album persistent id,
-    // falling back to the name; title/artist/year from the first track).
-    let mut albums: BTreeMap<String, (String, String, Option<i64>)> = BTreeMap::new();
+    // Albums referenced by tracks; title/artist/year from the first track.
+    let mut albums: BTreeMap<(String, String), (String, String, Option<i64>)> = BTreeMap::new();
     for (track, _) in &located {
-        let name = track.album().unwrap_or("").to_string();
-        let pid = track.album_persistent_id();
-        let id = album_object_id(pid, &name);
+        let (title, artist, identity) = album_of(track);
         albums
-            .entry(id)
-            .or_insert_with(|| {
-                (
-                    name,
-                    track
-                        .album_artist()
-                        .or_else(|| track.artist())
-                        .unwrap_or("")
-                        .to_string(),
-                    track.year().map(i64::from),
-                )
-            });
+            .entry(identity)
+            .or_insert_with(|| (title, artist, track.year().map(i64::from)));
     }
 
     // Artists, album artists, genres: name-keyed entities shared with the
@@ -125,8 +133,8 @@ pub(crate) async fn acquire(
     let mut batch = CatalogBatch::default();
     batch.albums = albums
         .iter()
-        .map(|(id, (title, artist, year))| AlbumObservation {
-            object_id: id.clone(),
+        .map(|(identity, (title, artist, year))| AlbumObservation {
+            object_id: album_object_id(identity),
             metadata: AlbumMetadata {
                 title: title.clone(),
                 artist: artist.clone(),
@@ -274,16 +282,16 @@ pub(crate) async fn acquire(
             .or_else(|| track.artist())
             .unwrap_or("")
             .to_string();
-        let album_name = track.album().unwrap_or("").to_string();
+        let (album_title, _, album_identity) = album_of(track);
 
         batch.tracks.push(TrackObservation {
             object_id: object_id.clone(),
             media_uri: Some(media_uri.clone()),
-            album_object_id: Some(album_object_id(track.album_persistent_id(), &album_name)),
+            album_object_id: Some(album_object_id(&album_identity)),
             metadata: TrackMetadata {
                 title: title.clone(),
                 artist: artist.clone(),
-                album: album_name.clone(),
+                album: album_title,
                 album_display_artist: Some(album_artist_name.clone()),
                 sort_text: title.to_lowercase(),
                 duration_millis: i64::from(track.duration_ms()),

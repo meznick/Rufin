@@ -14,7 +14,7 @@ use sources::{Source, SourceId, SourceSetup};
 
 fn test_library() -> Option<PathBuf> {
     std::env::var_os("ITL_TEST_PATH").map(PathBuf::from).or_else(|| {
-        let default = PathBuf::from("/nvme2tb/iTunes DEV/iTunes Library.itl");
+        let default = PathBuf::from("/nvme2tb/iTunesACCEPT/iTunes Library.itl");
         default.exists().then_some(default)
     })
 }
@@ -23,10 +23,14 @@ fn sync_binary() -> Option<PathBuf> {
     if let Some(binary) = std::env::var_os("ITL_SYNC_BIN") {
         return Some(PathBuf::from(binary));
     }
-    let candidate = PathBuf::from(
-        "/home/meznick/Documents/Projects/itl-player/target/debug/itl_sync",
-    );
-    candidate.exists().then_some(candidate)
+    // The fork sits next to itl-player (crates/sources/…/tests → ../../..).
+    let relative = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../itl-player/target/debug/itl_sync");
+    if relative.exists() {
+        return Some(relative);
+    }
+    let home = PathBuf::from("/home/meznick/Documents/Projects/itl-player/target/debug/itl_sync");
+    home.exists().then_some(home)
 }
 
 #[tokio::test]

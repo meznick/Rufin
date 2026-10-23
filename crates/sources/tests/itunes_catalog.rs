@@ -1,8 +1,10 @@
 // Integration test for the iTunes source read path, gated by
-// `ITL_TEST_PATH` (defaults to the DEV library; skipped when absent).
+// `ITL_TEST_PATH` (defaults to the full production snapshot at
+// `/nvme2tb/iTunesACCEPT/`; skipped when absent).
 // Corpus-agnostic: expected numbers come from `itl_sync::survey` on the same
-// file, so the test works against any `.itl` (real library, DEV, a copy).
+// file, so the test works against any `.itl` (snapshot, DEV, a copy).
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
@@ -13,7 +15,7 @@ use sources::{Source, SourceId, SourceSetup};
 
 fn test_library() -> Option<PathBuf> {
     std::env::var_os("ITL_TEST_PATH").map(PathBuf::from).or_else(|| {
-        let default = PathBuf::from("/nvme2tb/iTunes DEV/iTunes Library.itl");
+        let default = PathBuf::from("/nvme2tb/iTunesACCEPT/iTunes Library.itl");
         default.exists().then_some(default)
     })
 }
@@ -33,10 +35,32 @@ async fn itunes_catalog_reads_tracks_albums_and_stats() {
     );
     let mapping = MediaMapping::new(&itl, &media_root).expect("corpus maps under the media folder");
 
+    // Expected album grouping: the source keys albums by the normalized
+    // (album name, album artist) pair — the same rule as iTunes' display.
+    // No-location tracks are not published, so they don't contribute.
+    let mut expected_albums: BTreeMap<(String, String), usize> = BTreeMap::new();
+    for track in unique_tracks(&itl) {
+        if matches!(mapping.to_local(track), MappedLocation::NoLocation) {
+            continue;
+        }
+        let name = track.album().unwrap_or("").to_string();
+        let artist = track
+            .album_artist()
+            .or_else(|| track.artist())
+            .unwrap_or("")
+            .to_string();
+        let key = if name.is_empty() {
+            (artist.to_lowercase(), "unknown album".to_string())
+        } else {
+            (artist.to_lowercase(), name.to_lowercase())
+        };
+        *expected_albums.entry(key).or_insert(0) += 1;
+    }
+    let max_expected = expected_albums.values().copied().max().unwrap_or(0);
+
     let directory = tempfile::tempdir().unwrap();
-    let database = Database::open(directory.path().join("library.sqlite"))
-        .await
-        .unwrap();
+    let database_path = directory.path().join("library.sqlite");
+    let database = Database::open(&database_path).await.unwrap();
     let connected = Source::connect(
         SourceId::new("itunes-test"),
         SourceSetup::Itunes {
@@ -82,6 +106,57 @@ async fn itunes_catalog_reads_tracks_albums_and_stats() {
         "catalog holds located unique .itl tracks only"
     );
     assert!(albums > 0, "albums observed");
+
+    // Album grouping regression: tracks of one album must land in ONE album
+    // object (keyed by normalized name+artist), never in per-track clones
+    // with the same title. Checks: exact album count, no duplicate
+    // (title, artist) pairs, and the largest album holds all its tracks.
+    {
+        use sqlx::Connection as _;
+        let mut connection = sqlx::SqliteConnection::connect_with(
+            &sqlx::sqlite::SqliteConnectOptions::new().filename(&database_path),
+        )
+        .await
+        .unwrap();
+        let album_rows: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM albums WHERE source_key=?1 AND indexed=1",
+        )
+        .bind(source_key.raw())
+        .fetch_one(&mut connection)
+        .await
+        .unwrap();
+        assert_eq!(
+            album_rows,
+            expected_albums.len() as i64,
+            "one album object per (name, album artist) pair"
+        );
+        let duplicate_pairs: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM (
+                 SELECT json_extract(metadata,'$.title'), json_extract(metadata,'$.artist')
+                 FROM albums WHERE source_key=?1 AND indexed=1
+                 GROUP BY 1,2 HAVING count(*)>1)",
+        )
+        .bind(source_key.raw())
+        .fetch_one(&mut connection)
+        .await
+        .unwrap();
+        assert_eq!(
+            duplicate_pairs, 0,
+            "no two album objects with the same (title, artist)"
+        );
+        let max_track_count: i64 = sqlx::query_scalar(
+            "SELECT max(track_count) FROM albums WHERE source_key=?1 AND indexed=1",
+        )
+        .bind(source_key.raw())
+        .fetch_one(&mut connection)
+        .await
+        .unwrap();
+        assert_eq!(
+            max_track_count,
+            max_expected as i64,
+            "the largest album holds all of its tracks (play album works)"
+        );
+    }
 
     // A no-location track is absent from the catalog: no base rows and no
     // native stats were written for it.
