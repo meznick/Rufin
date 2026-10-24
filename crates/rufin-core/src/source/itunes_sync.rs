@@ -259,6 +259,21 @@ impl ItunesSync {
         let mut patches = Vec::new();
         let mut base_ratings: Vec<(String, i64)> = Vec::new();
         for (media_uri, flags) in &dirty {
+            // The `.itl` patch targets the numeric track id carried in the
+            // media URI's object id (`itunes:track:<id>`, built by the
+            // catalog through `source_entity_uri`). A patch without an id
+            // would silently no-op against track 0 and — worse — still mark
+            // the sync base as written, so the next refresh wipes the user
+            // rating as "iTunes wins". Derive the id up front and drop the
+            // entry (the refresh merge re-derives it anyway) when it cannot
+            // be parsed.
+            let Some(track_id) = itunes_track_id(media_uri) else {
+                tracing::warn!(
+                    %media_uri,
+                    "cannot derive the iTunes track id from the media uri — dropping the patch",
+                );
+                continue;
+            };
             let Ok(state) = self
                 .database
                 .itunes_player_state(media_uri, &ReadCancellation::new())
@@ -267,6 +282,7 @@ impl ItunesSync {
                 continue;
             };
             let mut patch = ItunesPatch::default();
+            patch.track_id = track_id;
             if flags.rating {
                 // The user override wins over the native slot; clearing the
                 // override falls back to the source value (= last agreed
@@ -389,4 +405,54 @@ pub(crate) async fn record_itunes_listen(
         .shared
         .itunes_sync
         .mark_activity(&source_id, media_uri);
+}
+
+/// The numeric `.itl` track id carried in an iTunes media URI
+/// (`rufin:source/track/<source>/itunes:track:<id>`; `source_entity_parts`
+/// decodes the percent-encoding the catalog applied).
+fn itunes_track_id(media_uri: &str) -> Option<u32> {
+    let (_, kind, object_id) = library::source_entity_parts(media_uri)?;
+    if kind != "track" {
+        return None;
+    }
+    object_id
+        .strip_prefix("itunes:track:")?
+        .parse::<u32>()
+        .ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::itunes_track_id;
+
+    #[test]
+    fn parses_the_track_id_from_an_itunes_media_uri() {
+        assert_eq!(
+            itunes_track_id(
+                "rufin:source/track/rufin%2Dsource%2D52882a9a6993fc026780b247dab7704f/itunes%3Atrack%3A4035"
+            ),
+            Some(4035)
+        );
+    }
+
+    #[test]
+    fn rejects_uris_that_do_not_carry_an_itunes_track() {
+        // album kind
+        assert_eq!(
+            itunes_track_id("rufin:source/album/x/itunes%3Atrack%3A4035"),
+            None
+        );
+        // wrong object-id prefix
+        assert_eq!(
+            itunes_track_id("rufin:source/track/x/other%3Aobject%3A4035"),
+            None
+        );
+        // non-numeric id
+        assert_eq!(
+            itunes_track_id("rufin:source/track/x/itunes%3Atrack%3Anan"),
+            None
+        );
+        // not a source entity uri at all
+        assert_eq!(itunes_track_id("garbage"), None);
+    }
 }
