@@ -1,8 +1,7 @@
 // Round-trip write-back test: rates and plays one located track against a
-// COPY of the library, flushes through `itl-sync`, and verifies the `.itl`
-// facts change and stay stable across a refresh (no double-counting).
-// Gated by `ITL_TEST_PATH` and the `itl-sync` binary (env `ITL_SYNC_BIN`,
-// else the itl-player debug build). Corpus-agnostic.
+// COPY of the library, flushes through the in-process write pipeline, and
+// verifies the `.itl` facts change and stay stable across a refresh (no
+// double-counting). Gated by `ITL_TEST_PATH`. Corpus-agnostic.
 
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
@@ -19,27 +18,13 @@ fn test_library() -> Option<PathBuf> {
     })
 }
 
-fn sync_binary() -> Option<PathBuf> {
-    if let Some(binary) = std::env::var_os("ITL_SYNC_BIN") {
-        return Some(PathBuf::from(binary));
-    }
-    // The fork sits next to itl-player (crates/sources/…/tests → ../../..).
-    let relative = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../../itl-player/target/debug/itl-sync");
-    relative.exists().then_some(relative)
-}
-
 #[tokio::test]
 async fn itunes_write_back_updates_the_itl_and_refresh_does_not_double_count() {
     let Some(library_path) = test_library() else {
         eprintln!("ITL_TEST_PATH missing — skipping iTunes write-back integration test");
         return;
     };
-    let Some(binary) = sync_binary() else {
-        eprintln!("itl-sync binary not found — skipping iTunes write-back integration test");
-        return;
-    };
-    // Pick a located track (its id is patchable through itl-sync).
+    // Pick a located track (its id is patchable through the write pipeline).
     let itl = itl_core::ItlFile::open(&library_path).unwrap();
     let media_root = library_path.parent().unwrap().to_path_buf();
     let mapping = MediaMapping::new(&itl, &media_root).expect("corpus maps");
@@ -118,7 +103,7 @@ async fn itunes_write_back_updates_the_itl_and_refresh_does_not_double_count() {
     assert_eq!(state.play_count, Some(i64::from(new_plays)));
     assert_eq!(state.user_rating, Some(i64::from(new_rating)));
 
-    // Flush through itl-sync (the runtime service path).
+    // Flush through the in-process write pipeline (the runtime service path).
     let config = sources::itunes::ItunesSourceConfig::from_configuration(&configuration).unwrap();
     let patch = sources::itunes::write::ItunesPatch {
         track_id,
@@ -127,7 +112,7 @@ async fn itunes_write_back_updates_the_itl_and_refresh_does_not_double_count() {
         skip_count: None,
         play_date_unix: Some(played_at),
     };
-    sources::itunes::write::write_patches_with(&config, &[patch], &binary)
+    sources::itunes::write::write_patches(&config, &[patch])
         .await
         .unwrap();
 
@@ -162,10 +147,6 @@ async fn itunes_write_back_refuses_while_the_library_is_open_in_itunes() {
         eprintln!("ITL_TEST_PATH missing — skipping iTunes write-back integration test");
         return;
     };
-    let Some(binary) = sync_binary() else {
-        eprintln!("itl-sync binary not found — skipping iTunes write-back integration test");
-        return;
-    };
     let itl = itl_core::ItlFile::open(&library_path).unwrap();
     let media_root = library_path.parent().unwrap().to_path_buf();
     let mapping = MediaMapping::new(&itl, &media_root).expect("corpus maps");
@@ -197,7 +178,7 @@ async fn itunes_write_back_refuses_while_the_library_is_open_in_itunes() {
         skip_count: None,
         play_date_unix: None,
     };
-    let error = sources::itunes::write::write_patches_with(&config, &[patch], &binary)
+    let error = sources::itunes::write::write_patches(&config, &[patch])
         .await
         .unwrap_err();
     assert!(
@@ -209,4 +190,44 @@ async fn itunes_write_back_refuses_while_the_library_is_open_in_itunes() {
     let written = itl_core::ItlFile::open(&copy).unwrap();
     let written_track = written.track_by_id(track.id()).unwrap();
     assert_eq!(written_track.play_count(), track.play_count());
+}
+
+#[tokio::test]
+async fn itunes_write_back_rejects_patches_for_tracks_missing_from_the_library() {
+    let Some(library_path) = test_library() else {
+        eprintln!("ITL_TEST_PATH missing — skipping iTunes write-back integration test");
+        return;
+    };
+    let directory = tempfile::tempdir().unwrap();
+    let copy = directory.path().join("iTunes Library.itl");
+    std::fs::copy(&library_path, &copy).unwrap();
+
+    let config = sources::itunes::ItunesSourceConfig {
+        library: copy.clone(),
+        media_folder: Some(library_path.parent().unwrap().to_path_buf()),
+        tz_offset_seconds: None,
+    };
+    // Track id 0 never exists: a patch for it must be refused, not silently
+    // dropped inside the write pipeline.
+    let patch = sources::itunes::write::ItunesPatch {
+        track_id: 0,
+        rating: Some(80),
+        play_count: None,
+        skip_count: None,
+        play_date_unix: None,
+    };
+    let error = sources::itunes::write::write_patches(&config, &[patch])
+        .await
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("missing"),
+        "the refusal names the missing track, got: {error}"
+    );
+
+    // The refused write left the copy untouched.
+    assert_eq!(
+        std::fs::read(&copy).unwrap(),
+        std::fs::read(&library_path).unwrap(),
+        "the copy is byte-identical to the corpus"
+    );
 }

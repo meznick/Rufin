@@ -1,14 +1,14 @@
-//! Write-back into the `.itl`: one `itl-sync sync --json -` invocation per
-//! batch of absolute-value patches. `itl-sync` remains the only writer of
-//! `.itl` bytes — the source and the runtime flush service both go through
-//! `write_patches`.
-
-use std::path::PathBuf;
-use std::process::Stdio;
-
-use tokio::io::AsyncWriteExt;
+//! Write-back into the `.itl`: one `itl_sync::write_library` call per batch
+//! of absolute-value patches, in-process — the fork links `itl-sync` as a
+//! library, the player never spawns a binary. One invocation = one atomic
+//! write through the whole safe-write pipeline (flock, optimistic lock,
+//! unconditional sentinel busy refusal, /proc handle check, self-validation,
+//! rolling backup). The runtime flush service and the catalog merge both go
+//! through `write_patches`.
 
 use super::ItunesSourceConfig;
+use itl_sync::sync::{PatchSet, TrackPatch};
+use itl_sync::WriteOptions;
 
 /// Absolute-value patch for one track; `None` = leave the field untouched.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -17,7 +17,8 @@ pub struct ItunesPatch {
     pub rating: Option<u8>,
     pub play_count: Option<u32>,
     pub skip_count: Option<u32>,
-    /// Real unix timestamp; `itl-sync` converts it to wall-clock with its TZ.
+    /// Real unix timestamp; the write converts it to wall-clock with the
+    /// source's TZ (config override or the `.itl` envelope value).
     pub play_date_unix: Option<i64>,
 }
 
@@ -30,50 +31,29 @@ impl ItunesPatch {
     }
 }
 
-/// The `itl-sync` binary: `ITL_SYNC_BIN` environment variable, else the
-/// `itl-sync` from `PATH`.
-pub fn sync_binary() -> PathBuf {
-    std::env::var_os("ITL_SYNC_BIN")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("itl-sync"))
-}
-
 /// Why a write-back batch failed.
 #[derive(Debug)]
 pub enum ItunesWriteError {
-    Spawn(std::io::Error),
-    Io(std::io::Error),
     Rejected(String),
 }
 
 impl std::fmt::Display for ItunesWriteError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Spawn(error) => write!(f, "cannot run itl-sync: {error}"),
-            Self::Io(error) => write!(f, "itl-sync io: {error}"),
-            Self::Rejected(message) => write!(f, "itl-sync rejected the write: {message}"),
+            Self::Rejected(message) => write!(f, "iTunes write-back refused: {message}"),
         }
     }
 }
 
 impl std::error::Error for ItunesWriteError {}
 
-/// Write one batch of absolute-value patches into the `.itl` (atomic safe
-/// write with rolling backups, inside `itl-sync`). Empty patches are
-/// skipped; an empty batch is a no-op. The binary is resolved from
-/// `ITL_SYNC_BIN`, else `itl-sync` on `PATH`.
+/// Write one batch of absolute-value patches into the `.itl` in-process.
+/// Empty patches are skipped; an empty batch is a no-op. The library is
+/// never touched while iTunes holds it open — the sentinel refusal is
+/// authoritative inside the write pipeline.
 pub async fn write_patches(
     config: &ItunesSourceConfig,
     patches: &[ItunesPatch],
-) -> Result<(), ItunesWriteError> {
-    write_patches_with(config, patches, &sync_binary()).await
-}
-
-/// `write_patches` with an explicit `itl-sync` binary path.
-pub async fn write_patches_with(
-    config: &ItunesSourceConfig,
-    patches: &[ItunesPatch],
-    binary: &std::path::Path,
 ) -> Result<(), ItunesWriteError> {
     let patches = patches
         .iter()
@@ -82,53 +62,42 @@ pub async fn write_patches_with(
     if patches.is_empty() {
         return Ok(());
     }
-    let tracks = patches
-        .iter()
-        .map(|patch| {
-            let mut json = serde_json::json!({ "id": patch.track_id });
-            let object = json.as_object_mut().expect("track patch object");
-            if let Some(rating) = patch.rating {
-                object.insert("rating".into(), rating.into());
-            }
-            if let Some(play_count) = patch.play_count {
-                object.insert("play_count".into(), play_count.into());
-            }
-            if let Some(skip_count) = patch.skip_count {
-                object.insert("skip_count".into(), skip_count.into());
-            }
-            if let Some(play_date) = patch.play_date_unix {
-                object.insert("play_date".into(), play_date.into());
-            }
-            json
-        })
-        .collect::<Vec<_>>();
-    let body = serde_json::json!({ "tracks": tracks }).to_string();
 
-    let mut command = tokio::process::Command::new(binary);
-    command.arg("sync").arg(&config.library).arg("--json").arg("-");
-    if let Some(media_folder) = &config.media_folder {
-        command.arg("--media-folder").arg(media_folder);
+    let mut set = PatchSet::default();
+    for patch in patches {
+        let track = TrackPatch {
+            rating: patch.rating,
+            play_count: patch.play_count,
+            skip_count: patch.skip_count,
+            play_date_unix: patch.play_date_unix,
+            explicit: None,
+        };
+        set.insert_track(track, patch.track_id)
+            .map_err(ItunesWriteError::Rejected)?;
     }
-    if let Some(tz) = config.tz_offset_seconds {
-        command.arg("--tz-offset").arg(tz.to_string());
+
+    // Blocking file I/O (fingerprint, parse, flock, /proc scan, write) —
+    // off the async runtime, same as the read path does with `ItlFile::open`.
+    let library = config.library.clone();
+    let options = WriteOptions {
+        tz_offset_seconds: config.tz_offset_seconds,
+        media_root: config.media_folder.clone(),
+        ..WriteOptions::default()
+    };
+    let report = tokio::task::spawn_blocking(move || itl_sync::write_library(&library, &set, &options))
+        .await
+        .map_err(|e| ItunesWriteError::Rejected(format!("write task failed: {e}")))?
+        .map_err(|e| ItunesWriteError::Rejected(e.to_string()))?;
+
+    // A patch for an id the library does not hold is a silent no-op inside
+    // the write pipeline (empty change set, successful exit). Treat it as a
+    // refusal: the caller keeps the batch dirty instead of marking the sync
+    // base as written for a value that never reached the `.itl`.
+    if !report.missing_tracks.is_empty() {
+        return Err(ItunesWriteError::Rejected(format!(
+            "tracks missing from the library: {:?}",
+            report.missing_tracks
+        )));
     }
-    command
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let mut child = command.spawn().map_err(ItunesWriteError::Spawn)?;
-    if let Some(mut stdin) = child.stdin.take() {
-        stdin
-            .write_all(body.as_bytes())
-            .await
-            .map_err(ItunesWriteError::Io)?;
-    }
-    let output = child.wait_with_output().await.map_err(ItunesWriteError::Io)?;
-    if output.status.success() {
-        return Ok(());
-    }
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    Err(ItunesWriteError::Rejected(
-        stderr.trim().lines().next().unwrap_or("unknown error").to_string(),
-    ))
+    Ok(())
 }
