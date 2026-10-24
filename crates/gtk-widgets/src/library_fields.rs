@@ -31,6 +31,14 @@ pub trait TrackPresentation: Clone + PartialEq + Send + Sync + 'static {
     fn links(&self, field: LibraryField) -> crate::detail_links::DetailLinks {
         crate::detail_links::DetailLinks::text(&self.field(field))
     }
+    /// Display rating on the 0–10 scale (`None` = unrated).
+    fn rating(&self) -> Option<u8> {
+        None
+    }
+    /// The source id of the row, for per-source presentation flags.
+    fn source_id(&self) -> Option<&str> {
+        None
+    }
 }
 
 macro_rules! song_presentation {
@@ -50,6 +58,8 @@ macro_rules! song_presentation {
             fn links(&$this, field: LibraryField) -> crate::detail_links::DetailLinks {
                 crate::detail_links::metadata_links(field, &$this.field(field), $song.links.album_media_uri.as_deref(), &$song.links.artists, &$song.links.album_artists)
             }
+            fn rating(&$this) -> Option<u8> { $song.state.rating.and_then(|rating| u8::try_from(rating).ok()) }
+            fn source_id(&$this) -> Option<&str> { $song.source_id.as_deref() }
         }
     };
 }
@@ -400,7 +410,8 @@ pub fn column_width(field: LibraryField) -> i32 {
         LibraryField::ReleaseDate | LibraryField::DateAdded => 118,
         LibraryField::LastPlayed => 148,
         LibraryField::PlayCount => play_count_column_width(),
-        LibraryField::UserRating | LibraryField::SongCount | LibraryField::AlbumCount => 96,
+        LibraryField::UserRating => 104,
+        LibraryField::SongCount | LibraryField::AlbumCount => 96,
         LibraryField::Year
         | LibraryField::DiscNumber
         | LibraryField::TrackNumber

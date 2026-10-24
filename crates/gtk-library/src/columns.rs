@@ -619,6 +619,26 @@ pub fn track_column_for_key<T: gtk_widgets::library_fields::TrackPresentation>(
             |item: &T| Some(item.media_uri().to_string()),
             |item: &T| item.links(LibraryField::Album),
         ),
+        LibraryField::UserRating => {
+            let half_stars_shell = Rc::clone(shell);
+            let commit_shell = Rc::clone(shell);
+            gtk_widgets::ratings::rating_stars_column::<T, _, _, _>(
+                gtk_widgets::settings::library_field_title(LibraryField::UserRating),
+                |item: &T| item.rating(),
+                move |item: &T| {
+                    (half_stars_shell.media_menus.half_stars_enabled)(
+                        item.media_uri(),
+                        item.source_id(),
+                    )
+                },
+                move |item: &T, rating| {
+                    commit_shell.source.set_rating(
+                        ::library::FavoriteTarget::Track(item.media_uri().to_string()),
+                        rating,
+                    );
+                },
+            )
+        }
         _ => mapped_track_position_text_column(
             shell,
             field,
@@ -688,7 +708,8 @@ pub fn track_column_width(key: LibraryListKey, field: LibraryField) -> i32 {
         | LibraryField::AlbumArtist
         | LibraryField::Genre => 180,
         LibraryField::PlayCount => play_count_column_width(),
-        LibraryField::UserRating | LibraryField::SongCount | LibraryField::AlbumCount => 82,
+        LibraryField::UserRating => 104,
+        LibraryField::SongCount | LibraryField::AlbumCount => 82,
         LibraryField::ReleaseDate | LibraryField::DateAdded => 108,
         LibraryField::LastPlayed => 148,
         LibraryField::Year

@@ -1013,6 +1013,37 @@ fn search_column(
     if field == LibraryField::Tools {
         return search_favorite_column(shell);
     }
+    if field == LibraryField::UserRating && category == CollectionCategory::Tracks {
+        let rating_shell = Rc::clone(shell);
+        let commit_shell = Rc::clone(shell);
+        return gtk_widgets::ratings::rating_stars_column::<SearchItem, _, _, _>(
+            gtk_widgets::settings::library_field_title(field),
+            move |item| match item {
+                SearchItem::Track(row) => row
+                    .state
+                    .rating
+                    .and_then(|value| u8::try_from(value).ok()),
+                _ => None,
+            },
+            move |item| match item {
+                SearchItem::Track(row) => {
+                    (rating_shell.media_menus.half_stars_enabled)(
+                        &row.media_uri,
+                        row.source_id.as_deref(),
+                    )
+                }
+                _ => false,
+            },
+            move |item, rating| {
+                if let SearchItem::Track(row) = item {
+                    commit_shell.source.set_rating(
+                        library::FavoriteTarget::Track(row.media_uri.clone()),
+                        rating,
+                    );
+                }
+            },
+        );
+    }
     let playing = (field == LibraryField::Title)
         .then(|| playing.cloned())
         .flatten();

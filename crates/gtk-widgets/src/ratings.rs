@@ -1,4 +1,4 @@
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use adw::prelude::*;
@@ -193,6 +193,72 @@ pub fn context_rating_row(
     });
     row.append(control.widget());
     row
+}
+
+/// An interactive rating-stars column for track lists: hover preview,
+/// click/drag commits (dropping at the left edge clears the rating).
+/// `rating` and `half_stars` read the row's display value (0–10 scale) and
+/// half-star flag; `commit` receives the new value (`None` = cleared).
+pub fn rating_stars_column<T, Rating, HalfStars, Commit>(
+    title: &str,
+    rating: Rating,
+    half_stars: HalfStars,
+    commit: Commit,
+) -> gtk::ColumnViewColumn
+where
+    T: Clone + 'static,
+    Rating: FnMut(&T) -> Option<u8> + 'static,
+    HalfStars: FnMut(&T) -> bool + 'static,
+    Commit: FnMut(&T, Option<u8>) + 'static,
+{
+    let factory = gtk::SignalListItemFactory::new();
+    let shared = Rc::new(RefCell::new((rating, half_stars)));
+    let commit = Rc::new(RefCell::new(commit));
+    factory.connect_setup(move |_, item| {
+        let Some(item) = item.downcast_ref::<gtk::ListItem>() else {
+            return;
+        };
+        let cell = crate::recycled_cells::RecycledRatingCell::new();
+        let commit = Rc::clone(&commit);
+        let weak_item = item.downgrade();
+        cell.connect_commit(move |rating| {
+            let Some(item) = weak_item.upgrade() else {
+                return;
+            };
+            let Some(row) = crate::sparse_model::item_at_from_item::<T>(&item) else {
+                return;
+            };
+            commit.borrow_mut()(&row, rating);
+        });
+        item.set_child(Some(&cell));
+    });
+    factory.connect_bind(move |_, item| {
+        let Some(item) = item.downcast_ref::<gtk::ListItem>() else {
+            return;
+        };
+        let Some(cell) = crate::recycled_cells::list_cell::<crate::recycled_cells::RecycledRatingCell>(
+            item,
+        ) else {
+            return;
+        };
+        let mut shared = shared.borrow_mut();
+        if let Some(row) = crate::sparse_model::item_at_from_item::<T>(&item) {
+            cell.set_rating(shared.0(&row), shared.1(&row));
+        } else {
+            cell.set_rating(None, false);
+        }
+    });
+    factory.connect_unbind(move |_, item| {
+        let Some(item) = item.downcast_ref::<gtk::ListItem>() else {
+            return;
+        };
+        if let Some(cell) =
+            crate::recycled_cells::list_cell::<crate::recycled_cells::RecycledRatingCell>(item)
+        {
+            cell.set_rating(None, false);
+        }
+    });
+    gtk::ColumnViewColumn::new(Some(title), Some(factory))
 }
 
 #[cfg(test)]

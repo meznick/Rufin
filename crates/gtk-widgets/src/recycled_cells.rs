@@ -558,3 +558,67 @@ pub fn set_track_row_index_text(cell: &gtk::Overlay, text: &str) {
     };
     label.set_text(text);
 }
+
+pub mod rating_imp {
+    use super::*;
+    use crate::ratings::RatingControl;
+
+    /// A recycled rating-stars cell: a [`RatingControl`] wrapped for
+    /// `ColumnViewColumn` factories. The control is interactive — the
+    /// column wires `connect_commit` in `setup`.
+    #[derive(Default)]
+    pub struct RecycledRatingCell {
+        pub(super) control: RefCell<Option<RatingControl>>,
+    }
+
+    #[glib::object_subclass]
+    impl ObjectSubclass for RecycledRatingCell {
+        const NAME: &'static str = "RufinRecycledRatingCell";
+        type Type = super::RecycledRatingCell;
+        type ParentType = gtk::Box;
+    }
+
+    impl ObjectImpl for RecycledRatingCell {
+        fn constructed(&self) {
+            self.parent_constructed();
+            let obj = self.obj();
+            let control = RatingControl::new(None, false);
+            let widget = control.widget().clone();
+            widget.set_halign(gtk::Align::Center);
+            widget.set_valign(gtk::Align::Center);
+            widget.set_hexpand(true);
+            widget.set_margin_top(2);
+            widget.set_margin_bottom(2);
+            widget.set_margin_start(4);
+            widget.set_margin_end(4);
+            obj.append(&widget);
+            *self.control.borrow_mut() = Some(control);
+        }
+    }
+    impl WidgetImpl for RecycledRatingCell {}
+    impl BoxImpl for RecycledRatingCell {}
+}
+
+glib::wrapper! {
+    pub struct RecycledRatingCell(ObjectSubclass<rating_imp::RecycledRatingCell>)
+        @extends gtk::Widget, gtk::Box,
+        @implements gtk::Accessible, gtk::Buildable, gtk::ConstraintTarget, gtk::Orientable;
+}
+
+impl RecycledRatingCell {
+    pub fn new() -> Self {
+        glib::Object::new()
+    }
+
+    pub fn set_rating(&self, rating: Option<u8>, half_stars: bool) {
+        if let Some(control) = self.imp().control.borrow().as_ref() {
+            control.set_rating(rating, half_stars);
+        }
+    }
+
+    pub fn connect_commit(&self, commit: impl Fn(Option<u8>) + 'static) {
+        if let Some(control) = self.imp().control.borrow().as_ref() {
+            control.connect_commit(commit);
+        }
+    }
+}

@@ -1331,6 +1331,7 @@ enum AlbumTrackField {
     Index(gtk::Overlay),
     Image(ArtworkTile),
     Favorite(gtk::Button),
+    Rating(gtk_widgets::ratings::RatingControl),
 }
 
 impl AlbumTrackSlot {
@@ -1445,6 +1446,28 @@ impl AlbumTrackSlot {
                         });
                         (cell.clone().upcast(), AlbumTrackField::Index(cell))
                     }
+                    LibraryField::UserRating => {
+                        let control = gtk_widgets::ratings::RatingControl::new(None, false);
+                        let widget = control.widget().clone();
+                        widget.set_halign(gtk::Align::Center);
+                        widget.set_valign(gtk::Align::Center);
+                        widget.set_margin_start(4);
+                        widget.set_margin_end(4);
+                        let row = Rc::clone(&current);
+                        let commit_shell = Rc::downgrade(shell);
+                        control.connect_commit(move |rating| {
+                            let Some(shell) = commit_shell.upgrade() else {
+                                return;
+                            };
+                            if let Some(track) = row.borrow().clone() {
+                                shell.source.set_rating(
+                                    library::FavoriteTarget::Track(track.media_uri.clone()),
+                                    rating,
+                                );
+                            }
+                        });
+                        (widget.clone().upcast(), AlbumTrackField::Rating(control))
+                    }
                     field => {
                         let label = album_track_label("", *field, 1);
                         label.set_hexpand(true);
@@ -1508,6 +1531,22 @@ impl AlbumTrackSlot {
                         );
                     } else {
                         shell.artwork.clear_artwork_tile(tile);
+                    }
+                }
+                AlbumTrackField::Rating(control) => {
+                    if let Some(track) = current.as_ref() {
+                        control.set_rating(
+                            track
+                                .state
+                                .rating
+                                .and_then(|value| u8::try_from(value).ok()),
+                            (shell.media_menus.half_stars_enabled)(
+                                &track.media_uri,
+                                track.source_id.as_deref(),
+                            ),
+                        );
+                    } else {
+                        control.set_rating(None, false);
                     }
                 }
             }
@@ -1699,7 +1738,8 @@ fn album_track_column_width(field: LibraryField) -> i32 {
         LibraryField::Duration => 48,
         LibraryField::Year | LibraryField::Bpm => 52,
         LibraryField::PlayCount => 56,
-        LibraryField::UserRating | LibraryField::SongCount | LibraryField::AlbumCount => 64,
+        LibraryField::UserRating => 104,
+        LibraryField::SongCount | LibraryField::AlbumCount => 64,
         LibraryField::Tools => gtk_widgets::recycled_cells::ROW_ACTIONS_WIDTH,
         LibraryField::Favorite => gtk_widgets::favorites::FAVORITE_COLUMN_WIDTH,
         LibraryField::Image => 56,
