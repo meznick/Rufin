@@ -81,6 +81,18 @@ impl NativeFile {
             }
         } else if matches!(source.implementation, Implementation::Local(_)) {
             FileLocation::Native(PathBuf::from(source_path.ok_or(Error::Unavailable)?))
+        } else if let Implementation::Itunes(itunes) = &source.implementation {
+            // The catalog stores the host-local media path in
+            // `tracks.source_path` (the same value `stream()` plays). Treat
+            // it as a plain native file: metadata edits write to the media
+            // file itself, and iTunes picks the tags up on its next rescan.
+            // Require the path to live under the source's local root — the
+            // same guard `image()` applies.
+            let path = source_path.ok_or(Error::Unavailable)?;
+            if !Path::new(path).starts_with(itunes.config().local_root()) {
+                return Err(Error::Unavailable);
+            }
+            FileLocation::Native(PathBuf::from(path))
         } else if matches!(source.implementation, Implementation::OpenSubsonic(_)) {
             return Err(Error::LocalAccessRequired {
                 source_id: source.source_id.clone(),
@@ -1947,5 +1959,67 @@ impl NativeFile {
                 Ok(changed)
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::SourceId;
+
+    fn itunes_source(library: &Path) -> Arc<Source> {
+        let configuration = crate::config::encode_provider_payload(
+            SourceId::new("itunes-metadata-test"),
+            crate::itunes::ITUNES_SOURCE_ID,
+            "iTunes",
+            serde_json::json!({
+                "version": 1,
+                "library": library,
+                "media_folder": null,
+                "tz_offset_seconds": null,
+            }),
+        );
+        Arc::new(Source::open(configuration, None, None).unwrap())
+    }
+
+    fn media_uri() -> &'static str {
+        "rufin:source/track/itunes-metadata-test/itunes%3Atrack%3A1"
+    }
+
+    #[test]
+    fn itunes_tracks_resolve_to_the_host_local_media_path() {
+        let directory = tempfile::tempdir().unwrap();
+        let library = directory.path().join("iTunes Library.itl");
+        std::fs::write(&library, b"placeholder").unwrap();
+        let source = itunes_source(&library);
+        let track = directory.path().join("Music").join("Track.mp3");
+        let resolved = NativeFile::resolve(
+            &source,
+            media_uri(),
+            Some(track.to_str().unwrap()),
+            None,
+            false,
+            None,
+        )
+        .unwrap();
+        assert!(matches!(resolved.location, FileLocation::Native(path) if path == track));
+    }
+
+    #[test]
+    fn itunes_tracks_outside_the_local_root_do_not_resolve() {
+        let directory = tempfile::tempdir().unwrap();
+        let library = directory.path().join("iTunes Library.itl");
+        std::fs::write(&library, b"placeholder").unwrap();
+        let source = itunes_source(&library);
+        let outside = tempfile::tempdir().unwrap();
+        let resolved = NativeFile::resolve(
+            &source,
+            media_uri(),
+            Some(outside.path().join("Track.mp3").to_str().unwrap()),
+            None,
+            false,
+            None,
+        );
+        assert!(matches!(resolved, Err(Error::Unavailable)));
     }
 }
