@@ -3084,6 +3084,24 @@ impl SourceOwner {
     }
 
     async fn apply_rating(&self, target: FavoriteTarget, rating: Option<u8>) {
+        // iTunes stores whole stars only (20..=100, step 20 in the `.itl`).
+        // The star widget normally only offers whole stars for iTunes, but a
+        // manually enabled `enable_half_stars` would otherwise commit
+        // 10/30/… values that iTunes itself never writes. Round up to the
+        // whole star the user saw, so the visible rating always equals the
+        // value the `.itl` will hold after the debounced flush.
+        let favorite = self.favorite_source(&target).await;
+        let itunes = favorite
+            .as_ref()
+            .and_then(|(id, _, _)| self.configuration(id))
+            .is_some_and(|configuration| configuration.kind == sources::ITUNES_SOURCE_ID);
+        let rating = rating.map(|rating| {
+            if itunes {
+                itunes_whole_star_rating(rating)
+            } else {
+                rating
+            }
+        });
         let lane = self.shared.lane.lock().await;
         if !self
             .shared
@@ -3094,12 +3112,9 @@ impl SourceOwner {
         {
             return;
         }
-        let source = self
-            .favorite_source(&target)
-            .await
-            .and_then(|(id, key, local)| {
-                self.client(&id).ok().map(|source| (source, id, key, local))
-            });
+        let source = favorite.and_then(|(id, key, local)| {
+            self.client(&id).ok().map(|source| (source, id, key, local))
+        });
         drop(lane);
         self.publish_current_catalog(None, CatalogChange::Broad)
             .await;
@@ -3654,6 +3669,10 @@ pub(crate) fn source_error_allows_cache(error: &SourceError) -> bool {
     )
 }
 
+fn itunes_whole_star_rating(rating: u8) -> u8 {
+    rating.min(10).div_ceil(2) * 2
+}
+
 fn source_refresh_error_text(error: &SourceError) -> String {
     if source_error_allows_cache(error) {
         localization::tr("Server is unreachable")
@@ -3765,6 +3784,19 @@ fn unix_seconds() -> i64 {
 mod source_tests {
     use super::*;
     use secrets::SecretStore;
+
+    #[test]
+    fn itunes_ratings_round_to_whole_stars() {
+        assert_eq!(itunes_whole_star_rating(0), 0);
+        assert_eq!(itunes_whole_star_rating(1), 2);
+        assert_eq!(itunes_whole_star_rating(2), 2);
+        assert_eq!(itunes_whole_star_rating(3), 4);
+        assert_eq!(itunes_whole_star_rating(5), 6);
+        assert_eq!(itunes_whole_star_rating(9), 10);
+        assert_eq!(itunes_whole_star_rating(10), 10);
+        // The widget never emits values above 10, but stay safe.
+        assert_eq!(itunes_whole_star_rating(14), 10);
+    }
 
     #[tokio::test]
     async fn plex_sources_share_login_until_last_removal_and_cannot_resurrect_secrets() {
