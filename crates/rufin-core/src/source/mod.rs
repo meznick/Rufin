@@ -3681,6 +3681,7 @@ fn editable_source(configuration: &SourceConfiguration) -> Result<EditableSource
         },
         plex_settings: None,
         file_settings: None,
+        itunes_settings: None,
         use_instant_mix: None,
         emby_connect: false,
     };
@@ -3707,6 +3708,9 @@ fn editable_source(configuration: &SourceConfiguration) -> Result<EditableSource
             editable.file_settings = Some(settings);
         }
         sources::EditableSource::Local { .. } => {}
+        sources::EditableSource::Itunes { settings, .. } => {
+            editable.itunes_settings = Some(settings);
+        }
     }
     Ok(editable)
 }

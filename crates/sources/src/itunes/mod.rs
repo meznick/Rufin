@@ -27,6 +27,18 @@ pub struct ItunesSourceConfig {
     pub tz_offset_seconds: Option<i32>,
 }
 
+/// The editable subset of [`ItunesSourceConfig`] shown in the source settings
+/// form. Plain strings only, so it travels over the bindings layer (uniffi)
+/// without path-type plumbing.
+#[derive(Clone, Debug, Default, Eq, PartialEq, serde::Serialize)]
+#[cfg_attr(feature = "bindings", derive(uniffi::Record))]
+pub struct ItunesEditableSettings {
+    /// `iTunes Library.itl` path. Empty = the form has no library yet.
+    pub library: String,
+    /// Optional media-folder root override; empty in the form = default.
+    pub media_folder: Option<String>,
+}
+
 #[derive(serde::Deserialize)]
 struct ItunesSourcePayload {
     version: u32,

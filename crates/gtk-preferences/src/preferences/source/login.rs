@@ -92,7 +92,7 @@ static PLEX: SourcePresentation = SourcePresentation {
 static ITUNES: SourcePresentation = SourcePresentation {
     kind: sources::ITUNES_SOURCE_ID,
     setup_flow: itunes::setup_flow,
-    settings_group: None,
+    settings_group: Some(itunes::settings_group),
 };
 static SOURCE_PRESENTATIONS: [&SourcePresentation; 9] = [
     &JELLYFIN, &NAVIDROME, &SUBSONIC, &EMBY, &PLEX, &WEBDAV, &SMB, &LOCAL, &ITUNES,

@@ -26,7 +26,7 @@ mod file;
 mod jellyfin_emby;
 pub use jellyfin_emby::ServerKind;
 pub mod itunes;
-pub use itunes::{ITUNES_SOURCE_ID, ItunesSourceConfig};
+pub use itunes::{ITUNES_SOURCE_ID, ItunesEditableSettings, ItunesSourceConfig};
 mod remote_http;
 mod remote_json;
 mod subsonic;

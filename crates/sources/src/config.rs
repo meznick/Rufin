@@ -199,6 +199,10 @@ pub enum EditableSource {
         excluded_folders: Vec<PathBuf>,
         document_roots: Vec<crate::DocumentRoot>,
     },
+    Itunes {
+        source_id: SourceId,
+        settings: crate::ItunesEditableSettings,
+    },
 }
 
 impl SourceConfiguration {
@@ -461,6 +465,18 @@ impl SourceConfiguration {
                     roots: config.roots,
                     excluded_folders: config.excluded_folders,
                     document_roots: config.document_roots,
+                })
+            }
+            crate::itunes::ITUNES_SOURCE_ID => {
+                let config = crate::itunes::ItunesSourceConfig::from_configuration(self)?;
+                Ok(EditableSource::Itunes {
+                    source_id: self.source_id.clone(),
+                    settings: crate::ItunesEditableSettings {
+                        library: config.library.to_string_lossy().into_owned(),
+                        media_folder: config
+                            .media_folder
+                            .map(|path| path.to_string_lossy().into_owned()),
+                    },
                 })
             }
             kind => Err(SourceError::InvalidConfig(format!(

@@ -89,6 +89,7 @@ pub struct EditableSource {
     pub integration: bool,
     pub plex_settings: Option<sources::PlexSettingsInput>,
     pub file_settings: Option<sources::FileSourceSettings>,
+    pub itunes_settings: Option<sources::ItunesEditableSettings>,
     pub source: SourceSummary,
     pub credentials: CredentialPreset,
     pub use_instant_mix: Option<bool>,
