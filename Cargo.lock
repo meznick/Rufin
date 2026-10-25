@@ -4450,6 +4450,8 @@ dependencies = [
 [[package]]
 name = "itl-core"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c130bf524840121d70d3e8ec053001f00359366497977e9f9226c1dc9aecb3ca"
 dependencies = [
  "aes 0.8.4",
  "flate2",
@@ -4459,6 +4461,8 @@ dependencies = [
 [[package]]
 name = "itl-sync"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ef12c315ff93e7e5294a1a3c9788254ce400dc1441b6283890011250c47977a3"
 dependencies = [
  "itl-core",
  "libc",
