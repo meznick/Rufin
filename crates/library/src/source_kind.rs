@@ -14,10 +14,12 @@ pub enum SourceKind {
     Navidrome,
     Subsonic,
     Peer,
+    /// An iTunes library read from its `iTunes Library.itl`.
+    Itunes,
 }
 
 impl SourceKind {
-    const NAMES: [(Self, &'static str); 9] = [
+    const NAMES: [(Self, &'static str); 10] = [
         (Self::Local, "local"),
         (Self::Webdav, "webdav"),
         (Self::Smb, "smb"),
@@ -27,6 +29,7 @@ impl SourceKind {
         (Self::Navidrome, "navidrome"),
         (Self::Subsonic, "subsonic"),
         (Self::Peer, "peer"),
+        (Self::Itunes, "itunes"),
     ];
 
     pub fn parse(name: &str) -> Option<Self> {
@@ -45,7 +48,7 @@ impl SourceKind {
 
     /// Rufin reads the files itself, so albums come from tags and plays from Rufin's listens.
     pub fn file_library(self) -> bool {
-        matches!(self, Self::Local | Self::Webdav | Self::Smb)
+        matches!(self, Self::Local | Self::Webdav | Self::Smb | Self::Itunes)
     }
 
     pub fn subsonic(self) -> bool {

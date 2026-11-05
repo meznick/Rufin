@@ -21,5 +21,17 @@
         <property name="visible">false</property>
       </object>
     </child>
+    <child>
+      <object class="GtkLabel" id="explicit">
+        <property name="label">E</property>
+        <property name="visible">false</property>
+        <property name="tooltip-text" translatable="yes">Explicit</property>
+        <property name="xalign">0.5</property>
+        <property name="valign">center</property>
+        <style>
+          <class name="explicit-badge"/>
+        </style>
+      </object>
+    </child>
   </template>
 </interface>

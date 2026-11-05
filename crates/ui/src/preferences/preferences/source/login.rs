@@ -1,5 +1,6 @@
 mod files;
-pub use files::{choose_integration, present_integration};
+pub use files::{bind_integrations, choose_integration, present_integration};
+mod itunes;
 mod jellyfin_emby;
 mod plex;
 
@@ -87,8 +88,13 @@ static PLEX: SourcePresentation = SourcePresentation {
     setup_flow: plex::setup_flow,
     settings_group: Some(plex::settings_group),
 };
-static SOURCE_PRESENTATIONS: [&SourcePresentation; 8] = [
-    &LOCAL, &JELLYFIN, &EMBY, &PLEX, &NAVIDROME, &SUBSONIC, &WEBDAV, &SMB,
+static ITUNES: SourcePresentation = SourcePresentation {
+    kind: sources::ITUNES_SOURCE_ID,
+    setup_flow: itunes::setup_flow,
+    settings_group: Some(itunes::settings_group),
+};
+static SOURCE_PRESENTATIONS: [&SourcePresentation; 9] = [
+    &LOCAL, &JELLYFIN, &EMBY, &PLEX, &NAVIDROME, &SUBSONIC, &WEBDAV, &SMB, &ITUNES,
 ];
 
 fn source_presentations() -> &'static [&'static SourcePresentation] {

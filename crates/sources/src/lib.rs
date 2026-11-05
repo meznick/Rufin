@@ -29,6 +29,8 @@ mod jellyfin_emby;
 mod listen_moe;
 pub use jellyfin_emby::ServerKind;
 pub use listen_moe::{ListenMoeSong, listen_moe_feed, listen_moe_songs};
+pub mod itunes;
+pub use itunes::{ITUNES_SOURCE_ID, ItunesEditableSettings, ItunesSourceConfig};
 mod remote_http;
 mod remote_json;
 mod subsonic;
@@ -257,6 +259,22 @@ mod local_change_integration_tests {
     include!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/tests/local_changes.rs"
+    ));
+}
+
+#[cfg(test)]
+mod itunes_catalog_integration_tests {
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/itunes_catalog.rs"
+    ));
+}
+
+#[cfg(test)]
+mod itunes_write_back_integration_tests {
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/itunes_write_back.rs"
     ));
 }
 

@@ -132,6 +132,7 @@ pub struct EditableSource {
     pub integration: bool,
     pub plex_settings: Option<sources::PlexSettingsInput>,
     pub file_settings: Option<sources::FileSourceSettings>,
+    pub itunes_settings: Option<sources::ItunesEditableSettings>,
     pub source: SourceSummary,
     pub credentials: CredentialPreset,
     pub emby_connect: bool,
@@ -441,6 +442,7 @@ pub fn source_kind_title(kind: &str) -> Option<&'static str> {
         SourceKind::Webdav => localization::msgid("WebDAV"),
         SourceKind::Smb => localization::msgid("SMB / Samba"),
         SourceKind::Peer => localization::msgid("Rufin Connect"),
+        SourceKind::Itunes => localization::msgid("iTunes"),
     })
 }
 
@@ -456,5 +458,6 @@ pub fn source_kind_icon_name(kind: &str) -> Option<&'static str> {
         SourceKind::Webdav => "app.rufin.rufin.source.webdav",
         SourceKind::Smb => "app.rufin.rufin.source.smb",
         SourceKind::Peer => "rufin-phonelink-symbolic",
+        SourceKind::Itunes => "app.rufin.rufin-symbolic",
     })
 }

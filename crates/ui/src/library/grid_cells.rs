@@ -572,6 +572,7 @@ impl<T: crate::widgets::library_fields::TrackPresentation> ReusableCollectionGri
         );
         self.body
             .bind(row.title(), |value| (self.field)(position, &row, value));
+        self.body.set_explicit(row.explicit());
         match (&self.playing, row.track_row()) {
             (Some(playing), _) => {
                 playing.bind(self.body.title.upcast_ref(), position, row.media_uri())
@@ -999,6 +1000,9 @@ pub struct CollectionGridCardCell {
     pub card: CollectionGridCardView,
     cover: gtk::Widget,
     pub title: gtk::Label,
+    title_row: gtk::Box,
+    downloaded: RefCell<Option<gtk::Image>>,
+    explicit: RefCell<Option<gtk::Label>>,
     fields: RefCell<Vec<CollectionGridFieldCell>>,
     ready: Cell<bool>,
     playing_target: RefCell<Option<Rc<MediaPlayingBinding>>>,
@@ -1050,6 +1054,10 @@ impl CollectionGridCardCell {
         card.prepend(&cover);
         let title = card.imp().title.get();
         connect_label_tooltip(&title);
+        let title_row = card.imp().title_row.get();
+        gtk_widgets::recycled_cells::install_playing_indicator(&title, &title_row);
+        let explicit = gtk_widgets::recycled_cells::explicit_badge();
+        title_row.append(&explicit);
         let field_cells = fields
             .iter()
             .copied()
@@ -1062,6 +1070,9 @@ impl CollectionGridCardCell {
             card,
             cover,
             title,
+            title_row,
+            downloaded: RefCell::new(None),
+            explicit: RefCell::new(Some(explicit)),
             fields: RefCell::new(field_cells),
             ready: Cell::new(false),
             playing_target: RefCell::new(None),
@@ -1076,6 +1087,14 @@ impl CollectionGridCardCell {
 
     pub fn set_folder(&self, folder: bool) {
         self.card.imp().folder_icon.set_visible(folder);
+    }
+
+    /// Shows the explicit badge (the inverted square) while `explicit`; a
+    /// card that never flagged anything just keeps the badge hidden.
+    pub fn set_explicit(&self, explicit: bool) {
+        if let Some(badge) = self.explicit.borrow().as_ref() {
+            gtk_widgets::recycled_cells::set_explicit_badge(badge, explicit);
+        }
     }
 
     /// Shows the card as playing while `target` plays; a card that plays nothing never does.
@@ -1102,6 +1121,7 @@ impl CollectionGridCardCell {
         }
         crate::widgets::recycled_cells::set_track_playing(self.title.upcast_ref(), false, false);
         self.title.set_text("");
+        self.set_explicit(false);
         for field in self.fields.borrow().iter() {
             field.clear();
         }

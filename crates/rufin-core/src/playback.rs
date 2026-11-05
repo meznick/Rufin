@@ -532,12 +532,22 @@ impl PlaybackOwner {
 
     async fn store_activity(&self, current_track: Option<library::TrackKey>, listen: ListenWrite) {
         let deliveries = self.scrobbler.listen_delivery_targets(&listen);
-        if let Err(error) = self
+        match self
             .catalog
             .record_listen(&listen, current_track, &deliveries)
             .await
         {
-            warn!(%error, "could not record Rufin Activity");
+            Ok(_) => {
+                self.scrobbler.listen_recorded(deliveries.len());
+                crate::source::itunes_sync::record_itunes_listen(
+                    &self.source,
+                    &listen.media_uri,
+                    listen.skipped,
+                    listen.started_at,
+                )
+                .await;
+            }
+            Err(error) => warn!(%error, "could not record Rufin Activity"),
         }
     }
 

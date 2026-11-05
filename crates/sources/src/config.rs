@@ -85,6 +85,12 @@ pub enum SourceSetup {
     Local {
         roots: Vec<PathBuf>,
     },
+    Itunes {
+        name: Option<String>,
+        library: PathBuf,
+        media_folder: Option<PathBuf>,
+        tz_offset_seconds: Option<i32>,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
@@ -147,6 +153,12 @@ pub enum SourceSettingsChange {
     },
     /// Another device's Local source takes only a name, kept on this device.
     Peer { source_id: SourceId, name: String },
+    Itunes {
+        source_id: SourceId,
+        library: PathBuf,
+        media_folder: Option<PathBuf>,
+        tz_offset_seconds: Option<i32>,
+    },
 }
 
 impl SourceSettingsChange {
@@ -160,7 +172,8 @@ impl SourceSettingsChange {
             | Self::Files { source_id, .. }
             | Self::JellyfinEmby { source_id, .. }
             | Self::OpenSubsonic { source_id, .. }
-            | Self::Peer { source_id, .. } => source_id,
+            | Self::Peer { source_id, .. }
+            | Self::Itunes { source_id, .. } => source_id,
         }
     }
 }
@@ -192,6 +205,10 @@ pub enum EditableSource {
     },
     /// Another device's Local source: only its name is edited here.
     Peer { source_id: SourceId },
+    Itunes {
+        source_id: SourceId,
+        settings: crate::ItunesEditableSettings,
+    },
 }
 
 impl SourceConfiguration {
@@ -402,6 +419,18 @@ impl SourceConfiguration {
             "peer" => Ok(EditableSource::Peer {
                 source_id: self.source_id.clone(),
             }),
+            crate::itunes::ITUNES_SOURCE_ID => {
+                let config = crate::itunes::ItunesSourceConfig::from_configuration(self)?;
+                Ok(EditableSource::Itunes {
+                    source_id: self.source_id.clone(),
+                    settings: crate::ItunesEditableSettings {
+                        library: config.library.to_string_lossy().into_owned(),
+                        media_folder: config
+                            .media_folder
+                            .map(|path| path.to_string_lossy().into_owned()),
+                    },
+                })
+            }
             kind => Err(SourceError::InvalidConfig(format!(
                 "unknown source kind {kind}"
             ))),

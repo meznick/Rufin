@@ -891,7 +891,10 @@ pub fn track_table(
                 field,
                 &column_playing_indicator,
             );
-            if field != LibraryField::Favorite {
+            if !matches!(
+                field,
+                LibraryField::Favorite | LibraryField::UserRating
+            ) {
                 install_track_column_drag_source::<TrackRow>(
                     &column,
                     &column_shell,

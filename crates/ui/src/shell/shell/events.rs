@@ -186,6 +186,9 @@ fn apply_source_event(shell: &Rc<Shell>, event: SourceEvent) {
         SourceEvent::FavoriteRejected => shell
             .control_feedback
             .show_feedback_toast(tr("Could not update favorites")),
+        SourceEvent::ItunesLibraryBusy => shell.control_feedback.show_feedback_toast(tr(
+            "iTunes has this library open — changes stay pending until it closes",
+        )),
         SourceEvent::PlaylistSourceMismatch(source_id) => {
             let source_name = shell
                 .source

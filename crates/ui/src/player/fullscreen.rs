@@ -92,6 +92,7 @@ pub struct FullscreenPlayerParts {
     visualizer_panel: gtk::Box,
     pub cover: ArtworkTile,
     pub title: gtk::Label,
+    pub explicit: gtk::Label,
     pub artist: gtk::Label,
     pub album: gtk::Label,
     album_row: gtk::Widget,
@@ -237,6 +238,7 @@ pub fn build_fullscreen_player(
         artist_slide: gtk::ScrolledWindow, artist_viewport: gtk::Viewport,
         album_slide: gtk::ScrolledWindow, album_viewport: gtk::Viewport,
         title: gtk::Label,
+        title_explicit: gtk::Label,
         artist: gtk::Label,
         album: gtk::Label,
         album_fade: gtk::Widget,
@@ -327,6 +329,7 @@ pub fn build_fullscreen_player(
         visualizer_panel,
         cover,
         title,
+        explicit: title_explicit,
         artist,
         album,
         album_row: album_fade,
@@ -1072,6 +1075,10 @@ impl crate::player::PlayerUi {
             .fullscreen_player
             .title
             .set_text(&presentation.title);
+        gtk_widgets::recycled_cells::set_explicit_badge(
+            &self.views.fullscreen_player.explicit,
+            presentation.explicit,
+        );
         self.views
             .fullscreen_player
             .artist

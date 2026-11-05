@@ -68,6 +68,19 @@
           </object>
         </child>
         <child>
+          <object class="GtkLabel" id="title_explicit">
+            <property name="label">E</property>
+            <property name="visible">false</property>
+            <property name="tooltip-text" translatable="yes">Explicit</property>
+            <property name="xalign">0.5</property>
+            <property name="valign">center</property>
+            <property name="margin-start">6</property>
+            <style>
+              <class name="explicit-badge" />
+            </style>
+          </object>
+        </child>
+        <child>
           <object class="GtkButton" id="menu_button">
             <property name="icon-name">rufin-player-more-symbolic</property>
             <property name="valign">center</property>

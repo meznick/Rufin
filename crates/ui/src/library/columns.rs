@@ -488,6 +488,7 @@ pub fn track_column_for_key<T: crate::widgets::library_fields::TrackPresentation
                 title: |item: &T| item.title().to_string(),
                 subtitle: |item: &T| item.artist().to_string(),
                 subtitle_links: |item: &T| Some(item.links(LibraryField::Artist)),
+                explicit: |item: &T| item.explicit(),
                 context_menu: true,
             },
         ),
@@ -502,6 +503,7 @@ pub fn track_column_for_key<T: crate::widgets::library_fields::TrackPresentation
                 |item: &T| item.track_row(),
                 |item: &T| item.download_badge(),
                 |_, item: &T| item.title().to_string(),
+                |item: &T| item.explicit(),
             );
             if matches!(
                 key,
@@ -548,6 +550,26 @@ pub fn track_column_for_key<T: crate::widgets::library_fields::TrackPresentation
             |item: &T| item.track_row(),
             |item: &T| item.links(LibraryField::Album),
         ),
+        LibraryField::UserRating => {
+            let half_stars_shell = Rc::clone(shell);
+            let commit_shell = Rc::clone(shell);
+            gtk_widgets::ratings::rating_stars_column::<T, _, _, _>(
+                gtk_widgets::settings::library_field_title(LibraryField::UserRating),
+                |item: &T| item.rating(),
+                move |item: &T| {
+                    (half_stars_shell.media_menus.half_stars_enabled)(
+                        item.media_uri(),
+                        item.source_id(),
+                    )
+                },
+                move |item: &T, rating| {
+                    commit_shell.source.set_rating(
+                        ::library::FavoriteTarget::Track(item.media_uri().to_string()),
+                        rating,
+                    );
+                },
+            )
+        }
         _ => mapped_track_position_text_column(
             shell,
             field,
@@ -566,6 +588,7 @@ pub fn track_column_for_key<T: crate::widgets::library_fields::TrackPresentation
                     item.field(field)
                 }
             },
+            |item: &T| item.explicit(),
         ),
     }
 }
@@ -624,6 +647,7 @@ fn track_list_column_width(field: LibraryField) -> i32 {
         | LibraryField::TrackNumber
         | LibraryField::Bpm => 70,
         LibraryField::Duration => 90,
+        LibraryField::UserRating => 104,
         LibraryField::Favorite => FAVORITE_COLUMN_WIDTH,
         LibraryField::Tools => crate::widgets::recycled_cells::ROW_ACTIONS_WIDTH,
         _ => column_width(field),
@@ -1068,11 +1092,11 @@ fn install_track_list_item_context_menu<T: Clone + 'static>(
     );
 }
 
-fn list_text_cell(item: &gtk::ListItem) -> Option<(gtk::Label, Option<gtk::Image>)> {
+fn list_text_cell(item: &gtk::ListItem) -> Option<(gtk::Label, Option<gtk::Image>, Option<gtk::Label>)> {
     if let Some(cell) = list_cell::<RecycledBadgedTextCell>(item) {
-        return Some((cell.label(), Some(cell.downloaded())));
+        return Some((cell.label(), Some(cell.downloaded()), Some(cell.explicit())));
     }
-    list_cell::<RecycledTextCell>(item).map(|cell| (cell.label(), None))
+    list_cell::<RecycledTextCell>(item).map(|cell| (cell.label(), None, None))
 }
 
 pub fn mapped_track_image_column<T, TrackValue, ArtworkValue>(
@@ -1141,7 +1165,7 @@ where
     column.set_fixed_width(width);
     column
 }
-pub fn mapped_track_position_text_column<T, TrackValue, Downloaded, Value>(
+pub fn mapped_track_position_text_column<T, TrackValue, Downloaded, Value, Explicit>(
     shell: &Rc<CatalogUi>,
     field: LibraryField,
     title: &'static str,
@@ -1151,18 +1175,22 @@ pub fn mapped_track_position_text_column<T, TrackValue, Downloaded, Value>(
     track_value: TrackValue,
     downloaded_value: Downloaded,
     value: Value,
+    explicit_value: Explicit,
 ) -> gtk::ColumnViewColumn
 where
     T: Clone + 'static,
     TrackValue: Fn(&T) -> Option<&TrackRow> + 'static,
     Downloaded: Fn(&T) -> bool + 'static,
     Value: Fn(u32, &T) -> String + 'static,
+    Explicit: Fn(&T) -> bool + 'static,
 {
     let factory = gtk::SignalListItemFactory::new();
     let shell = Rc::clone(shell);
     let value = Rc::new(value);
     let track_value: Rc<dyn Fn(&T) -> Option<&TrackRow>> = Rc::new(track_value);
     let downloaded_value = Rc::new(downloaded_value);
+    let explicit_value = Rc::new(explicit_value);
+    let title_field = matches!(field, LibraryField::Title);
 
     let setup_shell = Rc::clone(&shell);
     let setup_playing = playing.clone();
@@ -1200,10 +1228,10 @@ where
         let Some(item) = item.downcast_ref::<gtk::ListItem>() else {
             return;
         };
-        let Some((label, downloaded)) = list_text_cell(item) else {
+        let Some((label, downloaded, explicit)) = list_text_cell(item) else {
             return;
         };
-        let Some((text, download, track)) = item.item().and_then(|object| {
+        let Some((text, download, track, flagged)) = item.item().and_then(|object| {
             object_item::<T, _>(object, |row| {
                 (
                     value(item.position(), row),
@@ -1218,6 +1246,9 @@ where
             if let Some(badge) = downloaded.as_ref() {
                 badge.set_visible(false);
             }
+            if let Some(badge) = explicit.as_ref() {
+                gtk_widgets::recycled_cells::set_explicit_badge(badge, false);
+            }
             if let Some(playing) = bind_playing.as_ref() {
                 playing.unbind(label.upcast_ref());
             }
@@ -1229,6 +1260,9 @@ where
                 .downloads
                 .bind_download_badge(downloaded, download);
         }
+        if let Some(explicit) = explicit.as_ref() {
+            gtk_widgets::recycled_cells::set_explicit_badge(explicit, flagged);
+        }
         if let Some(playing) = bind_playing.as_ref() {
             if let Some(uri) = track {
                 playing.bind(label.upcast_ref(), item.position(), &uri);
@@ -1238,11 +1272,14 @@ where
 
     factory.connect_unbind(move |_, item| {
         if let Some(item) = item.downcast_ref::<gtk::ListItem>()
-            && let Some((label, downloaded)) = list_text_cell(item)
+            && let Some((label, downloaded, explicit)) = list_text_cell(item)
         {
             label.set_text("");
             if let Some(downloaded) = downloaded.as_ref() {
                 downloaded.set_visible(false);
+            }
+            if let Some(explicit) = explicit.as_ref() {
+                gtk_widgets::recycled_cells::set_explicit_badge(explicit, false);
             }
             if let Some(playing) = playing.as_ref() {
                 playing.unbind(label.upcast_ref());
@@ -1255,22 +1292,40 @@ where
     column
 }
 
-pub struct TrackMergedColumnValues<ItemTrack, Downloaded, Artwork, Title, Subtitle, SubtitleLinks> {
+pub struct TrackMergedColumnValues<ItemTrack, Downloaded, Artwork, Title, Subtitle, SubtitleLinks, Explicit> {
     pub track: ItemTrack,
     pub downloaded: Downloaded,
     pub artwork: Artwork,
     pub title: Title,
     pub subtitle: Subtitle,
     pub subtitle_links: SubtitleLinks,
+    pub explicit: Explicit,
     pub context_menu: bool,
 }
 
-pub fn track_merged_column<T, ItemTrack, Downloaded, Artwork, Title, Subtitle, SubtitleLinks>(
+pub fn track_merged_column<
+    T,
+    ItemTrack,
+    Downloaded,
+    Artwork,
+    Title,
+    Subtitle,
+    SubtitleLinks,
+    Explicit,
+>(
     shell: &Rc<CatalogUi>,
     title: &'static str,
     width: i32,
     playing: TrackRowPlayingIndicator,
-    values: TrackMergedColumnValues<ItemTrack, Downloaded, Artwork, Title, Subtitle, SubtitleLinks>,
+    values: TrackMergedColumnValues<
+        ItemTrack,
+        Downloaded,
+        Artwork,
+        Title,
+        Subtitle,
+        SubtitleLinks,
+        Explicit,
+    >,
 ) -> gtk::ColumnViewColumn
 where
     T: Clone + 'static,
@@ -1280,6 +1335,7 @@ where
     Title: Fn(&T) -> String + 'static,
     Subtitle: Fn(&T) -> String + 'static,
     SubtitleLinks: Fn(&T) -> Option<DetailLinks> + 'static,
+    Explicit: Fn(&T) -> bool + 'static,
 {
     let factory = gtk::SignalListItemFactory::new();
     let shell = Rc::clone(shell);
@@ -1290,6 +1346,7 @@ where
         title: title_value,
         subtitle: subtitle_value,
         subtitle_links,
+        explicit: explicit_value,
         context_menu,
     } = values;
     let title_value = Rc::new(title_value);
@@ -1339,7 +1396,7 @@ where
         };
         let cover = cell.cover();
         let title = cell.title();
-        let Some((artwork, text, subtitle, links, downloaded, track)) =
+        let Some((artwork, text, subtitle, links, downloaded, track, flagged)) =
             item.item().and_then(|object| {
                 object_item::<T, _>(object, |row| {
                     (
@@ -1357,6 +1414,7 @@ where
             cell.downloaded()
                 .expect("track cell badge")
                 .set_visible(false);
+            gtk_widgets::recycled_cells::set_explicit_badge(&cell.explicit(), false);
             bind_playing.unbind(title.upcast_ref());
             cell.clear_subtitle();
             clear_merged_artwork(&bind_shell, &cover);
@@ -1368,6 +1426,7 @@ where
         bind_shell
             .downloads
             .bind_download_badge(&cell.downloaded().expect("track cell badge"), downloaded);
+        gtk_widgets::recycled_cells::set_explicit_badge(&cell.explicit(), flagged);
         if let Some(uri) = track {
             bind_playing.bind(title.upcast_ref(), item.position(), &uri);
         }
@@ -1389,6 +1448,7 @@ where
             cell.downloaded()
                 .expect("track cell badge")
                 .set_visible(false);
+            gtk_widgets::recycled_cells::set_explicit_badge(&cell.explicit(), false);
             playing.unbind(title.upcast_ref());
             cell.clear_subtitle();
             clear_merged_artwork(&unbind_shell, &cell.cover());
