@@ -711,6 +711,20 @@ impl ConnectedSource {
             credential,
         }
     }
+
+    pub(crate) fn itunes(
+        configuration: SourceConfiguration,
+        source: crate::itunes::ItunesSource,
+    ) -> Self {
+        Self {
+            source: Source::new(
+                configuration.source_id.clone(),
+                Implementation::Itunes(source),
+            ),
+            configuration,
+            credential: None,
+        }
+    }
 }
 
 pub enum SourceEditResult {
@@ -725,6 +739,7 @@ pub enum Implementation {
     Files(crate::file::remote::FileSource),
     JellyfinEmby(crate::jellyfin_emby::JellyfinEmbySource),
     OpenSubsonic(crate::subsonic::SubsonicSource),
+    Itunes(crate::itunes::ItunesSource),
 }
 
 pub struct Source {
@@ -944,6 +959,23 @@ impl Source {
                 authentication,
                 credentials,
             } => crate::subsonic::connect(source_id, kind, authentication, credentials).await,
+            SourceSetup::Itunes {
+                library,
+                media_folder,
+                tz_offset_seconds,
+                ..
+            } => crate::itunes::connect(
+                source_id,
+                library,
+                media_folder,
+                tz_offset_seconds,
+            )
+            .map(|configuration| {
+                let source =
+                    crate::itunes::ItunesSource::from_configuration(&configuration)
+                        .expect("freshly encoded iTunes configuration");
+                ConnectedSource::itunes(configuration, source)
+            }),
         }
     }
 
@@ -1037,6 +1069,26 @@ impl Source {
                 crate::subsonic::edit(current, current_credential, authentication, credentials)
                     .await
             }
+            SourceSettingsChange::Itunes {
+                library,
+                media_folder,
+                tz_offset_seconds,
+                ..
+            } => {
+                let next = crate::itunes::connect(
+                    current.source_id.clone(),
+                    library,
+                    media_folder,
+                    tz_offset_seconds,
+                )?;
+                if next == current {
+                    return Ok(SourceEditResult::Unchanged);
+                }
+                let source = crate::itunes::ItunesSource::from_configuration(&next)?;
+                Ok(SourceEditResult::Connected(Box::new(
+                    ConnectedSource::itunes(next, source),
+                )))
+            }
         }
     }
 
@@ -1061,6 +1113,11 @@ impl Source {
             )?),
             "navidrome" | "subsonic" => {
                 Implementation::OpenSubsonic(crate::subsonic::open(&configuration, credential)?)
+            }
+            crate::itunes::ITUNES_SOURCE_ID => {
+                Implementation::Itunes(crate::itunes::ItunesSource::from_configuration(
+                    &configuration,
+                )?)
             }
             kind => {
                 return Err(SourceError::InvalidConfig(format!(
@@ -1183,6 +1240,12 @@ impl Source {
                         .acquire_catalog(changes, &report, &cancelled_fn)
                         .await?
                 }
+                Implementation::Itunes(source) => {
+                    source
+                        .acquire_catalog(changes, &report, &cancelled_fn)
+                        .await?;
+                    true
+                }
             };
             if cancelled_fn() || self.is_retired() {
                 return Err(SourceError::Cancelled);
@@ -1229,7 +1292,9 @@ impl Source {
     async fn freshness(&self) -> SourceResult<Option<Freshness>> {
         match &self.implementation {
             Implementation::Plex(_) => Ok(None),
-            Implementation::Local(_) | Implementation::JellyfinEmby(_) => Ok(None),
+            Implementation::Local(_)
+            | Implementation::JellyfinEmby(_)
+            | Implementation::Itunes(_) => Ok(None),
             Implementation::Files(source) => source.freshness().await,
             Implementation::OpenSubsonic(source) => source.freshness().await,
         }
@@ -1268,6 +1333,7 @@ impl Source {
             Implementation::OpenSubsonic(source) => {
                 source.resolve_stream(&object_id, request.quality).await
             }
+            Implementation::Itunes(source) => source.stream(database, &request.media_uri).await,
         }
     }
 
@@ -1325,6 +1391,10 @@ impl Source {
                     .await
             }
             Implementation::OpenSubsonic(source) => source.resolve_download(&object_id, quality),
+            Implementation::Itunes(source) => source
+                .stream(database, media_uri)
+                .await
+                .map(|stream| ResolvedDownload::encode(stream, quality)),
         }
     }
 
@@ -1349,6 +1419,17 @@ impl Source {
                     source.image_bytes(&image_ref, size).await
                 }
                 SourceImageRequest::Local(_) => Err(SourceError::NotFound),
+            },
+            Implementation::Itunes(source) => match request {
+                SourceImageRequest::Local(reference) => {
+                    let (LocalImageRef::File { path, .. } | LocalImageRef::Embedded { path, .. }) =
+                        &reference;
+                    if !std::path::Path::new(path).starts_with(source.config().local_root()) {
+                        return Err(SourceError::NotFound);
+                    }
+                    crate::file::local::read_local_image(&reference)
+                }
+                SourceImageRequest::Native { .. } => Err(SourceError::NotFound),
             },
         }
     }
@@ -1425,6 +1506,7 @@ impl Source {
             Implementation::OpenSubsonic(source) => {
                 source.set_favorite(kind, object_id, favorite).await
             }
+            Implementation::Itunes(_) => Ok(()),
         }
     }
 
@@ -1437,6 +1519,9 @@ impl Source {
             Implementation::Local(_) | Implementation::Files(_) => Ok(()),
             Implementation::JellyfinEmby(source) => source.set_rating(object_id, rating).await,
             Implementation::OpenSubsonic(source) => source.set_rating(object_id, rating).await,
+            // The .itl write-back is driven by the runtime (rufin-core):
+            // the user slot is already committed when this is called.
+            Implementation::Itunes(_) => Ok(()),
         }
     }
 
@@ -1445,6 +1530,7 @@ impl Source {
             Implementation::JellyfinEmby(_) | Implementation::Plex(_) => true,
             Implementation::OpenSubsonic(provider) => provider.supports_playlist_artwork(),
             Implementation::Local(_) | Implementation::Files(_) => false,
+            Implementation::Itunes(_) => false,
         }
     }
 
@@ -1563,6 +1649,7 @@ impl Source {
             Implementation::OpenSubsonic(source) => {
                 source.lyrics(&self.track_object_id(media_uri)?).await
             }
+            Implementation::Itunes(_) => Ok(None),
         }
     }
 
@@ -1622,6 +1709,7 @@ impl Source {
                     .browse_folder(folder_object_id, music_folder_object_id)
                     .await
             }
+            Implementation::Itunes(_) => Err(SourceError::NotFound),
         }
     }
 
@@ -1639,6 +1727,7 @@ impl Source {
             Implementation::OpenSubsonic(source) => {
                 source.generated_track_object_ids(seed, limit).await
             }
+            Implementation::Itunes(_) => Ok(Vec::new()),
         }
     }
 
@@ -2109,6 +2198,7 @@ impl Source {
             Implementation::Local(_) | Implementation::Files(_) => Ok(Vec::new()),
             Implementation::JellyfinEmby(source) => source.home_section(section).await,
             Implementation::OpenSubsonic(source) => source.home_section(section).await,
+            Implementation::Itunes(_) => Ok(Vec::new()),
         }
     }
 
@@ -2234,7 +2324,8 @@ impl Source {
             }
             Implementation::Local(_)
             | Implementation::Files(_)
-            | Implementation::OpenSubsonic(_) => {}
+            | Implementation::OpenSubsonic(_)
+            | Implementation::Itunes(_) => {}
         }
         feed
     }
@@ -2281,6 +2372,7 @@ impl Source {
             Implementation::OpenSubsonic(source) => {
                 source.report_playback(&object_id, report).await
             }
+            Implementation::Itunes(_) => Ok(()),
         }
     }
 

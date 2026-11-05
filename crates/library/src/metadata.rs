@@ -20,6 +20,13 @@ pub struct TrackMetadata {
     pub source_format: Option<String>,
     pub audio_properties: AudioProperties,
     pub comment: Option<String>,
+    /// Parental advisory: `true` when the source marks the track explicit.
+    /// Clean and unflagged tracks are both `false` — there is no clean badge.
+    /// The reader tolerates integers 0/1: SQLite JSONB carries booleans as
+    /// integers, and the authoritative catalog merge of older builds stored
+    /// them that way (fork registry №18).
+    #[serde(default, deserialize_with = "de_jsonb_bool")]
+    pub explicit: bool,
     pub bpm: Option<i64>,
     pub musicbrainz_recording_id: Option<String>,
     pub musicbrainz_release_track_id: Option<String>,
@@ -149,5 +156,68 @@ impl<'de> Deserialize<'de> for TrackReference {
             metadata,
             artwork_binding: None,
         })
+    }
+}
+
+/// Accepts a JSON boolean or the integers 0/1 (and `null` as `false`).
+/// SQLite's JSONB carries booleans as integers, and the authoritative
+/// catalog merge of builds before registry №18 stored `explicit` that way;
+/// the field reads such rows until the next refresh rewrites them.
+fn de_jsonb_bool<'de, D>(deserializer: D) -> Result<bool, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    struct JsonbBool;
+    impl serde::de::Visitor<'_> for JsonbBool {
+        type Value = bool;
+        fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("a boolean or 0/1")
+        }
+        fn visit_bool<E>(self, value: bool) -> Result<Self::Value, E> {
+            Ok(value)
+        }
+        fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E>
+        where
+            E: serde::de::Error,
+        {
+            match value {
+                0 => Ok(false),
+                1 => Ok(true),
+                _ => Err(E::custom("explicit flag out of range")),
+            }
+        }
+        fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E>
+        where
+            E: serde::de::Error,
+        {
+            match value {
+                0 => Ok(false),
+                1 => Ok(true),
+                _ => Err(E::custom("explicit flag out of range")),
+            }
+        }
+        fn visit_unit<E>(self) -> Result<Self::Value, E> {
+            Ok(false)
+        }
+    }
+    deserializer.deserialize_any(JsonbBool)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn explicit_decodes_booleans_and_jsonb_integers() {
+        let from_bool: TrackMetadata = serde_json::from_str(r#"{"explicit":true}"#).unwrap();
+        assert!(from_bool.explicit);
+        let from_int: TrackMetadata = serde_json::from_str(r#"{"explicit":1}"#).unwrap();
+        assert!(from_int.explicit);
+        let from_zero: TrackMetadata = serde_json::from_str(r#"{"explicit":0}"#).unwrap();
+        assert!(!from_zero.explicit);
+        let from_null: TrackMetadata = serde_json::from_str(r#"{"explicit":null}"#).unwrap();
+        assert!(!from_null.explicit);
+        let missing: TrackMetadata = serde_json::from_str("{}").unwrap();
+        assert!(!missing.explicit);
     }
 }

@@ -26,6 +26,7 @@ pub struct NowPlayingPresentation {
     pub title: String,
     pub artist: String,
     pub album: String,
+    pub explicit: bool,
     pub artist_links: DetailLinks,
     pub album_links: DetailLinks,
     pub artwork: ArtworkBinding,
@@ -66,6 +67,9 @@ impl NowPlayingPresentation {
                 .map(ArtworkBinding::opaque)
                 .unwrap_or_default(),
             meta: now_playing_labels(current, None),
+            explicit: current
+                .map(|entry| entry.row.track.metadata.explicit)
+                .unwrap_or(false),
             title,
             artist,
             album,

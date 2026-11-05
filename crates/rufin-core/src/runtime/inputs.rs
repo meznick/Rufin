@@ -77,6 +77,7 @@ pub struct SourceNotice {
 pub enum SourceNoticeKind {
     ServerUnreachable,
     FavoriteRejected,
+    ItunesLibraryBusy,
 }
 
 pub struct RuntimeInputs {

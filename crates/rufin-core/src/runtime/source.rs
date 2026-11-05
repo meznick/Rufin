@@ -89,6 +89,7 @@ pub struct EditableSource {
     pub integration: bool,
     pub plex_settings: Option<sources::PlexSettingsInput>,
     pub file_settings: Option<sources::FileSourceSettings>,
+    pub itunes_settings: Option<sources::ItunesEditableSettings>,
     pub source: SourceSummary,
     pub credentials: CredentialPreset,
     pub use_instant_mix: Option<bool>,
@@ -322,6 +323,7 @@ pub fn source_kind_title(kind: &str) -> Option<&'static str> {
         "local" => localization::msgid("Local"),
         "webdav" => localization::msgid("WebDAV"),
         "smb" => localization::msgid("SMB / Samba"),
+        "itunes" => localization::msgid("iTunes"),
         _ => return None,
     })
 }
@@ -336,6 +338,7 @@ pub fn source_kind_icon_name(kind: &str) -> Option<&'static str> {
         "local" => "io.github.screwys.Rufin-symbolic",
         "webdav" => "io.github.screwys.Rufin.source.webdav",
         "smb" => "io.github.screwys.Rufin.source.smb",
+        "itunes" => "io.github.screwys.Rufin-symbolic",
         _ => return None,
     })
 }

@@ -4,6 +4,7 @@ mod availability;
 mod download;
 pub mod folders;
 mod integrations;
+pub(crate) mod itunes_sync;
 mod pins;
 pub mod search;
 pub use integrations::FileIntegration;
@@ -131,6 +132,7 @@ pub(crate) struct Shared {
     playback: Mutex<Weak<PlaybackOwner>>,
     connect: Mutex<Weak<crate::connect::ConnectOwner>>,
     maintenance: Arc<tokio::sync::Notify>,
+    pub(crate) itunes_sync: itunes_sync::ItunesSync,
     started: AtomicBool,
 }
 
@@ -446,6 +448,12 @@ impl SourceOwner {
         let home_variation = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |elapsed| elapsed.as_nanos() as i64);
+        let itunes_sync = itunes_sync::ItunesSync::new(
+            Arc::clone(&database),
+            settings.clone(),
+            runtime.clone(),
+            outputs.events.clone(),
+        );
         let shared = Arc::new(Shared {
             catalog_changed: tokio::sync::watch::channel(CatalogRevision::default()).0,
             configuration_changed: tokio::sync::watch::channel(()).0,
@@ -474,6 +482,7 @@ impl SourceOwner {
             playback: Mutex::new(Weak::new()),
             connect: Mutex::new(Weak::new()),
             maintenance: Arc::new(tokio::sync::Notify::new()),
+            itunes_sync,
             started: AtomicBool::new(false),
         });
         let weak = Arc::downgrade(&shared);
@@ -517,6 +526,12 @@ impl SourceOwner {
             let owner = self.clone();
             self.shared.runtime.spawn(async move {
                 let _ = owner.select_source(source_id).await;
+                // `select_source` enqueues `SourceEvent::Selected` before it
+                // returns, so a notice sent now reaches the shell after the
+                // selection is known — the selected-source toast filter sees
+                // the real state instead of dropping the notice. Emitting
+                // earlier (before selection restore) loses it deterministically.
+                owner.shared.itunes_sync.startup_check();
             });
         }
         let owner = self.clone();
@@ -3098,6 +3113,24 @@ impl SourceOwner {
     }
 
     async fn apply_rating(&self, target: FavoriteTarget, rating: Option<u8>) {
+        // iTunes stores whole stars only (20..=100, step 20 in the `.itl`).
+        // The star widget normally only offers whole stars for iTunes, but a
+        // manually enabled `enable_half_stars` would otherwise commit
+        // 10/30/… values that iTunes itself never writes. Round up to the
+        // whole star the user saw, so the visible rating always equals the
+        // value the `.itl` will hold after the debounced flush.
+        let favorite = self.favorite_source(&target).await;
+        let itunes = favorite
+            .as_ref()
+            .and_then(|(id, _, _)| self.configuration(id))
+            .is_some_and(|configuration| configuration.kind == sources::ITUNES_SOURCE_ID);
+        let rating = rating.map(|rating| {
+            if itunes {
+                itunes_whole_star_rating(rating)
+            } else {
+                rating
+            }
+        });
         let lane = self.shared.lane.lock().await;
         if !self
             .shared
@@ -3108,12 +3141,9 @@ impl SourceOwner {
         {
             return;
         }
-        let source = self
-            .favorite_source(&target)
-            .await
-            .and_then(|(id, key, local)| {
-                self.client(&id).ok().map(|source| (source, id, key, local))
-            });
+        let source = favorite.and_then(|(id, key, local)| {
+            self.client(&id).ok().map(|source| (source, id, key, local))
+        });
         drop(lane);
         self.publish_current_catalog(None, CatalogChange::Broad)
             .await;
@@ -3128,7 +3158,17 @@ impl SourceOwner {
                     }
                 }
                 _ if !local => {
-                    if let Some((_, object_id)) = favorite_object(&source_id, &target)
+                    // iTunes sources write back through the debounced
+                    // `itl-sync` service (the user slot is already
+                    // committed above); remote providers push directly.
+                    if self
+                        .configuration(&source_id)
+                        .is_some_and(|configuration| {
+                            configuration.kind == sources::ITUNES_SOURCE_ID
+                        })
+                    {
+                        self.shared.itunes_sync.mark_rating(&source_id, target.media_uri());
+                    } else if let Some((_, object_id)) = favorite_object(&source_id, &target)
                         && let Err(error) = source.set_rating(&object_id, rating).await
                     {
                         warn!(%error, "could not write source rating");
@@ -3506,7 +3546,7 @@ fn source_error_is_temporary(error: &SourceError) -> bool {
         )
 }
 
-fn configured_source(
+pub(crate) fn configured_source(
     settings: &crate::settings::SourceSettings,
     source_id: &SourceId,
 ) -> Result<ConfiguredSource, String> {
@@ -3658,6 +3698,10 @@ pub(crate) fn source_error_allows_cache(error: &SourceError) -> bool {
     )
 }
 
+fn itunes_whole_star_rating(rating: u8) -> u8 {
+    rating.min(10).div_ceil(2) * 2
+}
+
 fn source_refresh_error_text(error: &SourceError) -> String {
     if source_error_allows_cache(error) {
         localization::tr("Server is unreachable")
@@ -3685,6 +3729,7 @@ fn editable_source(configuration: &SourceConfiguration) -> Result<EditableSource
         },
         plex_settings: None,
         file_settings: None,
+        itunes_settings: None,
         use_instant_mix: None,
         emby_connect: false,
     };
@@ -3711,6 +3756,9 @@ fn editable_source(configuration: &SourceConfiguration) -> Result<EditableSource
             editable.file_settings = Some(settings);
         }
         sources::EditableSource::Local { .. } => {}
+        sources::EditableSource::Itunes { settings, .. } => {
+            editable.itunes_settings = Some(settings);
+        }
     }
     Ok(editable)
 }
@@ -3765,6 +3813,19 @@ fn unix_seconds() -> i64 {
 mod source_tests {
     use super::*;
     use secrets::SecretStore;
+
+    #[test]
+    fn itunes_ratings_round_to_whole_stars() {
+        assert_eq!(itunes_whole_star_rating(0), 0);
+        assert_eq!(itunes_whole_star_rating(1), 2);
+        assert_eq!(itunes_whole_star_rating(2), 2);
+        assert_eq!(itunes_whole_star_rating(3), 4);
+        assert_eq!(itunes_whole_star_rating(5), 6);
+        assert_eq!(itunes_whole_star_rating(9), 10);
+        assert_eq!(itunes_whole_star_rating(10), 10);
+        // The widget never emits values above 10, but stay safe.
+        assert_eq!(itunes_whole_star_rating(14), 10);
+    }
 
     #[tokio::test]
     async fn plex_sources_share_login_until_last_removal_and_cannot_resurrect_secrets() {

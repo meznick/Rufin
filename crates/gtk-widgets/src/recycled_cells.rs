@@ -250,6 +250,7 @@ crate::composite_box!(
         label: gtk::Label,
         folder_icon: gtk::Image,
         downloaded: gtk::Image,
+        explicit: gtk::Label,
     }
 );
 
@@ -271,10 +272,15 @@ impl RecycledBadgedTextCell {
         self.imp().downloaded.get()
     }
 
+    pub fn explicit(&self) -> gtk::Label {
+        self.imp().explicit.get()
+    }
+
     pub fn clear(&self) {
         self.imp().label.set_text("");
         self.imp().folder_icon.set_visible(false);
         self.imp().downloaded.set_visible(false);
+        self.imp().explicit.set_visible(false);
     }
 }
 
@@ -294,6 +300,8 @@ pub mod merged_imp {
         pub(super) title: TemplateChild<gtk::Label>,
         #[template_child]
         pub(super) subtitle: TemplateChild<gtk::Label>,
+        #[template_child]
+        pub(super) explicit: TemplateChild<gtk::Label>,
         pub(super) links: RefCell<Option<DetailLinkBinding>>,
         pub(super) lyrics: OnceCell<LyricsSnippetView>,
         pub(super) downloaded: RefCell<Option<gtk::Image>>,
@@ -384,6 +392,10 @@ impl RecycledMergedCell {
 
     pub fn downloaded(&self) -> Option<gtk::Image> {
         self.imp().downloaded.borrow().clone()
+    }
+
+    pub fn explicit(&self) -> gtk::Label {
+        self.imp().explicit.get()
     }
 
     pub fn bind_subtitle(&self, links: DetailLinks) {
@@ -650,6 +662,22 @@ impl TrackRowPlayingIndicator {
     }
 }
 
+/// A small "E" chip marking explicit tracks. Hidden by default; callers
+/// toggle its visibility per bound row via `set_explicit_badge`.
+pub fn explicit_badge() -> gtk::Label {
+    let badge = gtk::Label::new(Some("E"));
+    badge.add_css_class("explicit-badge");
+    badge.set_valign(gtk::Align::Center);
+    badge.set_xalign(0.5);
+    badge.set_visible(false);
+    crate::localization::bind_widget_tooltip(&badge, "Explicit");
+    badge
+}
+
+pub fn set_explicit_badge(badge: &impl IsA<gtk::Widget>, explicit: bool) {
+    badge.set_visible(explicit);
+}
+
 pub fn install_playing_indicator(title: &gtk::Label, title_row: &impl IsA<gtk::Box>) {
     let title_row = title_row.as_ref().downgrade();
     let indicator = RefCell::new(None::<crate::playing_indicator::PlayingIndicator>);
@@ -693,4 +721,68 @@ pub fn set_track_row_index_text(cell: &gtk::Overlay, text: &str) {
         return;
     };
     label.set_text(text);
+}
+
+pub mod rating_imp {
+    use super::*;
+    use crate::ratings::RatingControl;
+
+    /// A recycled rating-stars cell: a [`RatingControl`] wrapped for
+    /// `ColumnViewColumn` factories. The control is interactive — the
+    /// column wires `connect_commit` in `setup`.
+    #[derive(Default)]
+    pub struct RecycledRatingCell {
+        pub(super) control: RefCell<Option<RatingControl>>,
+    }
+
+    #[glib::object_subclass]
+    impl ObjectSubclass for RecycledRatingCell {
+        const NAME: &'static str = "RufinRecycledRatingCell";
+        type Type = super::RecycledRatingCell;
+        type ParentType = gtk::Box;
+    }
+
+    impl ObjectImpl for RecycledRatingCell {
+        fn constructed(&self) {
+            self.parent_constructed();
+            let obj = self.obj();
+            let control = RatingControl::new(None, false);
+            let widget = control.widget().clone();
+            widget.set_halign(gtk::Align::Center);
+            widget.set_valign(gtk::Align::Center);
+            widget.set_hexpand(true);
+            widget.set_margin_top(2);
+            widget.set_margin_bottom(2);
+            widget.set_margin_start(4);
+            widget.set_margin_end(4);
+            obj.append(&widget);
+            *self.control.borrow_mut() = Some(control);
+        }
+    }
+    impl WidgetImpl for RecycledRatingCell {}
+    impl BoxImpl for RecycledRatingCell {}
+}
+
+glib::wrapper! {
+    pub struct RecycledRatingCell(ObjectSubclass<rating_imp::RecycledRatingCell>)
+        @extends gtk::Widget, gtk::Box,
+        @implements gtk::Accessible, gtk::Buildable, gtk::ConstraintTarget, gtk::Orientable;
+}
+
+impl RecycledRatingCell {
+    pub fn new() -> Self {
+        glib::Object::new()
+    }
+
+    pub fn set_rating(&self, rating: Option<u8>, half_stars: bool) {
+        if let Some(control) = self.imp().control.borrow().as_ref() {
+            control.set_rating(rating, half_stars);
+        }
+    }
+
+    pub fn connect_commit(&self, commit: impl Fn(Option<u8>) + 'static) {
+        if let Some(control) = self.imp().control.borrow().as_ref() {
+            control.connect_commit(commit);
+        }
+    }
 }

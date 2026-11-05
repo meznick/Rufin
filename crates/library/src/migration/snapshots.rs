@@ -299,6 +299,7 @@ pub(super) async fn populate(connection: &mut SqliteConnection, prefix: &str) ->
                                 })
                                 .unwrap_or_default(),
                             comment: string(&row, "comment"),
+                            explicit: false,
                             bpm: integer(&row, "bpm"),
                             musicbrainz_recording_id: string(&row, "musicbrainz_recording_id"),
                             musicbrainz_release_track_id: string(

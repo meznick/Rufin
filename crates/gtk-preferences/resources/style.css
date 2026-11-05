@@ -190,6 +190,44 @@ toastoverlay toast {
   -gtk-icon-size: 14px;
 }
 
+.explicit-badge {
+  background: var(--window-fg-color);
+  color: var(--window-bg-color);
+  border-radius: 3px;
+  min-width: 14px;
+  min-height: 14px;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  vertical-align: middle;
+}
+
+.player-title-row .explicit-badge {
+  min-width: 16px;
+  min-height: 16px;
+  font-size: 11px;
+}
+
+.fullscreen-player-details .explicit-badge {
+  min-width: 20px;
+  min-height: 20px;
+  font-size: 13px;
+  border-radius: 4px;
+}
+
+.fullscreen-player.display-compact .explicit-badge {
+  min-width: 17px;
+  min-height: 17px;
+  font-size: 11px;
+}
+
+.fullscreen-player.display-large .explicit-badge {
+  min-width: 25px;
+  min-height: 25px;
+  font-size: 16px;
+  border-radius: 5px;
+}
+
 toastoverlay toast label {
   color: var(--window-fg-color);
   font-weight: 700;

@@ -1,0 +1,233 @@
+// Round-trip write-back test: rates and plays one located track against a
+// COPY of the library, flushes through the in-process write pipeline, and
+// verifies the `.itl` facts change and stay stable across a refresh (no
+// double-counting). Gated by `ITL_TEST_PATH`. Corpus-agnostic.
+
+use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
+
+use itl_sync::paths::{MappedLocation, MediaMapping};
+use library::{Database, FavoriteTarget, ReadCancellation, source_entity_uri};
+use sources::{Source, SourceId, SourceSetup};
+
+fn test_library() -> Option<PathBuf> {
+    std::env::var_os("ITL_TEST_PATH").map(PathBuf::from).or_else(|| {
+        let default = PathBuf::from("/nvme2tb/iTunesACCEPT/iTunes Library.itl");
+        default.exists().then_some(default)
+    })
+}
+
+#[tokio::test]
+async fn itunes_write_back_updates_the_itl_and_refresh_does_not_double_count() {
+    let Some(library_path) = test_library() else {
+        eprintln!("ITL_TEST_PATH missing — skipping iTunes write-back integration test");
+        return;
+    };
+    // Pick a located track (its id is patchable through the write pipeline).
+    let itl = itl_core::ItlFile::open(&library_path).unwrap();
+    let media_root = library_path.parent().unwrap().to_path_buf();
+    let mapping = MediaMapping::new(&itl, &media_root).expect("corpus maps");
+    let track = itl_sync::survey::unique_tracks(&itl)
+        .into_iter()
+        .find(|track| matches!(mapping.to_local(track), MappedLocation::Mapped { .. }))
+        .expect("a located track in the corpus");
+    let track_id = track.id();
+    let new_rating = if track.rating() == 80 { 60 } else { 80 };
+    let new_plays = track.play_count() + 1;
+    let played_at = 1_800_000_000_i64;
+
+    // Work on a copy: the corpus .itl must never be written.
+    let directory = tempfile::tempdir().unwrap();
+    let copy = directory.path().join("iTunes Library.itl");
+    std::fs::copy(&library_path, &copy).unwrap();
+
+    let database = Database::open(directory.path().join("library.sqlite"))
+        .await
+        .unwrap();
+    let connected = Source::connect(
+        SourceId::new("itunes-test"),
+        SourceSetup::Itunes {
+            name: None,
+            library: copy,
+            media_folder: Some(media_root),
+            tz_offset_seconds: None,
+        },
+        "",
+    )
+    .await
+    .unwrap();
+    let (configuration, source, _credential) = connected.into_parts();
+    database
+        .reconcile_source(
+            &SourceId::new("itunes-test"),
+            sources::ITUNES_SOURCE_ID,
+            "iTunes",
+        )
+        .await
+        .unwrap();
+
+    let cancelled = Arc::new(AtomicBool::new(false));
+    source
+        .acquire_catalog(&database, &|_| {}, Arc::clone(&cancelled), true)
+        .await
+        .unwrap();
+
+    let media_uri = source_entity_uri(
+        &SourceId::new("itunes-test"),
+        "track",
+        &format!("itunes:track:{track_id}"),
+    );
+    let state = database
+        .itunes_player_state(&media_uri, &ReadCancellation::new())
+        .await
+        .unwrap();
+    assert_eq!(state.play_count, Some(i64::from(track.play_count())));
+
+    // User action: rate, record a listen.
+    database
+        .set_rating(
+            &FavoriteTarget::Track(media_uri.clone()),
+            Some((new_rating / 10) as u8),
+        )
+        .await
+        .unwrap();
+    database
+        .record_native_listen(&media_uri, false, played_at)
+        .await
+        .unwrap();
+    let state = database
+        .itunes_player_state(&media_uri, &ReadCancellation::new())
+        .await
+        .unwrap();
+    assert_eq!(state.play_count, Some(i64::from(new_plays)));
+    assert_eq!(state.user_rating, Some(i64::from(new_rating)));
+
+    // Flush through the in-process write pipeline (the runtime service path).
+    let config = sources::itunes::ItunesSourceConfig::from_configuration(&configuration).unwrap();
+    let patch = sources::itunes::write::ItunesPatch {
+        track_id,
+        rating: Some(new_rating as u8),
+        play_count: Some(new_plays),
+        skip_count: None,
+        play_date_unix: Some(played_at),
+    };
+    sources::itunes::write::write_patches(&config, &[patch])
+        .await
+        .unwrap();
+
+    // The copy now holds the new values.
+    let written = itl_core::ItlFile::open(&config.library).unwrap();
+    let written_track = written.track_by_id(track_id).unwrap();
+    assert_eq!(written_track.play_count(), new_plays);
+    assert_eq!(written_track.rating(), new_rating);
+
+    // Refresh: no double-counting — the itl value is authoritative and the
+    // native slot matches it.
+    source
+        .acquire_catalog(&database, &|_| {}, Arc::clone(&cancelled), true)
+        .await
+        .unwrap();
+    let state = database
+        .itunes_player_state(&media_uri, &ReadCancellation::new())
+        .await
+        .unwrap();
+    assert_eq!(
+        state.play_count,
+        Some(i64::from(new_plays)),
+        "no double-count after refresh"
+    );
+    assert_eq!(state.native_rating, Some(i64::from(new_rating)));
+    assert_eq!(state.user_rating, Some(i64::from(new_rating)));
+}
+
+#[tokio::test]
+async fn itunes_write_back_refuses_while_the_library_is_open_in_itunes() {
+    let Some(library_path) = test_library() else {
+        eprintln!("ITL_TEST_PATH missing — skipping iTunes write-back integration test");
+        return;
+    };
+    let itl = itl_core::ItlFile::open(&library_path).unwrap();
+    let media_root = library_path.parent().unwrap().to_path_buf();
+    let mapping = MediaMapping::new(&itl, &media_root).expect("corpus maps");
+    let track = itl_sync::survey::unique_tracks(&itl)
+        .into_iter()
+        .find(|track| matches!(mapping.to_local(track), MappedLocation::Mapped { .. }))
+        .expect("a located track in the corpus");
+
+    // A copy with a zeroed sentinel: iTunes has this library open.
+    let directory = tempfile::tempdir().unwrap();
+    let copy = directory.path().join("iTunes Library.itl");
+    std::fs::copy(&library_path, &copy).unwrap();
+    std::fs::write(directory.path().join("sentinel"), [0u8; 8]).unwrap();
+
+    let config = sources::itunes::ItunesSourceConfig {
+        library: copy.clone(),
+        media_folder: Some(media_root),
+        tz_offset_seconds: None,
+    };
+    assert!(
+        config.library_busy(),
+        "the pre-check sees the zeroed sentinel"
+    );
+
+    let patch = sources::itunes::write::ItunesPatch {
+        track_id: track.id(),
+        rating: Some(80),
+        play_count: Some(track.play_count() + 1),
+        skip_count: None,
+        play_date_unix: None,
+    };
+    let error = sources::itunes::write::write_patches(&config, &[patch])
+        .await
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("open in iTunes"),
+        "refusal names the open library, got: {error}"
+    );
+
+    // The refused write left the copy untouched.
+    let written = itl_core::ItlFile::open(&copy).unwrap();
+    let written_track = written.track_by_id(track.id()).unwrap();
+    assert_eq!(written_track.play_count(), track.play_count());
+}
+
+#[tokio::test]
+async fn itunes_write_back_rejects_patches_for_tracks_missing_from_the_library() {
+    let Some(library_path) = test_library() else {
+        eprintln!("ITL_TEST_PATH missing — skipping iTunes write-back integration test");
+        return;
+    };
+    let directory = tempfile::tempdir().unwrap();
+    let copy = directory.path().join("iTunes Library.itl");
+    std::fs::copy(&library_path, &copy).unwrap();
+
+    let config = sources::itunes::ItunesSourceConfig {
+        library: copy.clone(),
+        media_folder: Some(library_path.parent().unwrap().to_path_buf()),
+        tz_offset_seconds: None,
+    };
+    // Track id 0 never exists: a patch for it must be refused, not silently
+    // dropped inside the write pipeline.
+    let patch = sources::itunes::write::ItunesPatch {
+        track_id: 0,
+        rating: Some(80),
+        play_count: None,
+        skip_count: None,
+        play_date_unix: None,
+    };
+    let error = sources::itunes::write::write_patches(&config, &[patch])
+        .await
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("missing"),
+        "the refusal names the missing track, got: {error}"
+    );
+
+    // The refused write left the copy untouched.
+    assert_eq!(
+        std::fs::read(&copy).unwrap(),
+        std::fs::read(&library_path).unwrap(),
+        "the copy is byte-identical to the corpus"
+    );
+}

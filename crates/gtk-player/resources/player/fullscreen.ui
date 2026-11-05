@@ -287,19 +287,36 @@
                                         <property name="child">
                                           <object class="GtkViewport" id="title_viewport">
                                             <property name="child">
-                                              <object class="GtkLabel" id="title">
-                                                <property name="single-line-mode">true</property>
-                                                <property name="xalign">0</property>
-                                                <property name="justify">left</property>
-                                                <property name="wrap">false</property>
-                                                <property name="lines">1</property>
-                                                <property name="ellipsize">end</property>
-                                                <property name="width-chars">1</property>
-                                                <property name="width-request">1</property>
-                                                <property name="halign">fill</property>
-                                                <style>
-                                                  <class name="fullscreen-player-title" />
-                                                </style>
+                                              <object class="GtkBox">
+                                                <property name="spacing">8</property>
+                                                <child>
+                                                  <object class="GtkLabel" id="title">
+                                                    <property name="single-line-mode">true</property>
+                                                    <property name="xalign">0</property>
+                                                    <property name="justify">left</property>
+                                                    <property name="wrap">false</property>
+                                                    <property name="lines">1</property>
+                                                    <property name="ellipsize">end</property>
+                                                    <property name="width-chars">1</property>
+                                                    <property name="width-request">1</property>
+                                                    <property name="halign">fill</property>
+                                                    <style>
+                                                      <class name="fullscreen-player-title" />
+                                                    </style>
+                                                  </object>
+                                                </child>
+                                                <child>
+                                                  <object class="GtkLabel" id="title_explicit">
+                                                    <property name="label">E</property>
+                                                    <property name="visible">false</property>
+                                                    <property name="tooltip-text" translatable="yes">Explicit</property>
+                                                    <property name="xalign">0.5</property>
+                                                    <property name="valign">center</property>
+                                                    <style>
+                                                      <class name="explicit-badge" />
+                                                    </style>
+                                                  </object>
+                                                </child>
                                               </object>
                                             </property>
                                           </object>

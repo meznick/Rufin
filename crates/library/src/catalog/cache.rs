@@ -458,12 +458,26 @@ pub(super) async fn tracks(
     let mut changed = CatalogUpdate::default();
     let mut previous_albums = Vec::new();
     let metadata = if authoritative {
-        let fields = serde_json::to_value(crate::TrackMetadata::default())?;
-        let fields = fields
+        // jsonb_extract flattens JSONB booleans to integers 0/1; writing them
+        // back through jsonb_set would store integers where the schema has a
+        // bool (registry №18). Boolean fields get an explicit json(CASE ...)
+        // so they round-trip as proper JSONB booleans.
+        let defaults = serde_json::to_value(crate::TrackMetadata::default())?;
+        let fields = defaults
             .as_object()
             .unwrap()
-            .keys()
-            .map(|field| format!(",'$.{field}',jsonb_extract(excluded.metadata,'$.{field}')"))
+            .iter()
+            .map(|(field, default)| {
+                if default.is_boolean() {
+                    format!(
+                        ",'$.{field}',json(CASE WHEN jsonb_extract(excluded.metadata,'$.{field}') THEN 'true' ELSE 'false' END)"
+                    )
+                } else {
+                    format!(
+                        ",'$.{field}',jsonb_extract(excluded.metadata,'$.{field}')"
+                    )
+                }
+            })
             .collect::<String>();
         format!(
             "CASE WHEN tracks.metadata IS excluded.metadata THEN excluded.metadata ELSE jsonb_set(tracks.metadata{fields}) END"

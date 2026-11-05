@@ -771,6 +771,7 @@ impl<T: gtk_widgets::library_fields::TrackPresentation> ReusableCollectionGridCe
         );
         self.body
             .bind(row.title(), |value| (self.field)(position, &row, value));
+        self.body.set_explicit(row.explicit());
         self.body.bind_playing_target(
             &shell,
             track_play_request(row.track_key().expect("catalog song key")),
@@ -1183,6 +1184,7 @@ pub struct CollectionGridCardCell {
     pub title: gtk::Label,
     title_row: gtk::Box,
     downloaded: RefCell<Option<gtk::Image>>,
+    explicit: RefCell<Option<gtk::Label>>,
     fields: RefCell<Vec<CollectionGridFieldCell>>,
     ready: Cell<bool>,
     playing_target: RefCell<Option<Rc<MediaPlayingBinding>>>,
@@ -1211,6 +1213,8 @@ impl CollectionGridCardCell {
         connect_label_tooltip(&title);
         let title_row = card.imp().title_row.get();
         gtk_widgets::recycled_cells::install_playing_indicator(&title, &title_row);
+        let explicit = gtk_widgets::recycled_cells::explicit_badge();
+        title_row.append(&explicit);
         let field_cells = fields
             .iter()
             .copied()
@@ -1224,6 +1228,7 @@ impl CollectionGridCardCell {
             title,
             title_row,
             downloaded: RefCell::new(None),
+            explicit: RefCell::new(Some(explicit)),
             fields: RefCell::new(field_cells),
             ready: Cell::new(false),
             playing_target: RefCell::new(None),
@@ -1240,6 +1245,12 @@ impl CollectionGridCardCell {
 
     pub fn set_folder(&self, folder: bool) {
         self.card.imp().folder_icon.set_visible(folder);
+    }
+
+    pub fn set_explicit(&self, explicit: bool) {
+        if let Some(badge) = self.explicit.borrow().as_ref() {
+            gtk_widgets::recycled_cells::set_explicit_badge(badge, explicit);
+        }
     }
 
     pub fn bind_playing_target(&self, shell: &CatalogUi, target: PlayRequest) {
@@ -1271,6 +1282,7 @@ impl CollectionGridCardCell {
         }
         gtk_widgets::recycled_cells::set_track_playing(self.title.upcast_ref(), false, false);
         self.title.set_text("");
+        self.set_explicit(false);
         if let Some(downloaded) = self.downloaded.borrow().as_ref() {
             shell.downloads.clear_download_badge(downloaded);
         }

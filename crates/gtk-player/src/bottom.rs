@@ -95,6 +95,7 @@ pub struct PlayerControls {
     pub root: AllocationOwner,
     pub cover: ArtworkTile,
     pub title: gtk::Label,
+    pub explicit: gtk::Label,
     pub menu_button: gtk::Button,
     pub artist: gtk::Label,
     pub artist_links: RefCell<Option<DetailLinkBinding>>,
@@ -142,6 +143,7 @@ pub struct NowPlayingControls {
     pub root: gtk::Box,
     pub cover: ArtworkTile,
     pub title: gtk::Label,
+    pub explicit: gtk::Label,
     pub menu_button: gtk::Button,
     pub artist: gtk::Label,
     pub album: gtk::Label,
@@ -456,6 +458,7 @@ pub fn build_bottom_player() -> PlayerControls {
         root: now_playing,
         cover,
         title,
+        explicit,
         menu_button,
         artist,
         album,
@@ -523,6 +526,7 @@ pub fn build_bottom_player() -> PlayerControls {
         root: allocation_root,
         cover,
         title,
+        explicit,
         menu_button,
         artist,
         artist_links: RefCell::new(None),
@@ -576,6 +580,7 @@ pub fn build_now_playing_controls(builder: &gtk::Builder, resource: &str) -> Now
         artist_slide: gtk::ScrolledWindow, artist_viewport: gtk::Viewport,
         album_slide: gtk::ScrolledWindow, album_viewport: gtk::Viewport,
         title: gtk::Label,
+        title_explicit: gtk::Label,
         menu_button: gtk::Button,
         artist: gtk::Label,
         album: gtk::Label,
@@ -611,6 +616,7 @@ pub fn build_now_playing_controls(builder: &gtk::Builder, resource: &str) -> Now
         root: now_playing,
         cover,
         title,
+        explicit: title_explicit,
         menu_button,
         artist,
         album,
@@ -1243,6 +1249,10 @@ impl crate::PlayerUi {
             self.artwork.clear_artwork_tile(&controls.cover);
         }
         controls.title.set_text(&presentation.title);
+        gtk_widgets::recycled_cells::set_explicit_badge(
+            &controls.explicit,
+            presentation.current && presentation.explicit,
+        );
         if let Some(artist_links) = controls.artist_links.borrow().as_ref() {
             artist_links.bind(presentation.artist_links.clone());
         } else {
