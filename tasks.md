@@ -10,11 +10,10 @@ Tasks are listed in dependency order; IDs stay stable, so B-007 precedes discove
   - Result: Research only — no implementation and no physical/hardware acceptance. Backend is libgpod (C, LGPL-2.1) behind a safe Rust FFI wrapper, required not optional (owner decision). No Trust/pairing step for Video/Classic. Start/stop-sync are no-ops on regular iPods, so there is no transaction; recovery/stat-merge is B-010's open item. Metadata provenance, Unix timestamps (host writes via itl-sync), nontransactional writes, and recovery/stat-import risks are recorded in [deltas/b001_research.md](deltas/b001_research.md). Three research gates remain open and are assigned to later tasks: write-file side effects (B-007/B-009/B-010), artwork error reporting (B-004/B-010), device-name provenance (B-005).
   - Commit: c7b1363 (checkoff on feature/ipod-page)
   - Depends on: B-001
-- [x] **B-002: Define DeviceManager, ConnectionState, and DeviceInfo types**
+- [ ] **B-002: Define DeviceManager, ConnectionState, and DeviceInfo types**
   - Spec reference: R-02, R-03, S-06
   - Plan reference: Phase 1, Connection FSM, Data Models & Interfaces
-  - Result: Backend-independent types defined in `crates/gtk-library/src/device_manager.rs` and exported from `gtk-library` (`pub mod device_manager`). No discovery and no write logic in this file. `ConnectionState` has exactly the five FSM states (`Disconnected`, `Connecting`, `BackendUnavailable`, `Ready`, `Error`); the UI label for `BackendUnavailable` is "Sync unavailable"; only `Ready` enables sync. `DeviceInfo` uses the plan's exact field set, with `Option` for absent values and no fabricated defaults. No authorization state exists. 16 unit tests cover the initial Disconnected/no-device state, all five states, optional firmware/capacity/FireWire ID, owned data without C pointers, preflight and capacity gates for Ready, device replacement, and diagnostics clearing.
-  - Implementation: 374fad6; reviewed branch state including follow-up fixes: 16587a2.
+  - Verification: Backend-independent types are defined and exported from `crates/gtk-library` (for example `src/device_manager.rs`) without discovery or write logic. Tests cover initial Disconnected/no-device state, the five planned states including BackendUnavailable, optional firmware/capacity/FireWire ID, and owned data without C pointers. The plan's exact DeviceInfo fields are represented; no authorization state exists.
   - Depends on: B-001
 - [ ] **B-007: Integrate the safe libgpod Rust wrapper**
   - Spec reference: R-02, S-05, R-04; constitution §3
