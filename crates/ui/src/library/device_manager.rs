@@ -117,17 +117,35 @@ impl DeviceManager {
 
     /// Move into a new connection state.
     ///
-    /// `Ready` requires a device; it cannot be reached without one.
+    /// `Ready` requires a device *and* measured capacity; it cannot be reached
+    /// without both.
     pub fn set_state(&mut self, state: ConnectionState) {
         self.state = state;
-        if state == ConnectionState::Ready && self.current_device.is_none() {
-            self.state = ConnectionState::Disconnected;
+        if state == ConnectionState::Ready {
+            if self.current_device.is_none() {
+                self.state = ConnectionState::Disconnected;
+            } else if self
+                .current_device
+                .as_ref()
+                .unwrap()
+                .total_capacity
+                .is_none()
+            {
+                // Ready requires measured capacity; without it, preflight is
+                // still pending.
+                self.state = ConnectionState::Connecting;
+            }
         }
     }
 
     /// Replace the current device information.
+    ///
+    /// A replaced device is a new candidate, so preflight is pending again.
     pub fn set_device(&mut self, info: DeviceInfo) {
         self.current_device = Some(info);
+        if self.state == ConnectionState::Ready {
+            self.state = ConnectionState::Connecting;
+        }
     }
 
     /// Forget the current device and clear stale device information.
@@ -164,6 +182,26 @@ mod tests {
         manager.set_state(ConnectionState::Ready);
         assert_eq!(manager.state(), ConnectionState::Disconnected);
         assert!(!manager.sync_enabled());
+    }
+
+    #[test]
+    fn ready_requires_measured_capacity() {
+        let mut manager = DeviceManager::new();
+        manager.set_device(DeviceInfo {
+            mount_point: PathBuf::from("/dev/sdb1"),
+            name: "iPod".to_string(),
+            model: "iPod Video 5G".to_string(),
+            generation: "5G".to_string(),
+            model_number: None,
+            firmware: None,
+            total_capacity: None, // unmeasured: preflight is pending
+            used_capacity: None,
+            firewire_id: None,
+        });
+        manager.set_state(ConnectionState::Ready);
+        // Without measured capacity, Ready falls back to Connecting.
+        assert_eq!(manager.state(), ConnectionState::Connecting);
+        assert!(!manager.sync_enabled());
 
         manager.set_device(DeviceInfo {
             mount_point: PathBuf::from("/dev/sdb1"),
@@ -172,13 +210,46 @@ mod tests {
             generation: "5G".to_string(),
             model_number: None,
             firmware: None,
-            total_capacity: None,
-            used_capacity: None,
+            total_capacity: Some(1490705152), // measured
+            used_capacity: Some(2048000000),
             firewire_id: None,
         });
         manager.set_state(ConnectionState::Ready);
         assert_eq!(manager.state(), ConnectionState::Ready);
         assert!(manager.sync_enabled());
+    }
+
+    #[test]
+    fn replacing_device_resets_ready() {
+        let mut manager = DeviceManager::new();
+        manager.set_device(DeviceInfo {
+            mount_point: PathBuf::from("/dev/sdb1"),
+            name: "iPod".to_string(),
+            model: "iPod Video 5G".to_string(),
+            generation: "5G".to_string(),
+            model_number: None,
+            firmware: None,
+            total_capacity: Some(1490705152),
+            used_capacity: Some(2048000000),
+            firewire_id: None,
+        });
+        manager.set_state(ConnectionState::Ready);
+        assert!(manager.sync_enabled());
+
+        // A new device is a new candidate: preflight is pending again.
+        manager.set_device(DeviceInfo {
+            mount_point: PathBuf::from("/dev/sdb2"),
+            name: "iPod 2".to_string(),
+            model: "iPod Video 5G".to_string(),
+            generation: "5G".to_string(),
+            model_number: None,
+            firmware: None,
+            total_capacity: Some(1490705152),
+            used_capacity: Some(2048000000),
+            firewire_id: None,
+        });
+        assert_eq!(manager.state(), ConnectionState::Connecting);
+        assert!(!manager.sync_enabled());
     }
 
     #[test]
@@ -300,11 +371,11 @@ mod tests {
     fn owned_data_without_raw_pointers() {
         let manager = DeviceManager::new();
         assert!(format!("{:?}", manager).contains("None"));
-        // Every field of DeviceInfo and DeviceManager is a Rust-owned type; no
-        // raw pointers can leak into the owned representation.
-        fn owned<T: Clone>(_: &T) {}
-        owned(&manager);
-        owned(&DeviceInfo {
+
+        // Every field of DeviceInfo and DeviceManager is a Rust-owned type
+        // (String, PathBuf, u64, Option<...>); no raw pointers can leak into
+        // the owned representation. Cloning must produce independent data.
+        let info = DeviceInfo {
             mount_point: PathBuf::from("/dev/sdb1"),
             name: "iPod".to_string(),
             model: "iPod Video 5G".to_string(),
@@ -314,7 +385,13 @@ mod tests {
             total_capacity: None,
             used_capacity: None,
             firewire_id: None,
-        });
+        };
+        let mut clone = info.clone();
+        assert_eq!(clone, info);
+        // Cloning must produce independent owned data: mutating the clone must
+        // not affect the original.
+        clone.name = "changed".to_string();
+        assert_eq!(info.name, "iPod".to_string());
     }
 
     #[test]
