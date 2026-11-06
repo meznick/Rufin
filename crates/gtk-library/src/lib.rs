@@ -1,4 +1,5 @@
 pub mod activity;
+pub mod device_manager;
 mod catalog;
 mod home_layout;
 mod playlist_entry_model;
