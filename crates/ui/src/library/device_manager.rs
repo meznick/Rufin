@@ -117,8 +117,9 @@ impl DeviceManager {
 
     /// Move into a new connection state.
     ///
-    /// `Ready` requires a device *and* measured capacity; it cannot be reached
-    /// without both.
+    /// `Ready` requires a device with measured capacity; it cannot be reached
+    /// without both. Model validation is a B-004 concern (libgpod model
+    /// table) and is deliberately not enforced here.
     pub fn set_state(&mut self, state: ConnectionState) {
         self.state = state;
         if state == ConnectionState::Ready {
@@ -143,9 +144,7 @@ impl DeviceManager {
     /// A replaced device is a new candidate, so preflight is pending again.
     pub fn set_device(&mut self, info: DeviceInfo) {
         self.current_device = Some(info);
-        if self.state == ConnectionState::Ready {
-            self.state = ConnectionState::Connecting;
-        }
+        self.state = ConnectionState::Connecting;
     }
 
     /// Forget the current device and clear stale device information.
@@ -237,6 +236,25 @@ mod tests {
         assert!(manager.sync_enabled());
 
         // A new device is a new candidate: preflight is pending again.
+        manager.set_device(DeviceInfo {
+            mount_point: PathBuf::from("/dev/sdb2"),
+            name: "iPod 2".to_string(),
+            model: "iPod Video 5G".to_string(),
+            generation: "5G".to_string(),
+            model_number: None,
+            firmware: None,
+            total_capacity: Some(1490705152),
+            used_capacity: Some(2048000000),
+            firewire_id: None,
+        });
+        assert_eq!(manager.state(), ConnectionState::Connecting);
+        assert!(!manager.sync_enabled());
+    }
+
+    #[test]
+    fn replacing_device_in_error_or_disconnected_resets_to_connecting() {
+        let mut manager = DeviceManager::new();
+        manager.set_state(ConnectionState::Error);
         manager.set_device(DeviceInfo {
             mount_point: PathBuf::from("/dev/sdb2"),
             name: "iPod 2".to_string(),
