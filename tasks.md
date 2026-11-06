@@ -8,7 +8,7 @@ Tasks are listed in dependency order; IDs stay stable, so B-007 precedes discove
   - Spec reference: R-02, S-03, S-05, R-03, R-04, S-12, R-05, S-13
   - Plan reference: Phase 1, References and status, Testing Strategy
   - Result: Research only — no implementation and no physical/hardware acceptance. Backend is libgpod (C, LGPL-2.1) behind a safe Rust FFI wrapper, required not optional (owner decision). No Trust/pairing step for Video/Classic. Start/stop-sync are no-ops on regular iPods, so there is no transaction; recovery/stat-merge is B-010's open item. Metadata provenance, Unix timestamps (host writes via itl-sync), nontransactional writes, and recovery/stat-import risks are recorded in [deltas/b001_research.md](deltas/b001_research.md). Three research gates remain open and are assigned to later tasks: write-file side effects (B-007/B-009/B-010), artwork error reporting (B-004/B-010), device-name provenance (B-005).
-  - Commit: <HASH>
+  - Commit: c7b1363 (checkoff on feature/ipod-page)
   - Depends on: B-001
 - [ ] **B-002: Define DeviceManager, ConnectionState, and DeviceInfo types**
   - Spec reference: R-02, R-03, S-06
