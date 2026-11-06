@@ -118,7 +118,9 @@ impl DeviceManager {
     /// Move into a non-ready connection state.
     ///
     /// `Ready` is deliberately excluded: use `set_ready_after_preflight` so
-    /// supported-model validation and backend preflight are explicit.
+    /// supported-model validation and backend preflight are explicit. Any
+    /// accepted non-ready transition clears prior diagnostics; set new
+    /// diagnostics after changing the state.
     pub fn set_state(&mut self, state: ConnectionState) {
         if state == ConnectionState::Ready {
             self.state = if self.current_device.is_some() {
