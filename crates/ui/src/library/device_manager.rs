@@ -63,16 +63,9 @@ pub struct DeviceInfo {
 }
 
 impl DeviceInfo {
-    /// Whether the model's checksum requires the mandatory FireWire ID.
-    ///
-    /// This is a contract helper, not a model decision: the actual model table and
-    /// capability checks come from libgpod (B-003/B-004).
-    pub fn requires_firewire_id(&self) -> bool {
-        matches!(
-            self.model.as_str(),
-            "iPod Classic" | "iPod Classic 6G" | "iPod Classic 7G"
-        )
-    }
+    // No model-specific helpers here: model capability checks (checksums,
+    // FireWire ID requirements) belong to libgpod's model table, not to this
+    // backend-independent type contract.
 }
 
 /// Manages connection state and owned device information.
@@ -123,8 +116,13 @@ impl DeviceManager {
     }
 
     /// Move into a new connection state.
+    ///
+    /// `Ready` requires a device; it cannot be reached without one.
     pub fn set_state(&mut self, state: ConnectionState) {
         self.state = state;
+        if state == ConnectionState::Ready && self.current_device.is_none() {
+            self.state = ConnectionState::Disconnected;
+        }
     }
 
     /// Replace the current device information.
@@ -133,8 +131,12 @@ impl DeviceManager {
     }
 
     /// Forget the current device and clear stale device information.
+    ///
+    /// Clearing a device always returns to `Disconnected`; a device must exist
+    /// before sync can be enabled.
     pub fn clear_device(&mut self) {
         self.current_device = None;
+        self.state = ConnectionState::Disconnected;
     }
 
     /// Set the current diagnostic detail.
@@ -154,6 +156,29 @@ mod tests {
         assert!(manager.current_device().is_none());
         assert!(!manager.sync_enabled());
         assert!(!manager.state().sync_enabled());
+    }
+
+    #[test]
+    fn ready_requires_a_device() {
+        let mut manager = DeviceManager::new();
+        manager.set_state(ConnectionState::Ready);
+        assert_eq!(manager.state(), ConnectionState::Disconnected);
+        assert!(!manager.sync_enabled());
+
+        manager.set_device(DeviceInfo {
+            mount_point: PathBuf::from("/dev/sdb1"),
+            name: "iPod".to_string(),
+            model: "iPod Video 5G".to_string(),
+            generation: "5G".to_string(),
+            model_number: None,
+            firmware: None,
+            total_capacity: None,
+            used_capacity: None,
+            firewire_id: None,
+        });
+        manager.set_state(ConnectionState::Ready);
+        assert_eq!(manager.state(), ConnectionState::Ready);
+        assert!(manager.sync_enabled());
     }
 
     #[test]
@@ -256,7 +281,6 @@ mod tests {
             firewire_present.firewire_id,
             Some("A2000000:00008832:00010000:00000001-0x10000".to_string())
         );
-        assert!(firewire_present.requires_firewire_id());
 
         let firewire_absent = DeviceInfo {
             mount_point: PathBuf::from("/dev/sdc1"),
@@ -270,15 +294,14 @@ mod tests {
             firewire_id: None,
         };
         assert_eq!(firewire_absent.firewire_id, None);
-        assert!(!firewire_absent.requires_firewire_id());
     }
 
     #[test]
     fn owned_data_without_raw_pointers() {
         let manager = DeviceManager::new();
         assert!(format!("{:?}", manager).contains("None"));
-        // Every field of DeviceInfo is a Rust-owned type; no raw pointers can
-        // leak into the owned representation.
+        // Every field of DeviceInfo and DeviceManager is a Rust-owned type; no
+        // raw pointers can leak into the owned representation.
         fn owned<T: Clone>(_: &T) {}
         owned(&manager);
         owned(&DeviceInfo {
@@ -311,7 +334,9 @@ mod tests {
         });
         manager.clear_device();
         assert!(manager.current_device().is_none());
-        assert_eq!(manager.state(), ConnectionState::Ready);
+        // A device must exist before sync can be enabled.
+        assert_eq!(manager.state(), ConnectionState::Disconnected);
+        assert!(!manager.sync_enabled());
     }
 
     #[test]
