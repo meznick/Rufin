@@ -47,15 +47,18 @@ transaction guarantee are not current instructions. Given an attached Video/Clas
 when discovered, then no authorization prompt appears and a mount alone does not enable
 Sync. Given backend absence, then no fallback copy is performed.
 
-The untracked device-manager draft is not verification evidence and is not included in
-B-001. The earlier nonexistent transport-delta reference is removed rather than replaced
-with another dangling document.
+The earlier untracked device-manager draft was not B-001 verification evidence. B-002
+was subsequently implemented as `crates/gtk-library/src/device_manager.rs` and merged into
+`feature/ipod-page` as commit `eea14b0`. Its five-state FSM, owned `DeviceInfo`, and
+`set_ready_after_preflight()` contract are the current instruction for Phase 1's data models;
+the earlier draft's prose is not part of the record.
 
 ## Artifact alignment and verification
 
 [Follow-up research](b001_research.md#10-follow-up-research-required-before-implementation)
 is still required on write-file side effects, artwork error reporting, and the unresolved
-device-name provenance discrepancy before their respective implementation tasks. The
+device-name provenance discrepancy before their respective implementation tasks (B-007,
+B-004, and B-005). B-002's backend-independent types do not resolve any of them. The
 alignment summary below does not claim those items are resolved.
 
 [Research](b001_research.md) is corrected in place, including metadata location, unsafe
@@ -63,8 +66,8 @@ SysInfo reload, nominal versus measured capacity, Unix API timestamps, and limit
 declaration-only verification. [Plan](../plan.md) uses one FSM/DeviceInfo contract and places
 FFI integration in Phase 1. [Tasks](../tasks.md) retain stable IDs but order B-002 → B-007 →
 B-003 → B-005 → B-004; they add dry-run nonmutation, recovery/deduplication, and per-model
-acceptance criteria. B-001 stays unchecked until reviewed/merged and checked off on the
-feature branch. B-020 targets local feature artifacts, not a nonexistent Rufin NOTES.md.
+acceptance criteria. B-001 and B-002 are now merged and checked off on the feature branch.
+B-020 targets local feature artifacts, not a nonexistent Rufin NOTES.md.
 
 Source verification uses the pinned references in the [owner decision](research-based-decisions.md#verified-upstream-references).
 The earlier 65/65 API declaration check did not establish safe ownership, recovery,
@@ -77,5 +80,4 @@ Loading/linking and packaging need owner review before B-007; runtime loading is
 The concrete multi-file recovery, competing-writer exclusion, stat-merge/idempotency, and
 flush/eject protocol must be reviewed and verified in B-010 before enabling destructive
 sync. Physical model/checksum/artwork/stat acceptance and subsequent iTunes compatibility
-are B-017. These are tracked future work, not unresolved backend choices or prerequisites
-for defining the backend-independent B-002 types after B-001 is approved and merged.
+are B-017. These remain future work; the backend-independent B-002 types did not resolve them.

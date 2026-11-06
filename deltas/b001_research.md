@@ -52,9 +52,18 @@ Ready, and Error, as defined in the [plan](../plan.md#connection-fsm). There is 
 ## 3. Detection (how we find the device)
 
 libgpod's `itdb_parse()` takes a mount point, not a USB device handle. A mount-point scan
-is a candidate-discovery method, not a complete readiness check. The pre-existing untracked
-`device_manager.rs` is an unfinished draft, not verified discovery or B-002 implementation.
-USB events may trigger discovery but do not by themselves supply every write prerequisite.
+is a candidate-discovery method, not a complete readiness check. USB events may trigger
+discovery but do not by themselves supply every write prerequisite.
+
+**B-002 status (2026-11-06)**: the backend-independent types are implemented and merged into
+`feature/ipod-page` as commit `eea14b0`. `crates/gtk-library/src/device_manager.rs` defines
+`ConnectionState`, `DeviceInfo`, `PreflightError`, and `DeviceManager` with no discovery, no
+libgpod dependency, and no write logic. The five-state FSM, the `Ready`-only sync gate, the
+`Connecting`-only preflight gate, and the `set_ready_after_preflight()` callback contract are
+implemented and unit-tested. What this research still owes B-007 and B-004 is the *real*
+libgpod-backed content of the preflight callback — backend availability, access, parseable
+databases, measured capacity, model/artwork capabilities, and checksum prerequisites. B-002
+supplies the contract and the classification; it does not supply the checks.
 
 ```c
 // itdb_parse(mountpoint, &error)  — libgpod takes a mount point, not a device handle
@@ -328,17 +337,18 @@ in the [owner decision](research-based-decisions.md#verified-upstream-references
 
 Cleanup validation on 2026-11-06: 65 public API declarations and 79 numeric constants matched
 the pinned header; the specific source semantics above were rechecked separately. Local
-checks passed for eight documents, 33 relative links/anchors, all 20 tasks in dependency
-order, requirement references, the five-state FSM, and nine DeviceInfo fields. The feature's
+checks reported eight documents, 33 relative links/anchors, all 20 tasks in dependency
+order, requirement references, the five-state FSM, and nine DeviceInfo fields. A later review
+found an invalid B-001 self-dependency in that task list, now corrected. The feature's
 constitution/spec match fork-master. These counts are documentation/source checks, not
 unit-test or hardware-test counts; no Cargo tests were run for this Markdown-only cleanup.
 
 ## 9. Next steps
 
-Review/commit these corrected feature documents, then merge B-001 into `feature/ipod-page`
-and record the checkoff/result there. B-002 can then define the backend-independent types
-from the [plan](../plan.md); do not count the pre-existing untracked draft as implementation.
-B-007 must resolve loading/packaging with the owner and integrate FFI before discovery.
+B-001 and B-002 have been merged into `feature/ipod-page`; the B-002 task-branch HEAD is
+`eea14b0` and its contract is documented in the [plan](../plan.md). Before B-007, investigate
+R1/R2 and obtain owner review of the resulting design, including loading and packaging.
+B-007 integrates FFI before discovery.
 B-010 must validate its concrete recovery/stat-merge protocol before destructive writes;
 B-017 is per-model physical-device and subsequent iTunes acceptance.
 
