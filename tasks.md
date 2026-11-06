@@ -4,10 +4,12 @@ Tasks are listed in dependency order; IDs stay stable, so B-007 precedes discove
 
 ## Phase 1: Device Connection Infrastructure
 
-- [ ] **B-001: Research libgpod and connection flow for Video/Classic iPods**
+- [x] **B-001: Research libgpod and connection flow for Video/Classic iPods**
   - Spec reference: R-02, S-03, S-05, R-03, R-04, S-12, R-05, S-13
   - Plan reference: Phase 1, References and status, Testing Strategy
-  - Verification: [Research](deltas/b001_research.md) records the backend choice, API evidence and limits, metadata provenance, Unix timestamps, no Trust flow, nontransactional writes, and recovery/stat-import risks. [Owner decision](deltas/research-based-decisions.md), [decision delta](deltas/b001_plan_delta.md), and [preflight delta](deltas/s03_b004.md) have valid repository-relative links and reflect mainline constitution/spec and this plan, subject to the explicitly [open research items](deltas/b001_research.md#10-follow-up-research-required-before-implementation). Whitespace, task dependencies, and state/type contracts are checked; physical acceptance remains pending.
+  - Result: Research only — no implementation and no physical/hardware acceptance. Backend is libgpod (C, LGPL-2.1) behind a safe Rust FFI wrapper, required not optional (owner decision). No Trust/pairing step for Video/Classic. Start/stop-sync are no-ops on regular iPods, so there is no transaction; recovery/stat-merge is B-010's open item. Metadata provenance, Unix timestamps (host writes via itl-sync), nontransactional writes, and recovery/stat-import risks are recorded in [deltas/b001_research.md](deltas/b001_research.md). Three research gates remain open and are assigned to later tasks: write-file side effects (B-007/B-009/B-010), artwork error reporting (B-004/B-010), device-name provenance (B-005).
+  - Commit: <HASH>
+  - Depends on: B-001
 - [ ] **B-002: Define DeviceManager, ConnectionState, and DeviceInfo types**
   - Spec reference: R-02, R-03, S-06
   - Plan reference: Phase 1, Connection FSM, Data Models & Interfaces
