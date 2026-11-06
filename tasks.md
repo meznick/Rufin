@@ -1,19 +1,21 @@
 # tasks.md
 
-Tasks are listed in dependency order; IDs stay stable, so B-007 precedes discovery and B-005 precedes preflight. B-001 remains unchecked until its reviewed task branch is merged into `feature/ipod-page`; checkoff and the result/hash line belong on that feature branch. No runtime or hardware acceptance is claimed by this research.
+Tasks are listed in dependency order; IDs stay stable, so B-007 precedes discovery and B-005 precedes preflight. B-001 and B-002 are merged into `feature/ipod-page`; their results and task-branch hashes are recorded below. B-001 research does not claim runtime or hardware acceptance.
 
 ## Phase 1: Device Connection Infrastructure
 
 - [x] **B-001: Research libgpod and connection flow for Video/Classic iPods**
   - Spec reference: R-02, S-03, S-05, R-03, R-04, S-12, R-05, S-13
   - Plan reference: Phase 1, References and status, Testing Strategy
-  - Result: Research only — no implementation and no physical/hardware acceptance. Backend is libgpod (C, LGPL-2.1) behind a safe Rust FFI wrapper, required not optional (owner decision). No Trust/pairing step for Video/Classic. Start/stop-sync are no-ops on regular iPods, so there is no transaction; recovery/stat-merge is B-010's open item. Metadata provenance, Unix timestamps (host writes via itl-sync), nontransactional writes, and recovery/stat-import risks are recorded in [deltas/b001_research.md](deltas/b001_research.md). Three research gates remain open and are assigned to later tasks: write-file side effects (B-007/B-009/B-010), artwork error reporting (B-004/B-010), device-name provenance (B-005).
+  - Result: Research only — no implementation and no physical/hardware acceptance. Backend is libgpod (C, LGPL-2.1) behind a safe Rust FFI wrapper, required not optional (owner decision). No Trust/pairing step for Video/Classic. Start/stop-sync are no-ops on regular iPods, so there is no transaction; recovery/stat-merge is B-010's open item. Metadata provenance, Unix timestamps (host writes via itl-sync), nontransactional writes, and recovery/stat-import risks are recorded in [deltas/b001_research.md](deltas/b001_research.md). Three research gates remain open and are assigned to later tasks: write-file side effects (B-007/B-009/B-010), artwork error reporting (B-007/B-004/B-010), device-name provenance (B-005).
   - Commit: c7b1363 (checkoff on feature/ipod-page)
-  - Depends on: B-001
-- [ ] **B-002: Define DeviceManager, ConnectionState, and DeviceInfo types**
+  - Depends on: None
+- [x] **B-002: Define DeviceManager, ConnectionState, and DeviceInfo types**
   - Spec reference: R-02, R-03, S-06
   - Plan reference: Phase 1, Connection FSM, Data Models & Interfaces
   - Verification: Backend-independent types are defined and exported from `crates/gtk-library` (for example `src/device_manager.rs`) without discovery or write logic. Tests cover initial Disconnected/no-device state, the five planned states including BackendUnavailable, optional firmware/capacity/FireWire ID, and owned data without C pointers. The plan's exact DeviceInfo fields are represented; no authorization state exists.
+  - Result: Implemented in `crates/gtk-library/src/device_manager.rs` with no discovery, backend dependency, or write logic. All five states and their labels are defined; only `Ready` enables the manager's sync predicate. `Ready` requires a caller-supplied preflight and present, valid capacity values; backend-unavailable failures retain their diagnostics. Actual backend/model checks and UI binding remain future work. 21 device-manager tests passed; `cargo check --package gtk-library`, formatting, and `git diff --check` passed. Test follow-ups: verify label uniqueness across every pair and add a zero-total-capacity rejection test.
+  - Commit: eea14b0 (task-branch HEAD)
   - Depends on: B-001
 - [ ] **B-007: Integrate the safe libgpod Rust wrapper**
   - Spec reference: R-02, S-05, R-04; constitution §3
