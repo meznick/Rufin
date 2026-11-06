@@ -115,27 +115,51 @@ impl DeviceManager {
         self.state.sync_enabled()
     }
 
-    /// Move into a new connection state.
+    /// Move into a non-ready connection state.
     ///
-    /// `Ready` requires a device with measured capacity; it cannot be reached
-    /// without both. Model validation is a B-004 concern (libgpod model
-    /// table) and is deliberately not enforced here.
+    /// `Ready` is deliberately excluded: use `set_ready_after_preflight` so
+    /// supported-model validation and backend preflight are explicit.
     pub fn set_state(&mut self, state: ConnectionState) {
-        self.state = state;
         if state == ConnectionState::Ready {
-            if self.current_device.is_none() {
-                self.state = ConnectionState::Disconnected;
-            } else if self
-                .current_device
-                .as_ref()
-                .unwrap()
-                .total_capacity
-                .is_none()
-            {
-                // Ready requires measured capacity; without it, preflight is
-                // still pending.
-                self.state = ConnectionState::Connecting;
-            }
+            self.state = if self.current_device.is_some() {
+                ConnectionState::Connecting
+            } else {
+                ConnectionState::Disconnected
+            };
+            return;
+        }
+
+        self.state = state;
+        self.clear_diagnostics();
+    }
+
+    /// Mark the current device ready only after the caller's backend/model
+    /// validation and preflight succeed, and its measured capacities are valid.
+    ///
+    /// The callback must perform the libgpod-backed supported-model and
+    /// mount-specific readiness checks. This method additionally requires both
+    /// capacity values and rejects `used_capacity > total_capacity`.
+    pub fn set_ready_after_preflight(
+        &mut self,
+        preflight: impl FnOnce(&DeviceInfo) -> bool,
+    ) -> bool {
+        let Some(device) = self.current_device.as_ref() else {
+            self.state = ConnectionState::Disconnected;
+            return false;
+        };
+
+        let valid_capacity = match (device.total_capacity, device.used_capacity) {
+            (Some(total), Some(used)) => total > 0 && used <= total,
+            _ => false,
+        };
+
+        if valid_capacity && preflight(device) {
+            self.state = ConnectionState::Ready;
+            self.clear_diagnostics();
+            true
+        } else {
+            self.state = ConnectionState::Connecting;
+            false
         }
     }
 
@@ -145,6 +169,7 @@ impl DeviceManager {
     pub fn set_device(&mut self, info: DeviceInfo) {
         self.current_device = Some(info);
         self.state = ConnectionState::Connecting;
+        self.clear_diagnostics();
     }
 
     /// Forget the current device and clear stale device information.
@@ -154,11 +179,18 @@ impl DeviceManager {
     pub fn clear_device(&mut self) {
         self.current_device = None;
         self.state = ConnectionState::Disconnected;
+        self.clear_diagnostics();
     }
 
     /// Set the current diagnostic detail.
     pub fn set_diagnostics(&mut self, diagnostics: String) {
         self.diagnostics = Some(diagnostics);
+    }
+
+    /// Clear diagnostic detail after a retry, device change, or successful
+    /// readiness check.
+    pub fn clear_diagnostics(&mut self) {
+        self.diagnostics = None;
     }
 }
 
@@ -197,8 +229,9 @@ mod tests {
             used_capacity: None,
             firewire_id: None,
         });
-        manager.set_state(ConnectionState::Ready);
-        // Without measured capacity, Ready falls back to Connecting.
+        let preflight_passed = manager.set_ready_after_preflight(|_| true);
+        assert!(!preflight_passed);
+        // Without measured capacity, Ready is rejected and preflight stays pending.
         assert_eq!(manager.state(), ConnectionState::Connecting);
         assert!(!manager.sync_enabled());
 
@@ -209,11 +242,11 @@ mod tests {
             generation: "5G".to_string(),
             model_number: None,
             firmware: None,
-            total_capacity: Some(1490705152), // measured
-            used_capacity: Some(2048000000),
+            total_capacity: Some(14_907_051_520), // measured
+            used_capacity: Some(2_048_000_000),
             firewire_id: None,
         });
-        manager.set_state(ConnectionState::Ready);
+        assert!(manager.set_ready_after_preflight(|info| info.model == "iPod Video 5G"));
         assert_eq!(manager.state(), ConnectionState::Ready);
         assert!(manager.sync_enabled());
     }
@@ -228,11 +261,11 @@ mod tests {
             generation: "5G".to_string(),
             model_number: None,
             firmware: None,
-            total_capacity: Some(1490705152),
-            used_capacity: Some(2048000000),
+            total_capacity: Some(14_907_051_520),
+            used_capacity: Some(2_048_000_000),
             firewire_id: None,
         });
-        manager.set_state(ConnectionState::Ready);
+        assert!(manager.set_ready_after_preflight(|_| true));
         assert!(manager.sync_enabled());
 
         // A new device is a new candidate: preflight is pending again.
@@ -243,8 +276,8 @@ mod tests {
             generation: "5G".to_string(),
             model_number: None,
             firmware: None,
-            total_capacity: Some(1490705152),
-            used_capacity: Some(2048000000),
+            total_capacity: Some(14_907_051_520),
+            used_capacity: Some(2_048_000_000),
             firewire_id: None,
         });
         assert_eq!(manager.state(), ConnectionState::Connecting);
@@ -262,12 +295,93 @@ mod tests {
             generation: "5G".to_string(),
             model_number: None,
             firmware: None,
-            total_capacity: Some(1490705152),
-            used_capacity: Some(2048000000),
+            total_capacity: Some(14_907_051_520),
+            used_capacity: Some(2_048_000_000),
             firewire_id: None,
         });
         assert_eq!(manager.state(), ConnectionState::Connecting);
         assert!(!manager.sync_enabled());
+    }
+
+    #[test]
+    fn ready_requires_successful_preflight_and_consistent_capacities() {
+        let mut manager = DeviceManager::new();
+        manager.set_device(DeviceInfo {
+            mount_point: PathBuf::from("/dev/sdb1"),
+            name: "iPod".to_string(),
+            model: "unsupported model".to_string(),
+            generation: "unknown".to_string(),
+            model_number: None,
+            firmware: None,
+            total_capacity: Some(1_000),
+            used_capacity: Some(500),
+            firewire_id: None,
+        });
+        manager.set_state(ConnectionState::Ready);
+        assert_eq!(manager.state(), ConnectionState::Connecting);
+        assert!(!manager.sync_enabled());
+
+        assert!(!manager.set_ready_after_preflight(|_| false));
+        assert_eq!(manager.state(), ConnectionState::Connecting);
+        assert!(!manager.sync_enabled());
+
+        manager.set_device(DeviceInfo {
+            mount_point: PathBuf::from("/dev/sdb1"),
+            name: "iPod".to_string(),
+            model: "iPod Video 5G".to_string(),
+            generation: "5G".to_string(),
+            model_number: None,
+            firmware: None,
+            total_capacity: Some(1_000),
+            used_capacity: Some(1_001),
+            firewire_id: None,
+        });
+        assert!(!manager.set_ready_after_preflight(|_| true));
+        assert_eq!(manager.state(), ConnectionState::Connecting);
+
+        manager.set_device(DeviceInfo {
+            mount_point: PathBuf::from("/dev/sdb1"),
+            name: "iPod".to_string(),
+            model: "iPod Video 5G".to_string(),
+            generation: "5G".to_string(),
+            model_number: None,
+            firmware: None,
+            total_capacity: Some(1_000),
+            used_capacity: None,
+            firewire_id: None,
+        });
+        assert!(!manager.set_ready_after_preflight(|_| true));
+        assert_eq!(manager.state(), ConnectionState::Connecting);
+    }
+
+    #[test]
+    fn diagnostics_clear_on_retry_device_change_and_success() {
+        let mut manager = DeviceManager::new();
+        manager.set_diagnostics("old error".to_string());
+        manager.set_state(ConnectionState::Connecting);
+        assert_eq!(manager.diagnostics(), None);
+
+        manager.set_diagnostics("stale error".to_string());
+        manager.set_device(DeviceInfo {
+            mount_point: PathBuf::from("/dev/sdb1"),
+            name: "iPod".to_string(),
+            model: "iPod Video 5G".to_string(),
+            generation: "5G".to_string(),
+            model_number: None,
+            firmware: None,
+            total_capacity: Some(1_000),
+            used_capacity: Some(500),
+            firewire_id: None,
+        });
+        assert_eq!(manager.diagnostics(), None);
+
+        manager.set_diagnostics("preflight error".to_string());
+        assert!(manager.set_ready_after_preflight(|_| true));
+        assert_eq!(manager.diagnostics(), None);
+
+        manager.set_diagnostics("device error".to_string());
+        manager.clear_device();
+        assert_eq!(manager.diagnostics(), None);
     }
 
     #[test]
