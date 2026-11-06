@@ -63,17 +63,15 @@ pub struct DeviceInfo {
 }
 
 impl DeviceInfo {
-    /// Whether the device is a supported Video/Classic model.
+    /// Whether the model's checksum requires the mandatory FireWire ID.
     ///
-    /// The model table used for the actual decision comes from libgpod (B-003/B-004);
-    /// this only documents the in-scope families.
-    pub fn is_supported_family(&self) -> bool {
-        matches!(self.model.as_str(), "iPod Video" | "iPod Video 5G" | "iPod Video 5.5G" | "iPod Classic" | "iPod Classic 6G" | "iPod Classic 7G")
-    }
-
-    /// Whether the model's checksum requires the mandatory FireWire ID (Classic).
+    /// This is a contract helper, not a model decision: the actual model table and
+    /// capability checks come from libgpod (B-003/B-004).
     pub fn requires_firewire_id(&self) -> bool {
-        matches!(self.model.as_str(), "iPod Classic" | "iPod Classic 6G" | "iPod Classic 7G")
+        matches!(
+            self.model.as_str(),
+            "iPod Classic" | "iPod Classic 6G" | "iPod Classic 7G"
+        )
     }
 }
 
@@ -172,7 +170,10 @@ mod tests {
             .map(|state| state.ui_label())
             .collect::<Vec<_>>();
         assert!(labels.windows(2).all(|pair| pair[0] != pair[1]));
-        assert_eq!(ConnectionState::BackendUnavailable.ui_label(), "Sync unavailable");
+        assert_eq!(
+            ConnectionState::BackendUnavailable.ui_label(),
+            "Sync unavailable"
+        );
     }
 
     #[test]
@@ -183,7 +184,10 @@ mod tests {
             ConnectionState::BackendUnavailable,
             ConnectionState::Error,
         ] {
-            assert!(!state.sync_enabled(), "sync unexpectedly enabled in {state:?}");
+            assert!(
+                !state.sync_enabled(),
+                "sync unexpectedly enabled in {state:?}"
+            );
         }
         assert!(ConnectionState::Ready.sync_enabled());
     }
@@ -236,14 +240,43 @@ mod tests {
         assert_eq!(sparse.firmware, None);
         assert_eq!(sparse.total_capacity, None);
         assert_eq!(sparse.used_capacity, None);
+
+        let firewire_present = DeviceInfo {
+            mount_point: PathBuf::from("/dev/sdc1"),
+            name: "iPod".to_string(),
+            model: "iPod Classic 6G".to_string(),
+            generation: "6G".to_string(),
+            model_number: None,
+            firmware: None,
+            total_capacity: None,
+            used_capacity: None,
+            firewire_id: Some("A2000000:00008832:00010000:00000001-0x10000".to_string()),
+        };
+        assert_eq!(
+            firewire_present.firewire_id,
+            Some("A2000000:00008832:00010000:00000001-0x10000".to_string())
+        );
+        assert!(firewire_present.requires_firewire_id());
+
+        let firewire_absent = DeviceInfo {
+            mount_point: PathBuf::from("/dev/sdc1"),
+            name: "iPod".to_string(),
+            model: "iPod Video 5G".to_string(),
+            generation: "5G".to_string(),
+            model_number: None,
+            firmware: None,
+            total_capacity: None,
+            used_capacity: None,
+            firewire_id: None,
+        };
+        assert_eq!(firewire_absent.firewire_id, None);
+        assert!(!firewire_absent.requires_firewire_id());
     }
 
     #[test]
     fn owned_data_without_raw_pointers() {
         let manager = DeviceManager::new();
-        assert!(
-            format!("{:?}", manager).contains("None")
-        );
+        assert!(format!("{:?}", manager).contains("None"));
         // Every field of DeviceInfo is a Rust-owned type; no raw pointers can
         // leak into the owned representation.
         fn owned<T: Clone>(_: &T) {}

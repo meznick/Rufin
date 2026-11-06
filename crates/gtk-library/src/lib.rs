@@ -1,6 +1,6 @@
 pub mod activity;
-pub mod device_manager;
 mod catalog;
+pub mod device_manager;
 mod home_layout;
 mod playlist_entry_model;
 mod release_kind;
