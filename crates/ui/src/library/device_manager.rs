@@ -68,6 +68,15 @@ impl DeviceInfo {
     // backend-independent type contract.
 }
 
+/// A readiness check failure and its user-facing diagnostic.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PreflightError {
+    /// The required backend is missing, disabled, or incompatible.
+    BackendUnavailable(String),
+    /// A device access, parsing, model, or other readiness check failed.
+    Readiness(String),
+}
+
 /// Manages connection state and owned device information.
 ///
 /// B-002 defines the type and contract only. The manager performs no discovery,
@@ -140,11 +149,13 @@ impl DeviceManager {
     ///
     /// This can only be called while Connecting. The callback must perform the
     /// libgpod-backed supported-model and mount-specific readiness checks and
-    /// return an actionable diagnostic on failure. This method additionally
-    /// requires both capacity values and rejects `used_capacity > total_capacity`.
+    /// return a classified, actionable diagnostic on failure. The callback runs
+    /// before capacity validation so an unavailable backend is not masked by
+    /// missing measurements. This method additionally requires both capacity
+    /// values and rejects `used_capacity > total_capacity`.
     pub fn set_ready_after_preflight(
         &mut self,
-        preflight: impl FnOnce(&DeviceInfo) -> Result<(), String>,
+        preflight: impl FnOnce(&DeviceInfo) -> Result<(), PreflightError>,
     ) -> bool {
         if !self.state.permits_preflight() {
             return false;
@@ -155,15 +166,21 @@ impl DeviceManager {
             return false;
         };
 
-        let result = match (device.total_capacity, device.used_capacity) {
-            (None, _) => Err("Total device capacity is unavailable.".to_string()),
-            (_, None) => Err("Used device capacity is unavailable.".to_string()),
-            (Some(0), _) => Err("Measured total device capacity is zero.".to_string()),
-            (Some(total), Some(used)) if used > total => Err(format!(
-                "Used device capacity ({used} bytes) exceeds total capacity ({total} bytes)."
-            )),
-            _ => preflight(device),
-        };
+        let result = preflight(device).and_then(|()| {
+            let diagnostic = match (device.total_capacity, device.used_capacity) {
+                (None, _) => Some("Total device capacity is unavailable.".to_string()),
+                (_, None) => Some("Used device capacity is unavailable.".to_string()),
+                (Some(0), _) => Some("Measured total device capacity is zero.".to_string()),
+                (Some(total), Some(used)) if used > total => Some(format!(
+                    "Used device capacity ({used} bytes) exceeds total capacity ({total} bytes)."
+                )),
+                _ => None,
+            };
+            match diagnostic {
+                Some(diagnostic) => Err(PreflightError::Readiness(diagnostic)),
+                None => Ok(()),
+            }
+        });
 
         match result {
             Ok(()) => {
@@ -171,7 +188,12 @@ impl DeviceManager {
                 self.clear_diagnostics();
                 true
             }
-            Err(diagnostic) => {
+            Err(PreflightError::BackendUnavailable(diagnostic)) => {
+                self.state = ConnectionState::BackendUnavailable;
+                self.set_diagnostics(diagnostic);
+                false
+            }
+            Err(PreflightError::Readiness(diagnostic)) => {
                 self.state = ConnectionState::Error;
                 self.set_diagnostics(diagnostic);
                 false
@@ -311,7 +333,9 @@ mod tests {
             if info.model == "iPod Video 5G" {
                 Ok(())
             } else {
-                Err("Unsupported iPod model.".to_string())
+                Err(PreflightError::Readiness(
+                    "Unsupported iPod model.".to_string(),
+                ))
             }
         }));
         assert_eq!(manager.state(), ConnectionState::Ready);
@@ -388,9 +412,11 @@ mod tests {
         assert_eq!(manager.state(), ConnectionState::Connecting);
         assert!(!manager.sync_enabled());
 
-        assert!(
-            !manager.set_ready_after_preflight(|_| { Err("Unsupported iPod model.".to_string()) })
-        );
+        assert!(!manager.set_ready_after_preflight(|_| {
+            Err(PreflightError::Readiness(
+                "Unsupported iPod model.".to_string(),
+            ))
+        }));
         assert_eq!(manager.state(), ConnectionState::Error);
         assert_eq!(manager.diagnostics(), Some("Unsupported iPod model."));
         assert!(!manager.sync_enabled());
@@ -430,6 +456,64 @@ mod tests {
             manager.diagnostics(),
             Some("Used device capacity is unavailable.")
         );
+    }
+
+    #[test]
+    fn backend_failure_is_unavailable_even_without_capacity() {
+        for capacity in [Some(1_000), None] {
+            let mut manager = DeviceManager::new();
+            manager.set_device(DeviceInfo {
+                mount_point: PathBuf::from("/mnt/ipod"),
+                name: "iPod".to_string(),
+                model: "iPod Video 5G".to_string(),
+                generation: "5G".to_string(),
+                model_number: None,
+                firmware: None,
+                total_capacity: capacity,
+                used_capacity: capacity.map(|_| 500),
+                firewire_id: None,
+            });
+            let device = manager.current_device().cloned();
+
+            assert!(!manager.set_ready_after_preflight(|_| {
+                Err(PreflightError::BackendUnavailable(
+                    "libgpod is unavailable.".to_string(),
+                ))
+            }));
+            assert_eq!(manager.state(), ConnectionState::BackendUnavailable);
+            assert_eq!(manager.state().ui_label(), "Sync unavailable");
+            assert_eq!(manager.current_device(), device.as_ref());
+            assert_eq!(manager.diagnostics(), Some("libgpod is unavailable."));
+            assert!(!manager.sync_enabled());
+        }
+    }
+
+    #[test]
+    fn retry_after_backend_failure_requires_fresh_preflight() {
+        let mut manager = DeviceManager::new();
+        manager.set_device(DeviceInfo {
+            mount_point: PathBuf::from("/mnt/ipod"),
+            name: "iPod".to_string(),
+            model: "iPod Video 5G".to_string(),
+            generation: "5G".to_string(),
+            model_number: None,
+            firmware: None,
+            total_capacity: Some(1_000),
+            used_capacity: Some(500),
+            firewire_id: None,
+        });
+        assert!(
+            !manager.set_ready_after_preflight(|_| Err(PreflightError::BackendUnavailable(
+                "libgpod is unavailable.".to_string()
+            )))
+        );
+
+        manager.set_state(ConnectionState::Connecting);
+        assert_eq!(manager.diagnostics(), None);
+        assert!(!manager.sync_enabled());
+        assert!(manager.set_ready_after_preflight(|_| Ok(())));
+        assert_eq!(manager.state(), ConnectionState::Ready);
+        assert!(manager.sync_enabled());
     }
 
     #[test]
