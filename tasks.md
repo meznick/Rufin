@@ -14,7 +14,7 @@ Tasks are listed in dependency order; IDs stay stable, so B-007 precedes discove
   - Spec reference: R-02, R-03, S-06
   - Plan reference: Phase 1, Connection FSM, Data Models & Interfaces
   - Result: Backend-independent types defined in `crates/gtk-library/src/device_manager.rs` and exported from `gtk-library` (`pub mod device_manager`). No discovery and no write logic in this file. `ConnectionState` has exactly the five FSM states (`Disconnected`, `Connecting`, `BackendUnavailable`, `Ready`, `Error`); the UI label for `BackendUnavailable` is "Sync unavailable"; only `Ready` enables sync. `DeviceInfo` uses the plan's exact field set, with `Option` for absent values and no fabricated defaults. No authorization state exists. 16 unit tests cover the initial Disconnected/no-device state, all five states, optional firmware/capacity/FireWire ID, owned data without C pointers, preflight and capacity gates for Ready, device replacement, and diagnostics clearing.
-  - Commit: 374fad6
+  - Implementation: 374fad6; reviewed branch state including follow-up fixes: 16587a2.
   - Depends on: B-001
 - [ ] **B-007: Integrate the safe libgpod Rust wrapper**
   - Spec reference: R-02, S-05, R-04; constitution §3
