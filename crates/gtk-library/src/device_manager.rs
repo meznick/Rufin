@@ -117,17 +117,12 @@ impl DeviceManager {
 
     /// Move into a non-ready connection state.
     ///
-    /// `Ready` is deliberately excluded: use `set_ready_after_preflight` so
-    /// supported-model validation and backend preflight are explicit. Any
-    /// accepted non-ready transition clears prior diagnostics; set new
-    /// diagnostics after changing the state.
+    /// `Ready` is deliberately excluded and leaves the manager unchanged: use
+    /// `set_ready_after_preflight` so supported-model validation and backend
+    /// preflight are explicit. Any accepted non-ready transition clears prior
+    /// diagnostics; set new diagnostics after changing the state.
     pub fn set_state(&mut self, state: ConnectionState) {
         if state == ConnectionState::Ready {
-            self.state = if self.current_device.is_some() {
-                ConnectionState::Connecting
-            } else {
-                ConnectionState::Disconnected
-            };
             return;
         }
 
@@ -234,6 +229,47 @@ mod tests {
         manager.set_state(ConnectionState::Ready);
         assert_eq!(manager.state(), ConnectionState::Disconnected);
         assert!(!manager.sync_enabled());
+    }
+
+    #[test]
+    fn direct_ready_request_leaves_every_state_unchanged() {
+        for state in [
+            ConnectionState::Disconnected,
+            ConnectionState::Connecting,
+            ConnectionState::BackendUnavailable,
+            ConnectionState::Ready,
+            ConnectionState::Error,
+        ] {
+            let mut manager = DeviceManager::new();
+            if state != ConnectionState::Disconnected {
+                manager.set_device(DeviceInfo {
+                    mount_point: PathBuf::from("/mnt/ipod"),
+                    name: "iPod".to_string(),
+                    model: "iPod Video 5G".to_string(),
+                    generation: "5G".to_string(),
+                    model_number: None,
+                    firmware: None,
+                    total_capacity: Some(1_000),
+                    used_capacity: Some(500),
+                    firewire_id: None,
+                });
+                if state == ConnectionState::Ready {
+                    assert!(manager.set_ready_after_preflight(|_| Ok(())));
+                } else {
+                    manager.set_state(state);
+                }
+            }
+            manager.set_diagnostics("existing diagnostic".to_string());
+            let device = manager.current_device().cloned();
+            let sync_enabled = manager.sync_enabled();
+
+            manager.set_state(ConnectionState::Ready);
+
+            assert_eq!(manager.state(), state);
+            assert_eq!(manager.current_device(), device.as_ref());
+            assert_eq!(manager.diagnostics(), Some("existing diagnostic"));
+            assert_eq!(manager.sync_enabled(), sync_enabled);
+        }
     }
 
     #[test]
