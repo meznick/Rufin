@@ -1,4 +1,5 @@
 mod catalog;
+mod device_manager;
 mod home_layout;
 mod track_selection;
 pub(crate) use catalog::CatalogUi;
