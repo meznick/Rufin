@@ -218,6 +218,7 @@ impl<'a> DeviceSession<'a> {
                 member_dbids.push(unsafe { (*member).dbid });
             }
             out.push(PlaylistInfo {
+                id: pl.id,
                 name: unsafe { cstr_copy(pl.name) },
                 type_byte: pl.type_,
                 // SAFETY: `raw` valid; `itdb_playlist_is_mpl` only reads the

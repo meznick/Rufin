@@ -42,7 +42,8 @@ pub use layouts::{
 use symbols::GlibHelpers;
 
 /// Copy a NUL-terminated C string into an owned `String`. `None` for a null
-/// pointer or non-UTF-8 content (the wrapper never invents a string).
+/// pointer. Non-UTF-8 content is replaced lossily (U+FFFD), matching the
+/// crate-wide policy of never failing a read because of one invalid string.
 ///
 /// # Safety
 ///
@@ -130,7 +131,8 @@ impl<T> GListIter<T> {
     /// # Safety
     ///
     /// `list` must be null or a valid `GList` whose `data` pointers are
-    /// valid `T`s (or nulls) for the iterator's lifetime.
+    /// valid `T`s for the iterator's lifetime. Null `data` pointers are NOT
+    /// supported — every caller dereferences the yielded pointer.
     pub unsafe fn new(list: *const GList) -> Self {
         Self {
             current: list,

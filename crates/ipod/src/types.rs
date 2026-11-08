@@ -22,17 +22,9 @@ pub enum IpodError {
         code: i32,
         message: String,
     },
-    /// The session was already closed (use-after-close), or a call was made
-    /// in a state where the native database no longer exists.
-    #[error("device session is closed")]
-    Closed,
     /// A requested entity (path, database file, declared entry) is missing.
     #[error("{0}")]
     NotFound(String),
-    /// The artwork proof-read or verdict computation failed in a way that
-    /// does not fit the other variants.
-    #[error("artwork: {0}")]
-    Artwork(String),
     /// An internal invariant of the wrapper was violated (a bug in this
     /// crate, not in the device data).
     #[error("internal: {0}")]
@@ -69,11 +61,6 @@ pub enum BackendUnavailable {
     /// (`dlopen`/`dlsym` error). `details` says which step failed.
     #[error("libgpod loading failed: {details}")]
     Load { details: String },
-    /// The wrapper is already loaded and loading is a one-time operation
-    /// (normally unreachable — `IpodBackend::load` returns the existing
-    /// instance instead).
-    #[error("libgpod backend is already loaded")]
-    AlreadyLoaded,
 }
 
 /// Device identity and raw SysInfo strings as libgpod reports them.
@@ -120,7 +107,7 @@ pub struct ModelInfo {
     /// Raw `Itdb_IpodModel` enum value; interpret against the enum in
     /// `ffi::layouts` or via `model_name`.
     pub ipod_model: i32,
-    /// Raw `Itdb_IpodGeneration` enum value (e.g. VIDEO_2 = 18).
+    /// Raw `Itdb_IpodGeneration` enum value (e.g. VIDEO_2 = 17).
     pub generation: i32,
     /// Human generation name via `itdb_info_get_ipod_generation_string`.
     pub generation_name: String,
@@ -212,6 +199,9 @@ pub struct PlaybackStats {
 /// One playlist as read from the device `iTunesDB`.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct PlaylistInfo {
+    /// Device playlist id (`Itdb_Playlist.id`) — the key for
+    /// [`crate::DeviceSession::update_playlists`].
+    pub id: u64,
     pub name: Option<String>,
     /// Raw `Itdb_Playlist.type` byte: `0` normal, `1` master (MPL). The
     /// constants are private to libgpod (itdb_private.h), so this byte is

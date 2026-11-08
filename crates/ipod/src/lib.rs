@@ -50,9 +50,11 @@
 //! struct layouts in [`ffi::layouts`] are only guaranteed for the pinned
 //! build). A missing marker (a distro-packaged libgpod) is accepted with a
 //! `tracing::warn`, because the strict policy is the packaging follow-up of
-//! `deltas/b007_delta.md` §5. Read-side symbols are required at load time;
-//! write-side symbols are resolved eagerly as well, but their absence only
-//! fails write calls, never the load.
+//! `deltas/b007_delta.md` §5; the backend then reports
+//! [`IpodBackend::abi_verified`] `= false` so consumers can surface the
+//! unverified-ABI state instead of trusting it silently. Read-side symbols
+//! are required at load time; write-side symbols are resolved eagerly as
+//! well, but their absence only fails write calls, never the load.
 //!
 //! # Safety model
 //!
@@ -74,12 +76,12 @@
 //! # The write gate (W-7)
 //!
 //! The write APIs exist on [`DeviceSession`] (the owner's sketch,
-//! `deltas/b007_delta.md` §7.1) but are compiled behind the `sync-writes`
-//! cargo feature and refuse at runtime unless it is enabled. No sync path may
-//! turn the feature on before B-010. The feature also unlocks the
-//! `testkit` module, which builds disposable fixtures with libgpod's own
-//! `itdb_init_ipod` — the same methodology the §1.1 experiments used, now
-//! inside the test suite.
+//! `deltas/b007_delta.md` §7.1) but are guarded by the `sync-writes` cargo
+//! feature: they are always compiled, and refuse at runtime unless the
+//! feature is on. No sync path may turn the feature on before B-010. The
+//! feature also unlocks the `testkit` module, which builds disposable
+//! fixtures with libgpod's own `itdb_init_ipod` — the same methodology the
+//! §1.1 experiments used, now inside the test suite.
 //!
 //! # Platform support
 //!
@@ -127,12 +129,24 @@ use std::sync::{Mutex, OnceLock};
 static NATIVE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 /// Test-only instrumentation: counts the calls currently *inside* the native
-/// lock. Any overlap or nesting is an immediate assertion — that is what the
+/// lock. Any overlap is an immediate assertion — that is what the
 /// serialization unit test (W-6) relies on. Compiled out for non-test builds
 /// and for integration-test builds of the library (the production path is
 /// untouched).
 #[cfg(test)]
 static ACTIVE_NATIVE_CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Decrements the test instrumentation on drop — including unwind, so a
+/// panic inside the lock cannot poison the counter for the next test.
+#[cfg(test)]
+struct NativeCallGuard;
+
+#[cfg(test)]
+impl Drop for NativeCallGuard {
+    fn drop(&mut self) {
+        ACTIVE_NATIVE_CALLS.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
 
 pub(crate) fn with_native<T>(f: impl FnOnce() -> T) -> T {
     let lock = NATIVE_LOCK.get_or_init(|| Mutex::new(()));
@@ -142,14 +156,18 @@ pub(crate) fn with_native<T>(f: impl FnOnce() -> T) -> T {
         let active = ACTIVE_NATIVE_CALLS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         assert_eq!(
             active, 0,
-            "with_native is not serialized: a call overlapped or nested inside the lock"
+            "with_native is not serialized: a call overlapped inside the lock"
         );
     }
-    let result = f();
-    #[cfg(test)]
-    {
-        ACTIVE_NATIVE_CALLS.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
-    }
+    // The guard must be scoped INSIDE the mutex hold: it decrements the
+    // counter when the block ends, before `guard` releases the lock — a
+    // decrement after the release would let the next caller see a stale
+    // count and trip the overlap assertion.
+    let result = {
+        #[cfg(test)]
+        let _call = NativeCallGuard;
+        f()
+    };
     let _guard = guard;
     result
 }
@@ -166,11 +184,11 @@ pub use write::OperationFailure;
 #[cfg(test)]
 mod tests {
     /// W-6: `with_native` must serialize — concurrent callers may never be
-    /// inside the lock at the same time, and no call may nest inside another
-    /// (the crate's invariant: every entry point locks, inner helpers never
-    /// do). The overlap counter in `with_native` asserts both; this test
-    /// hammers it from many threads. If the mutex were missing or released
-    /// early, the assertion would fire (and a nested call would too).
+    /// inside the lock at the same time (the crate's invariant: every entry
+    /// point locks, inner helpers never do). The overlap counter in
+    /// `with_native` asserts that; this test hammers it from many threads.
+    /// If the mutex were missing or released early, the assertion would
+    /// fire.
     #[test]
     fn with_native_serializes_concurrent_calls() {
         use super::with_native;

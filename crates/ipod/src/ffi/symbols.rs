@@ -46,9 +46,6 @@ pub type FnItdbParse =
 /// documented on [`crate::DeviceSession`].
 pub type FnItdbFree = unsafe extern "C" fn(db: *mut Itdb_iTunesDB);
 
-/// `const gchar *itdb_get_mountpoint (Itdb_iTunesDB *itdb);`
-pub type FnItdbGetMountpoint = unsafe extern "C" fn(db: *mut Itdb_iTunesDB) -> *const c_char;
-
 /// `gchar *itdb_get_artworkdb_path (const gchar *mountpoint);`
 ///
 /// Result is GLib-allocated (`g_free`). Takes the mount point, not the db.
@@ -61,12 +58,6 @@ pub type FnItdbGetArtworkdbPath = unsafe extern "C" fn(mountpoint: *const c_char
 /// such, never as a default model.
 pub type FnItdbDeviceGetIpodInfo =
     unsafe extern "C" fn(device: *const Itdb_Device) -> *const Itdb_IpodInfo;
-
-/// `gboolean itdb_device_supports_artwork (const Itdb_Device *device);`
-///
-/// The model gate for artwork parsing (§1.2): false on an unknown model makes
-/// `itdb_parse` skip artwork silently.
-pub type FnItdbDeviceSupportsArtwork = unsafe extern "C" fn(device: *const Itdb_Device) -> GBoolean;
 
 /// `gchar *itdb_device_get_sysinfo (const Itdb_Device *device, const gchar *field);`
 ///
@@ -105,10 +96,8 @@ pub type FnItdbPlaylistIsMpl = unsafe extern "C" fn(playlist: *mut Itdb_Playlist
 pub struct ReadSymbols {
     pub itdb_parse: FnItdbParse,
     pub itdb_free: FnItdbFree,
-    pub itdb_get_mountpoint: FnItdbGetMountpoint,
     pub itdb_get_artworkdb_path: FnItdbGetArtworkdbPath,
     pub itdb_device_get_ipod_info: FnItdbDeviceGetIpodInfo,
-    pub itdb_device_supports_artwork: FnItdbDeviceSupportsArtwork,
     pub itdb_device_get_sysinfo: FnItdbDeviceGetSysinfo,
     pub itdb_device_get_uuid: FnItdbDeviceGetUuid,
     pub itdb_info_model_name_string: FnItdbInfoModelNameString,
@@ -122,10 +111,8 @@ pub fn resolve_read(library: &Library) -> Result<ReadSymbols, BackendUnavailable
     Ok(ReadSymbols {
         itdb_parse: super::resolve_fn(library, "itdb_parse")?,
         itdb_free: super::resolve_fn(library, "itdb_free")?,
-        itdb_get_mountpoint: super::resolve_fn(library, "itdb_get_mountpoint")?,
         itdb_get_artworkdb_path: super::resolve_fn(library, "itdb_get_artworkdb_path")?,
         itdb_device_get_ipod_info: super::resolve_fn(library, "itdb_device_get_ipod_info")?,
-        itdb_device_supports_artwork: super::resolve_fn(library, "itdb_device_supports_artwork")?,
         itdb_device_get_sysinfo: super::resolve_fn(library, "itdb_device_get_sysinfo")?,
         itdb_device_get_uuid: super::resolve_fn(library, "itdb_device_get_uuid")?,
         itdb_info_model_name_string: super::resolve_fn(
@@ -193,6 +180,17 @@ pub type FnItdbCpTrackToIpod = unsafe extern "C" fn(
 pub type FnItdbPlaylistAddTrack =
     unsafe extern "C" fn(playlist: *mut Itdb_Playlist, track: *mut Itdb_Track, pos: c_int);
 
+/// `void itdb_playlist_remove_track (Itdb_Playlist *pl, Itdb_Track *track);`
+///
+/// Removes `track` from `pl` (NULL `pl` = the master playlist); a no-op when
+/// the track is not a member. The wrapper calls this for every playlist before
+/// `itdb_track_unlink`+`itdb_track_free` in `remove_track`: upstream unlink
+/// deliberately does NOT detach playlist memberships, and a freed track still
+/// referenced by `pl->members` is a dangling pointer that `itdb_write`
+/// dereferences.
+pub type FnItdbPlaylistRemoveTrack =
+    unsafe extern "C" fn(playlist: *mut Itdb_Playlist, track: *mut Itdb_Track);
+
 /// `Itdb_Artwork *itdb_artwork_new (void);`
 ///
 /// Allocates a detached artwork block; the caller assigns it to a track
@@ -232,6 +230,7 @@ pub struct WriteSymbols {
     pub itdb_track_unlink: FnItdbTrackUnlink,
     pub itdb_cp_track_to_ipod: FnItdbCpTrackToIpod,
     pub itdb_playlist_add_track: FnItdbPlaylistAddTrack,
+    pub itdb_playlist_remove_track: FnItdbPlaylistRemoveTrack,
     pub itdb_artwork_new: FnItdbArtworkNew,
     pub itdb_artwork_set_thumbnail_from_data: FnItdbArtworkSetThumbnailFromData,
     pub itdb_write: FnItdbWrite,
@@ -247,6 +246,8 @@ pub fn resolve_write(library: &Library) -> Option<WriteSymbols> {
     let itdb_track_unlink = super::resolve_fn(library, "itdb_track_unlink").ok()?;
     let itdb_cp_track_to_ipod = super::resolve_fn(library, "itdb_cp_track_to_ipod").ok()?;
     let itdb_playlist_add_track = super::resolve_fn(library, "itdb_playlist_add_track").ok()?;
+    let itdb_playlist_remove_track =
+        super::resolve_fn(library, "itdb_playlist_remove_track").ok()?;
     let itdb_artwork_new = super::resolve_fn(library, "itdb_artwork_new").ok()?;
     let itdb_artwork_set_thumbnail_from_data =
         super::resolve_fn(library, "itdb_artwork_set_thumbnail_from_data").ok()?;
@@ -259,6 +260,7 @@ pub fn resolve_write(library: &Library) -> Option<WriteSymbols> {
         itdb_track_unlink,
         itdb_cp_track_to_ipod,
         itdb_playlist_add_track,
+        itdb_playlist_remove_track,
         itdb_artwork_new,
         itdb_artwork_set_thumbnail_from_data,
         itdb_write,
@@ -293,7 +295,12 @@ pub struct GlibHelpers {
     pub g_error_free: Option<FnGErrorFree>,
     pub g_strdup: Option<FnGStrdup>,
     pub g_quark_to_string: Option<FnGQuarkToString>,
-    warned_missing: std::sync::atomic::AtomicBool,
+    /// One warn-once flag per helper, so each missing symbol gets its own
+    /// warning instead of one flag swallowing the rest.
+    warned_g_free: std::sync::atomic::AtomicBool,
+    warned_g_error_free: std::sync::atomic::AtomicBool,
+    warned_g_strdup: std::sync::atomic::AtomicBool,
+    warned_g_quark_to_string: std::sync::atomic::AtomicBool,
 }
 
 impl GlibHelpers {
@@ -304,7 +311,10 @@ impl GlibHelpers {
             g_error_free: super::resolve_fn(library, "g_error_free").ok(),
             g_strdup: super::resolve_fn(library, "g_strdup").ok(),
             g_quark_to_string: super::resolve_fn(library, "g_quark_to_string").ok(),
-            warned_missing: std::sync::atomic::AtomicBool::new(false),
+            warned_g_free: std::sync::atomic::AtomicBool::new(false),
+            warned_g_error_free: std::sync::atomic::AtomicBool::new(false),
+            warned_g_strdup: std::sync::atomic::AtomicBool::new(false),
+            warned_g_quark_to_string: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -313,7 +323,7 @@ impl GlibHelpers {
     pub unsafe fn g_free(&self, mem: *mut c_void) {
         match &self.g_free {
             Some(f) => unsafe { f(mem) },
-            None => self.warn_missing("g_free"),
+            None => self.warn_missing("g_free", &self.warned_g_free),
         }
     }
 
@@ -322,7 +332,7 @@ impl GlibHelpers {
     pub unsafe fn g_error_free(&self, error: *mut GError) {
         match &self.g_error_free {
             Some(f) => unsafe { f(error) },
-            None => self.warn_missing("g_error_free"),
+            None => self.warn_missing("g_error_free", &self.warned_g_error_free),
         }
     }
 
@@ -340,7 +350,7 @@ impl GlibHelpers {
                 (!dup.is_null()).then_some(dup)
             }
             None => {
-                self.warn_missing("g_strdup");
+                self.warn_missing("g_strdup", &self.warned_g_strdup);
                 None
             }
         }
@@ -359,17 +369,14 @@ impl GlibHelpers {
                 }
             }
             None => {
-                self.warn_missing("g_quark_to_string");
+                self.warn_missing("g_quark_to_string", &self.warned_g_quark_to_string);
                 format!("<quark {quark}>")
             }
         }
     }
 
-    fn warn_missing(&self, what: &str) {
-        if !self
-            .warned_missing
-            .swap(true, std::sync::atomic::Ordering::Relaxed)
-        {
+    fn warn_missing(&self, what: &str, flag: &std::sync::atomic::AtomicBool) {
+        if !flag.swap(true, std::sync::atomic::Ordering::Relaxed) {
             tracing::warn!(
                 %what,
                 "GLib helper unavailable in the loaded libgpod; affected calls degrade (leak or fail)"

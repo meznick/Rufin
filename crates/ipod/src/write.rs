@@ -163,9 +163,13 @@ impl DeviceSession<'_> {
 
     /// Remove a track from the database (W-7, gated).
     ///
-    /// Unlinks the track from the track list and frees it. The media file on
-    /// the pod is deliberately **not** deleted — destructive removal and its
-    /// recovery design are B-010's.
+    /// Detaches the track from **every** playlist first (including the master
+    /// playlist), then unlinks it from the track list and frees it. The
+    /// detach step is not optional: upstream `itdb_track_unlink` deliberately
+    /// leaves playlist memberships alone, and a freed track still referenced
+    /// by `pl->members` is a dangling pointer that the next `itdb_write`
+    /// dereferences. The media file on the pod is deliberately **not**
+    /// deleted — destructive removal and its recovery design are B-010's.
     pub fn remove_track(&mut self, dbid: u64) -> Result<(), OperationFailure> {
         gate()?;
         with_native(|| unsafe { self.remove_track_inner(dbid) })
@@ -175,8 +179,16 @@ impl DeviceSession<'_> {
         let write = write_symbols(self.backend_ref())?;
         let track = unsafe { find_track(self.db_ptr(), dbid) }
             .ok_or_else(|| OperationFailure::NotFound(format!("track {dbid} not in database")))?;
+        // SAFETY: the playlist list is database-owned and valid for the
+        // session; removing members mutates each playlist's member list, not
+        // the playlist list itself, so the iteration is safe. A playlist the
+        // track is not in is a documented no-op upstream.
+        for raw in unsafe { GListIter::<Itdb_Playlist>::new((*self.db_ptr()).playlists) } {
+            unsafe { (write.itdb_playlist_remove_track)(raw.cast_mut(), track) };
+        }
         // SAFETY: `itdb_track_unlink` removes the track from its database,
         // transferring ownership back to the caller; we free it immediately.
+        // No playlist references remain after the detach loop above.
         unsafe { (write.itdb_track_unlink)(track) };
         unsafe { (write.itdb_track_free)(track) };
         Ok(())
