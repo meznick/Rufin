@@ -219,6 +219,79 @@ fn fixture_track_artwork_round_trip() {
     );
 }
 
+/// The `remove_track` detach guarantee: a track that IS a member of the
+/// master playlist must be removed from every playlist before it is freed,
+/// or the next `write_library` dereferences a dangling `pl->members` entry
+/// (upstream `itdb_track_unlink` deliberately leaves memberships alone).
+/// Regression test for the review finding — the round-trip above passes
+/// even with the bug because its fixture track is in no playlist.
+#[cfg(feature = "sync-writes")]
+#[test]
+fn fixture_remove_track_detaches_from_playlists() {
+    let Some(backend) = backend_or_skip() else {
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    ipod::testkit::init_device(&backend, dir.path(), "MA446", "fixture-pod").unwrap();
+    ipod::testkit::seed_sysinfo(dir.path(), "MA446").unwrap();
+
+    let mut session = ipod::DeviceSession::open(&backend, dir.path()).unwrap();
+    let dbid = session
+        .create_track(&ipod::TrackMetadata {
+            title: Some("mpl member".to_string()),
+            ..Default::default()
+        })
+        .unwrap();
+    let master_id = session
+        .playlists()
+        .unwrap()
+        .into_iter()
+        .find(|p| p.is_master)
+        .expect("a fresh device has a master playlist")
+        .id;
+    session
+        .update_playlists(&ipod::PlaylistChanges {
+            additions: vec![(master_id, vec![dbid])],
+        })
+        .unwrap();
+    session.write_library().unwrap();
+    drop(session);
+
+    // The track must actually be an MPL member before the removal (this is
+    // what a real device looks like — the MPL lists every track).
+    let session = ipod::DeviceSession::open(&backend, dir.path()).unwrap();
+    let master = session
+        .playlists()
+        .unwrap()
+        .into_iter()
+        .find(|p| p.is_master)
+        .unwrap();
+    assert_eq!(
+        master.member_dbids,
+        vec![dbid],
+        "fixture must seat the track in the MPL"
+    );
+    drop(session);
+
+    let mut session = ipod::DeviceSession::open(&backend, dir.path()).unwrap();
+    session.remove_track(dbid).unwrap();
+    session.write_library().unwrap();
+    drop(session);
+
+    // Reparse: no tracks, and no playlist (incl. the MPL) may carry the
+    // removed dbid — with the bug, the writer would have serialized a
+    // dangling member and the parse would fail or show a bogus entry.
+    let session = ipod::DeviceSession::open(&backend, dir.path()).unwrap();
+    assert_eq!(session.tracks().unwrap().len(), 0);
+    for playlist in session.playlists().unwrap() {
+        assert!(
+            !playlist.member_dbids.contains(&dbid),
+            "playlist {:?} still references the removed track",
+            playlist.name
+        );
+    }
+}
+
 /// W-5: every read-side call leaves the device tree content+structure
 /// identical (tree hash before/after).
 #[cfg(feature = "sync-writes")]

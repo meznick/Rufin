@@ -101,6 +101,11 @@ pub(crate) fn parse_artwork_db(data: &[u8]) -> Result<ArtworkDbParse, String> {
         }
         let hlen = le_u32(data, off + 4)? as usize;
         let tlen = le_u32(data, off + 8)? as usize;
+        if tlen == 0 {
+            // Zero-advance guard: `off += tlen` must always move forward, or
+            // a malformed file could spin this loop forever.
+            return Err(format!("mhsd total length is zero at {off:#x}"));
+        }
         let index = le_u16(data, off + 0x0C)?;
         if index == MHSD_IMAGE_LIST {
             let list_end = (off + tlen).min(end);
@@ -147,9 +152,16 @@ fn walk_image_list(
                 "mhli declared {children} children, truncated at {child_off:#x}"
             ));
         }
+        let tlen = le_u32(data, child_off + 8)? as usize;
+        if tlen == 0 {
+            // Zero-advance guard: a declared children count combined with a
+            // zero-length child would re-read the same bytes up to u32::MAX
+            // times.
+            return Err(format!("mhii total length is zero at {child_off:#x}"));
+        }
         parse_mhii(data, child_off, end, first_per_format)?;
         *declared += 1;
-        child_off = (child_off + le_u32(data, child_off + 8)? as usize).min(end);
+        child_off = (child_off + tlen).min(end);
     }
     Ok(())
 }
@@ -172,6 +184,10 @@ fn parse_mhii(
         }
         let mhod_hlen = le_u32(data, child_off + 4)? as usize;
         let mhod_tlen = le_u32(data, child_off + 8)? as usize;
+        if mhod_tlen == 0 {
+            // Zero-advance guard (same hazard as the mhii walk).
+            return Err(format!("mhod total length is zero at {child_off:#x}"));
+        }
         let mhod_type = le_u16(data, child_off + 0x0C)?;
         if mhod_type == MHOD_TYPE_THUMBNAIL {
             let inner_end = (child_off + mhod_tlen).min(entry_end);
@@ -200,6 +216,11 @@ fn walk_mhni(
         }
         let hlen = le_u32(data, off + 4)? as usize;
         let tlen = le_u32(data, off + 8)? as usize;
+        if tlen == 0 {
+            // Zero-advance guard: this `while` is unbounded, so a zero-length
+            // mhni would spin forever.
+            return Err(format!("mhni total length is zero at {off:#x}"));
+        }
         let format_id = le_i32(data, off + 0x10)?;
         let offset = le_u32(data, off + 0x14)? as u64;
         let size = le_u32(data, off + 0x18)? as u64;
@@ -238,6 +259,11 @@ fn mhni_filename(data: &[u8], mut off: usize, end: usize) -> String {
             break;
         }
         let mhod_tlen = le_u32(data, off + 8).unwrap_or(0) as usize;
+        if mhod_tlen == 0 {
+            // Zero-advance guard (this walk is unbounded); an empty name
+            // makes the proof-read fail with "no bank file name" later.
+            break;
+        }
         let mhod_type = le_u16(data, off + 0x0C).unwrap_or(0);
         if mhod_type == MHOD_TYPE_FILE_NAME {
             let s_len = le_i32(data, off + 0x18).unwrap_or(0).max(0) as usize;
@@ -321,6 +347,14 @@ pub(crate) fn decode_rgb565_le(
     Ok(out)
 }
 
+/// True when a bank file name is safe to join onto the artwork directory:
+/// non-empty, no path separators, and not a `..`/`.` traversal component.
+/// Bank names are flat (`F1028_1.ithmb`); anything else in device data is
+/// corrupt or hostile and the proof-read must refuse it, not follow it.
+fn bank_name_is_safe(name: &str) -> bool {
+    !name.is_empty() && name != "." && name != ".." && !name.contains(['/', '\\'])
+}
+
 /// Run the one-thumbnail-per-format proof-read against the bank files in
 /// `artwork_dir`. Never fails structurally: every failure is recorded in the
 /// returned report (the caller turns a failed proof into a `Missing`
@@ -335,6 +369,13 @@ pub(crate) fn proof_read(artwork_dir: &Path, first_per_format: &[FormatThumb]) -
             report.failed = Some(ProofReadFailure {
                 format_id: thumb.format_id as u32,
                 reason: "no bank file name in mhni".to_string(),
+            });
+            break;
+        }
+        if !bank_name_is_safe(&thumb.ithmb_file) {
+            report.failed = Some(ProofReadFailure {
+                format_id: thumb.format_id as u32,
+                reason: format!("unsafe bank file name {:?}", thumb.ithmb_file),
             });
             break;
         }
@@ -731,6 +772,87 @@ mod tests {
         data[li + 8..li + 12].copy_from_slice(&3u32.to_le_bytes());
         let err = parse_artwork_db(&data).unwrap_err();
         assert!(err.contains("truncated"), "{err}");
+    }
+
+    /// Zero-length block guards: without them the walks either spin forever
+    /// (the unbounded `while` loops) or re-read the same bytes up to the
+    /// declared child count (u32::MAX). Each guard turns the case into an
+    /// `Err` instead of a hang.
+    #[test]
+    fn parser_rejects_zero_length_mhsd() {
+        let mut data = vec![0u8; MHFD_HEADER_LEN + 0x10];
+        data[0..4].copy_from_slice(b"mhfd");
+        data[4..8].copy_from_slice(&(MHFD_HEADER_LEN as u32).to_le_bytes());
+        let total_len = data.len() as u32;
+        data[8..12].copy_from_slice(&total_len.to_le_bytes());
+        let off = MHFD_HEADER_LEN;
+        data[off..off + 4].copy_from_slice(b"mhsd");
+        data[off + 4..off + 8].copy_from_slice(&0x18u32.to_le_bytes());
+        // tlen left zero on purpose.
+        data[off + 0x0C..off + 0x0E].copy_from_slice(&MHSD_IMAGE_LIST.to_le_bytes());
+        let err = parse_artwork_db(&data).unwrap_err();
+        assert!(err.contains("zero"), "{err}");
+    }
+
+    #[test]
+    fn parser_rejects_zero_length_mhii() {
+        // mhfd -> mhsd -> mhli declaring 1 child whose mhii has tlen 0.
+        let mut data = vec![0u8; MHFD_HEADER_LEN + 0x20 + 0x18];
+        data[0..4].copy_from_slice(b"mhfd");
+        data[4..8].copy_from_slice(&(MHFD_HEADER_LEN as u32).to_le_bytes());
+        let total_len = data.len() as u32;
+        data[8..12].copy_from_slice(&total_len.to_le_bytes());
+        let off = MHFD_HEADER_LEN;
+        data[off..off + 4].copy_from_slice(b"mhsd");
+        data[off + 4..off + 8].copy_from_slice(&0x18u32.to_le_bytes());
+        data[off + 8..off + 12].copy_from_slice(&(0x20 + 0x18u32).to_le_bytes());
+        data[off + 0x0C..off + 0x0E].copy_from_slice(&MHSD_IMAGE_LIST.to_le_bytes());
+        let li = off + 0x18;
+        data[li..li + 4].copy_from_slice(b"mhli");
+        data[li + 4..li + 8].copy_from_slice(&0x10u32.to_le_bytes());
+        data[li + 8..li + 12].copy_from_slice(&1u32.to_le_bytes());
+        let mhii = li + 0x10;
+        data[mhii..mhii + 4].copy_from_slice(b"mhii");
+        data[mhii + 4..mhii + 8].copy_from_slice(&0x30u32.to_le_bytes());
+        // mhii tlen left zero on purpose.
+        let err = parse_artwork_db(&data).unwrap_err();
+        assert!(err.contains("zero"), "{err}");
+    }
+
+    /// `mhni_filename` is an unbounded walk too; a zero-length mhod must make
+    /// it give up (empty name → proof-read failure), not spin.
+    #[test]
+    fn filename_walk_survives_zero_length_mhod() {
+        let mut data = vec![0u8; 0x24 + 8];
+        let off = 0x24;
+        data[off..off + 4].copy_from_slice(b"mhod");
+        // mhod_tlen left zero on purpose.
+        assert_eq!(mhni_filename(&data, off, data.len()), "");
+    }
+
+    /// A hostile bank name must never redirect the (read-only) proof-read
+    /// outside the artwork directory.
+    #[test]
+    fn proof_read_rejects_path_traversal_name() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["../outside", "a/b", "a\\b", ".."] {
+            let first = vec![FormatThumb {
+                format_id: 1028,
+                offset: 0,
+                size: 8,
+                width: 2,
+                height: 2,
+                hpad: 0,
+                vpad: 0,
+                ithmb_file: name.to_string(),
+            }];
+            let report = proof_read(dir.path(), &first);
+            let failure = report.failed.expect("proof-read must refuse");
+            assert!(failure.reason.contains("unsafe"), "{}", failure.reason);
+        }
+        // The leading-`:` form sanitizes down to a safe flat name.
+        assert!(bank_name_is_safe("F1028_1.ithmb"));
+        assert!(!bank_name_is_safe(""));
     }
 
     #[test]

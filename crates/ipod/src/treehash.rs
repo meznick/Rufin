@@ -15,6 +15,8 @@
 //!   hostile tree must not redirect hashing outside the root.
 //! - The root directory's own name is not part of the digest (the tree can
 //!   be copied anywhere); its *contents* are.
+//! - Path components are hashed as **raw bytes**, not lossy strings: two
+//!   distinct non-UTF-8 names must never collapse into one digest record.
 //!
 //! The records are sorted by relative path before hashing, so the digest is
 //! independent of `readdir` order.
@@ -37,7 +39,7 @@ pub struct TreeHashError {
 ///
 /// `root` must exist. Returns the lowercase hex SHA-256.
 pub fn tree_hash(root: &Path) -> Result<String, TreeHashError> {
-    let mut entries: BTreeMap<String, String> = BTreeMap::new();
+    let mut entries: BTreeMap<Vec<u8>, String> = BTreeMap::new();
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
         let read = std::fs::read_dir(&dir).map_err(|source| TreeHashError {
@@ -78,7 +80,7 @@ pub fn tree_hash(root: &Path) -> Result<String, TreeHashError> {
     // Canonical order: sorted by relative path, path NUL record LF.
     let mut hasher = Sha256::new();
     for (path, record) in &entries {
-        hasher.update(path.as_bytes());
+        hasher.update(path);
         hasher.update([0]);
         hasher.update(record.as_bytes());
         hasher.update([b'\n']);
@@ -94,18 +96,21 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// Relative path of `path` under `root`, with `/` separators regardless of
-/// platform, so the digest is portable across host conventions.
-fn relative_key(path: &Path, root: &Path) -> Result<String, TreeHashError> {
+/// Relative path of `path` under `root` as raw encoded bytes, joined with
+/// `/` separators — the digest must not depend on Unicode round-trips.
+fn relative_key(path: &Path, root: &Path) -> Result<Vec<u8>, TreeHashError> {
     let rel = path.strip_prefix(root).map_err(|source| TreeHashError {
         path: path.to_path_buf(),
         source: std::io::Error::other(source.to_string()),
     })?;
-    Ok(rel
-        .components()
-        .map(|component| component.as_os_str().to_string_lossy())
-        .collect::<Vec<_>>()
-        .join("/"))
+    let mut key = Vec::new();
+    for (i, component) in rel.components().enumerate() {
+        if i > 0 {
+            key.push(b'/');
+        }
+        key.extend_from_slice(component.as_os_str().as_encoded_bytes());
+    }
+    Ok(key)
 }
 
 #[cfg(test)]
@@ -206,5 +211,24 @@ mod tests {
     fn missing_root_is_an_error() {
         let err = tree_hash(Path::new("/nonexistent/definitely")).unwrap_err();
         assert!(err.to_string().contains("tree hash failed"));
+    }
+
+    /// Distinct non-UTF-8 names must not collapse into one record: `a\xff`
+    /// and `a\xfe` both lossy-decode to the same replacement string, so a
+    /// lossy key would hide a rename between them.
+    #[cfg(unix)]
+    #[test]
+    fn non_utf8_names_do_not_collide() {
+        use std::os::unix::ffi::OsStrExt;
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(std::ffi::OsStr::from_bytes(b"a\xff")), b"x").unwrap();
+        let before = tree_hash(dir.path()).unwrap();
+        std::fs::rename(
+            dir.path().join(std::ffi::OsStr::from_bytes(b"a\xff")),
+            dir.path().join(std::ffi::OsStr::from_bytes(b"a\xfe")),
+        )
+        .unwrap();
+        let after = tree_hash(dir.path()).unwrap();
+        assert_ne!(before, after, "raw path bytes must be part of the digest");
     }
 }

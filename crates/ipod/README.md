@@ -47,15 +47,21 @@ LAYOUTS=sha256:cd93ed97aa1ab7cda96a13d94b9f0df45ced5ab5d6f60d6792b0a8a27bad4816
 
 Marker present and mismatched → `BackendUnavailable` (hard). Absent (distro
 build) → SONAME 4 trusted with a warning (soft policy; strictness is the
-packaging follow-up, delta §5). Write symbols are resolved eagerly but their
-absence only fails writes.
+packaging follow-up, delta §5); the backend then carries
+`IpodBackend::abi_verified == false` so the FSM can surface the
+unverified-ABI state instead of trusting it silently. Write symbols are
+resolved eagerly but their absence only fails writes.
 
 ## The write gate
 
 `write.rs` defines `create_track`, `copy_track`, `update_track`,
-`remove_track`, `update_playlists`, `set_artwork`, `write_library` — all
-refuse at runtime unless the crate is compiled with `--features sync-writes`.
-No sync path may enable that feature before B-010.
+`remove_track`, `update_playlists`, `set_artwork`, `write_library` — always
+compiled, they refuse at runtime unless the crate is built with
+`--features sync-writes`. No sync path may enable that feature before B-010.
+`remove_track` detaches the track from every playlist (including the master
+playlist) before freeing it — upstream `itdb_track_unlink` deliberately
+leaves memberships alone, and a freed member pointer would be dereferenced by
+the next write (regression-tested with the track seated in the MPL).
 
 ## Tests
 
@@ -66,19 +72,23 @@ IPOD_TEST_TREE=/tmp/opencode/libgpod-check/fakepod \
   cargo test -p ipod --features sync-writes
 ```
 
-- Unit (40): marker parser + ABI policy table (matching/missing/mismatch/
+- Unit (45): marker parser + ABI policy table (matching/missing/mismatch/
   unreadable), loader refusals (missing/garbage/wrong library), `with_native`
-  serialization (8 threads against an overlap/nesting assertion), synthetic +
-  real ArtworkDB parsing, RGB565 decoder, tree hash, verdict table, feature
-  gate.
-- Integration (9): structured parse failure; fresh fixture reads; empty-SysInfo
+  serialization (8 threads against an overlap assertion), synthetic + real
+  ArtworkDB parsing (incl. zero-length block guards and hostile bank-name
+  refusal), RGB565 decoder, tree hash (incl. raw-byte path keys), verdict
+  table, feature gate.
+- Integration (10): structured parse failure; fresh fixture reads; empty-SysInfo
   model gate; full create/copy/artwork/write/reparse round-trip with the
-  independent artwork verdict `Ok`; read non-mutation via tree hash; ArtworkDB
-  removed and corrupt (both `Missing` while tracks still parse); removed
-  `.ithmb` banks (proof-read forces `Missing`); concurrent sessions across 4
-  threads sharing one backend; the restored-device snapshot (3373 tracks /
-  9 playlists / ArtworkDB 3356 entries, verdict `Ok` with 3356 parsed
-  thumbnails when `SysInfo` is seeded).
+  independent artwork verdict `Ok`; `remove_track` with the track seated in
+  the master playlist (reparse must show no dangling members — fails with an
+  upstream assertion/SIGSEGV when the detach is skipped); read non-mutation
+  via tree hash; ArtworkDB removed and corrupt (both `Missing` while tracks
+  still parse); removed `.ithmb` banks (proof-read forces `Missing`);
+  concurrent sessions across 4 threads sharing one backend; the
+  restored-device snapshot (3373 tracks / 9 playlists / ArtworkDB 3356
+  entries, verdict `Ok` with 3356 parsed thumbnails when `SysInfo` is
+  seeded).
 
 ## Facts discovered during implementation (recorded in delta §8)
 
@@ -87,4 +97,8 @@ unknown model is the INVALID/UNKNOWN table entry, so the W-3 gate checks the
 model *value*; libgpod writes ArtworkDB bank names as UTF-16LE (enc byte 2);
 `itdb_track_add` assigns the unique dbid; `itdb_init_ipod` seeds `SysInfo`
 with `ModelNumStr`; the real ArtworkDB has 3356 image-list entries and 0
-album-list entries; libgpod exports no version symbol (hence the marker).
+album-list entries; libgpod exports no version symbol (hence the marker);
+`itdb_track_unlink` does NOT detach playlist memberships (the wrapper's
+`remove_track` does it itself before the free); `itdb_init_ipod` creates an
+MPL with empty members, which is why a fixture round-trip alone could never
+expose the dangling-members bug.

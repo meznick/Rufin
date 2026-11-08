@@ -14,7 +14,8 @@
 //!    applies the soft ABI policy from the crate root docs:
 //!    `rufin-libgpod.abi` present and mismatched → `AbiMismatch`; present but
 //!    unreadable → `AbiMismatch` (exists-but-unverifiable is treated as a
-//!    mismatch, never silently accepted); absent → proceed with a warning.
+//!    mismatch, never silently accepted); absent → proceed with a warning and
+//!    `IpodBackend::abi_verified == false`.
 //! 4. Resolves the write-side table (absence tolerated, see
 //!    [`ffi::symbols::resolve_write`]) and the GLib helpers (absence
 //!    tolerated with a leak-and-warn policy, see [`ffi::symbols::GlibHelpers`]).
@@ -65,11 +66,13 @@ pub enum BackendSearch {
 /// the `Symbol`s that point into it.
 pub struct IpodBackend {
     pub(crate) read: ReadSymbols,
-    /// Consumed by the gated write surface (W-7, `write.rs` — lands in the
-    /// next plan step; the allow drops then).
-    #[allow(dead_code)]
     pub(crate) write: Option<WriteSymbols>,
     pub(crate) glib: GlibHelpers,
+    /// Whether the ABI marker matched the pinned layout set. `false` = the
+    /// marker was absent (a distro build) and the SONAME soft policy was
+    /// applied — consumers (B-003's FSM) should surface the unverified-ABI
+    /// state to the user, not treat it as a full pin match.
+    pub abi_verified: bool,
     /// Held only to keep the library loaded for the process lifetime (the
     /// resolved function pointers in the tables above point into it).
     /// Declared **last** on purpose: fields drop in declaration order, and
@@ -84,8 +87,6 @@ impl IpodBackend {
     }
 
     /// The resolved write-side symbols, `None` when the library lacks them.
-    /// Consumed by the gated write surface (W-7) — see the field note.
-    #[allow(dead_code)]
     pub(crate) fn write(&self) -> Option<&WriteSymbols> {
         self.write.as_ref()
     }
@@ -130,7 +131,7 @@ impl IpodBackend {
             // dladdr on itdb_parse gives the file that actually provided the
             // symbol (through symlinks), which is where the marker must live.
             let real_path = library_real_path(read.itdb_parse).unwrap_or(path.clone());
-            check_marker(&real_path)?;
+            let abi_verified = check_marker(&real_path)?;
 
             let write = crate::ffi::symbols::resolve_write(&library);
             if write.is_none() {
@@ -142,6 +143,7 @@ impl IpodBackend {
                 read,
                 write,
                 glib,
+                abi_verified,
                 _library: library,
             })
         }
@@ -210,7 +212,11 @@ fn library_real_path(probe: crate::ffi::symbols::FnItdbParse) -> Option<PathBuf>
 
 /// Apply the soft marker policy to the resolved library path. See the module
 /// docs for the decision table.
-fn check_marker(library_path: &Path) -> Result<(), BackendUnavailable> {
+///
+/// Returns `Ok(true)` when the marker matched the pinned layout set, and
+/// `Ok(false)` when it was absent (the SONAME soft policy) — the flag feeds
+/// [`IpodBackend::abi_verified`].
+fn check_marker(library_path: &Path) -> Result<bool, BackendUnavailable> {
     let marker_path = library_path
         .parent()
         .unwrap_or_else(|| Path::new("."))
@@ -233,16 +239,17 @@ fn check_marker(library_path: &Path) -> Result<(), BackendUnavailable> {
                 )));
             }
             tracing::debug!(path = %marker_path.display(), "ABI marker matches");
-            Ok(())
+            Ok(true)
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             // Soft policy: distro build without our marker — trust the SONAME
-            // with a warning. Strictness is the packaging follow-up.
+            // with a warning. Strictness is the packaging follow-up; the
+            // `false` return keeps the unverified state visible to callers.
             tracing::warn!(
                 path = %library_path.display(),
                 "no {MARKER_FILE_NAME} next to libgpod; trusting SONAME {SONAME} only"
             );
-            Ok(())
+            Ok(false)
         }
         Err(e) => Err(BackendUnavailable::AbiMismatch(format!(
             "cannot read {}: {e}",
@@ -421,9 +428,9 @@ mod tests {
         dir.path().join(SONAME)
     }
 
-    /// W-6: the marker decision table — matching marker accepts, missing
-    /// marker accepts with the soft-policy warning path, any present-but-wrong
-    /// marker is a hard `AbiMismatch`.
+    /// W-6: the marker decision table — matching marker accepts (and reports
+    /// the ABI as verified), missing marker accepts with the soft-policy path
+    /// (ABI unverified), any present-but-wrong marker is a hard `AbiMismatch`.
     #[test]
     fn marker_matching_is_accepted() {
         let dir = tempfile::tempdir().unwrap();
@@ -432,14 +439,22 @@ mod tests {
             format!("VERSION={MARKER_VERSION}\nLAYOUTS={LAYOUTS_SHA256}\n"),
         )
         .unwrap();
-        check_marker(&fake_library_path(&dir)).expect("matching marker must be accepted");
+        assert!(
+            check_marker(&fake_library_path(&dir)).expect("matching marker must be accepted"),
+            "a matching marker means the ABI is verified"
+        );
     }
 
     #[test]
     fn marker_absent_is_soft_accepted() {
         let dir = tempfile::tempdir().unwrap();
-        // No marker file at all: the soft policy trusts the SONAME.
-        check_marker(&fake_library_path(&dir)).expect("missing marker is the soft-policy path");
+        // No marker file at all: the soft policy trusts the SONAME, and the
+        // result must say the ABI was NOT verified (feeds `abi_verified`).
+        assert!(
+            !check_marker(&fake_library_path(&dir))
+                .expect("missing marker is the soft-policy path"),
+            "a missing marker must report the ABI as unverified"
+        );
     }
 
     #[test]
