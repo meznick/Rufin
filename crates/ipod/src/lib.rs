@@ -126,11 +126,32 @@ use std::sync::{Mutex, OnceLock};
 /// every later call.
 static NATIVE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
+/// Test-only instrumentation: counts the calls currently *inside* the native
+/// lock. Any overlap or nesting is an immediate assertion — that is what the
+/// serialization unit test (W-6) relies on. Compiled out for non-test builds
+/// and for integration-test builds of the library (the production path is
+/// untouched).
+#[cfg(test)]
+static ACTIVE_NATIVE_CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
 pub(crate) fn with_native<T>(f: impl FnOnce() -> T) -> T {
     let lock = NATIVE_LOCK.get_or_init(|| Mutex::new(()));
     let guard = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    #[cfg(test)]
+    {
+        let active = ACTIVE_NATIVE_CALLS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(
+            active, 0,
+            "with_native is not serialized: a call overlapped or nested inside the lock"
+        );
+    }
+    let result = f();
+    #[cfg(test)]
+    {
+        ACTIVE_NATIVE_CALLS.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
     let _guard = guard;
-    f()
+    result
 }
 
 pub use backend::{BackendUnavailable, IpodBackend, MARKER_FILE_NAME};
@@ -141,3 +162,32 @@ pub use types::{
     PlaylistChanges, PlaylistInfo, ProofReadReport, TrackInfo, TrackMetadata,
 };
 pub use write::OperationFailure;
+
+#[cfg(test)]
+mod tests {
+    /// W-6: `with_native` must serialize — concurrent callers may never be
+    /// inside the lock at the same time, and no call may nest inside another
+    /// (the crate's invariant: every entry point locks, inner helpers never
+    /// do). The overlap counter in `with_native` asserts both; this test
+    /// hammers it from many threads. If the mutex were missing or released
+    /// early, the assertion would fire (and a nested call would too).
+    #[test]
+    fn with_native_serializes_concurrent_calls() {
+        use super::with_native;
+        let mut threads = Vec::new();
+        for _ in 0..8 {
+            threads.push(std::thread::spawn(|| {
+                for _ in 0..200 {
+                    with_native(|| {
+                        // Keep the lock held long enough that unsynchronized
+                        // threads would realistically overlap.
+                        std::hint::spin_loop();
+                    });
+                }
+            }));
+        }
+        for thread in threads {
+            thread.join().expect("worker thread panicked");
+        }
+    }
+}

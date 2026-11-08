@@ -303,3 +303,182 @@ fn snapshot_reads_match_research_numbers() {
         assert_eq!(status.tracks_with_thumbnails, 0);
     }
 }
+
+/// W-4 acceptance: with the ArtworkDB removed, `artwork_status()` reports
+/// `Missing` while track parsing still succeeds. Then, with a corrupt
+/// ArtworkDB in its place, again `Missing` while tracks still parse — the
+/// §6 "missing/corrupt ArtworkDB" fixture coverage.
+#[cfg(feature = "sync-writes")]
+#[test]
+fn fixture_artworkdb_missing_or_corrupt_reports_missing() {
+    let Some(backend) = backend_or_skip() else {
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    ipod::testkit::init_device(&backend, dir.path(), "MA446", "fixture-pod").unwrap();
+    ipod::testkit::seed_sysinfo(dir.path(), "MA446").unwrap();
+    let mut session = ipod::DeviceSession::open(&backend, dir.path()).unwrap();
+    let dbid = session
+        .create_track(&ipod::TrackMetadata {
+            title: Some("track with art".to_string()),
+            ..Default::default()
+        })
+        .unwrap();
+    session
+        .set_artwork(
+            dbid,
+            &ipod::ArtworkInput {
+                encoded: ipod::testkit::TINY_PNG.to_vec(),
+                rotation: 0,
+            },
+        )
+        .unwrap();
+    session.write_library().unwrap();
+    drop(session);
+    let artdb = dir.path().join("iPod_Control/Artwork/ArtworkDB");
+    assert!(artdb.exists(), "the write must have produced an ArtworkDB");
+
+    // Phase 1: ArtworkDB removed.
+    std::fs::remove_file(&artdb).unwrap();
+    let session = ipod::DeviceSession::open(&backend, dir.path()).unwrap();
+    assert_eq!(
+        session.tracks().unwrap().len(),
+        1,
+        "track parsing must still succeed without ArtworkDB"
+    );
+    let status = session.artwork_status().unwrap();
+    assert_eq!(
+        status.verdict,
+        ipod::ArtworkVerdict::Missing,
+        "diagnostic: {:?}",
+        status.diagnostic
+    );
+    assert_eq!(status.declared_entries, None);
+    drop(session);
+
+    // Phase 2: corrupt ArtworkDB in its place (libgpod ignores the artwork
+    // parser's failure, so `itdb_parse` succeeds — the verdict must not).
+    std::fs::write(&artdb, b"not an mhfd container").unwrap();
+    let session = ipod::DeviceSession::open(&backend, dir.path()).unwrap();
+    assert_eq!(session.tracks().unwrap().len(), 1, "tracks still parse");
+    let status = session.artwork_status().unwrap();
+    assert_eq!(
+        status.verdict,
+        ipod::ArtworkVerdict::Missing,
+        "diagnostic: {:?}",
+        status.diagnostic
+    );
+    assert!(status.diagnostic.as_deref().unwrap().contains("parse"));
+}
+
+/// §6 "removed `.ithmb`": the ArtworkDB stays intact, the banks vanish. Per
+/// §1.2 the parse can still report an attached thumbnail, so the counts may
+/// match — the proof-read is what must fail and force `Missing`.
+#[cfg(feature = "sync-writes")]
+#[test]
+fn fixture_ithmb_removed_reports_missing() {
+    let Some(backend) = backend_or_skip() else {
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    ipod::testkit::init_device(&backend, dir.path(), "MA446", "fixture-pod").unwrap();
+    ipod::testkit::seed_sysinfo(dir.path(), "MA446").unwrap();
+    let mut session = ipod::DeviceSession::open(&backend, dir.path()).unwrap();
+    let dbid = session
+        .create_track(&ipod::TrackMetadata {
+            title: Some("track with art".to_string()),
+            ..Default::default()
+        })
+        .unwrap();
+    session
+        .set_artwork(
+            dbid,
+            &ipod::ArtworkInput {
+                encoded: ipod::testkit::TINY_PNG.to_vec(),
+                rotation: 0,
+            },
+        )
+        .unwrap();
+    session.write_library().unwrap();
+    drop(session);
+
+    let artwork_dir = dir.path().join("iPod_Control/Artwork");
+    let banks: Vec<_> = std::fs::read_dir(&artwork_dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|ext| ext == "ithmb"))
+        .collect();
+    assert!(
+        !banks.is_empty(),
+        "the write must have produced ithmb banks"
+    );
+    for bank in &banks {
+        std::fs::remove_file(bank).unwrap();
+    }
+
+    let session = ipod::DeviceSession::open(&backend, dir.path()).unwrap();
+    assert_eq!(session.tracks().unwrap().len(), 1, "tracks still parse");
+    let status = session.artwork_status().unwrap();
+    assert_eq!(
+        status.verdict,
+        ipod::ArtworkVerdict::Missing,
+        "diagnostic: {:?}",
+        status.diagnostic
+    );
+    assert_eq!(status.declared_entries, Some(1));
+    if status.tracks_with_thumbnails == 1 {
+        // Counts match, so the proof-read must be the failing step.
+        let proof = status.proof_read.expect("proof-read must have run");
+        assert!(proof.failed.is_some(), "{:?}", proof);
+    }
+}
+
+/// W-6: concurrent sessions across threads run serialized through the native
+/// lock. Each thread builds its own disposable fixture and opens its own
+/// session (sessions are `!Send` by design), sharing only the backend. If the
+/// lock were missing or the session leaked native state across threads, this
+/// test would fail or crash; a deadlock would hang it.
+#[cfg(feature = "sync-writes")]
+#[test]
+fn concurrent_sessions_are_serialized() {
+    // The backend must be shareable across threads (W-6's contract for the
+    // B-003 consumer that will hand it to `spawn_blocking`).
+    fn assert_send_sync<T: Send + Sync>() {}
+    assert_send_sync::<ipod::IpodBackend>();
+
+    let Some(backend) = backend_or_skip() else {
+        return;
+    };
+    let backend = std::sync::Arc::new(backend);
+    let mut workers = Vec::new();
+    for i in 0..4 {
+        let backend = backend.clone();
+        workers.push(std::thread::spawn(move || {
+            let dir = tempfile::tempdir().unwrap();
+            ipod::testkit::init_device(&backend, dir.path(), "MA446", "fixture-pod").unwrap();
+            ipod::testkit::seed_sysinfo(dir.path(), "MA446").unwrap();
+            for round in 0..3 {
+                let mut session = ipod::DeviceSession::open(&backend, dir.path()).unwrap();
+                if round == 0 {
+                    let dbid = session
+                        .create_track(&ipod::TrackMetadata {
+                            title: Some(format!("worker {i}")),
+                            ..Default::default()
+                        })
+                        .unwrap();
+                    assert_ne!(dbid, 0);
+                    session.write_library().unwrap();
+                }
+                session.device_info().unwrap();
+                assert_eq!(session.tracks().unwrap().len(), 1);
+                session.playlists().unwrap();
+                session.playback_stats().unwrap();
+                session.artwork_status().unwrap();
+            }
+        }));
+    }
+    for worker in workers {
+        worker.join().expect("worker thread panicked");
+    }
+}
