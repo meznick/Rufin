@@ -413,4 +413,66 @@ mod tests {
             IpodBackend::load_with(BackendSearch::Explicit(dir.path().to_path_buf())).unwrap_err();
         assert!(matches!(err, BackendUnavailable::Load { .. }), "{err}");
     }
+
+    /// A fake library path inside a tempdir — `check_marker` only needs the
+    /// path to locate the marker next to it, so the ABI policy is testable
+    /// without any `.so`.
+    fn fake_library_path(dir: &tempfile::TempDir) -> PathBuf {
+        dir.path().join(SONAME)
+    }
+
+    /// W-6: the marker decision table — matching marker accepts, missing
+    /// marker accepts with the soft-policy warning path, any present-but-wrong
+    /// marker is a hard `AbiMismatch`.
+    #[test]
+    fn marker_matching_is_accepted() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(MARKER_FILE_NAME),
+            format!("VERSION={MARKER_VERSION}\nLAYOUTS={LAYOUTS_SHA256}\n"),
+        )
+        .unwrap();
+        check_marker(&fake_library_path(&dir)).expect("matching marker must be accepted");
+    }
+
+    #[test]
+    fn marker_absent_is_soft_accepted() {
+        let dir = tempfile::tempdir().unwrap();
+        // No marker file at all: the soft policy trusts the SONAME.
+        check_marker(&fake_library_path(&dir)).expect("missing marker is the soft-policy path");
+    }
+
+    #[test]
+    fn marker_version_mismatch_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(MARKER_FILE_NAME),
+            format!("VERSION=0.8.2\nLAYOUTS={LAYOUTS_SHA256}\n"),
+        )
+        .unwrap();
+        let err = check_marker(&fake_library_path(&dir)).unwrap_err();
+        assert!(matches!(err, BackendUnavailable::AbiMismatch(_)), "{err}");
+    }
+
+    #[test]
+    fn marker_layouts_mismatch_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(MARKER_FILE_NAME),
+            format!("VERSION={MARKER_VERSION}\nLAYOUTS=sha256:deadbeef\n"),
+        )
+        .unwrap();
+        let err = check_marker(&fake_library_path(&dir)).unwrap_err();
+        assert!(matches!(err, BackendUnavailable::AbiMismatch(_)), "{err}");
+    }
+
+    #[test]
+    fn marker_unreadable_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        // A directory with the marker name: exists but unreadable as a text
+        // file — must be a hard refusal, never silently accepted.
+        std::fs::create_dir(dir.path().join(MARKER_FILE_NAME)).unwrap();
+        let err = check_marker(&fake_library_path(&dir)).unwrap_err();
+        assert!(matches!(err, BackendUnavailable::AbiMismatch(_)), "{err}");
+    }
 }

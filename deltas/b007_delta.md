@@ -432,7 +432,7 @@ refine §1–§2 and must survive a future rewrite or a pin bump.
 
 ### 8.3 What the wrapper proves in tests
 
-- **34 unit + 6 integration tests** (env-gated like `ITL_TEST_PATH`; nothing runs
+- **40 unit + 9 integration tests** (env-gated like `ITL_TEST_PATH`; nothing runs
   against a live pod). The fixture builder uses libgpod's own `itdb_init_ipod` —
   the §1.1 methodology, now in the suite.
 - The restored-device snapshot **through the wrapper**: 3373 tracks, 9 playlists,
@@ -444,6 +444,19 @@ refine §1–§2 and must survive a future rewrite or a pin bump.
   (Russian) survives the round-trip.
 - Read non-mutation (W-5) is proven by tree hash before/after all read calls on a
   fixture.
+- The §6 fixture matrix is covered: empty SysInfo, seeded `MA446`, ArtworkDB
+  removed **and** corrupt (both `Missing` while track parsing succeeds), removed
+  `.ithmb` banks (counts may still match, the proof-read fails and forces
+  `Missing`).
+- Serialized access (W-6) has two tests: a unit test hammers `with_native` from
+  eight threads against an overlap/nesting assertion (test-only instrumentation,
+  compiled out of production builds), and an integration test runs four
+  concurrent worker threads, each with its own fixture session, sharing one
+  backend — the backend is compile-time asserted `Send + Sync` for the
+  `spawn_blocking` consumer in B-003.
+- The ABI policy (W-6) is unit-tested without any `.so`: matching marker accepted,
+  missing marker accepted (soft policy), version mismatch / layout mismatch /
+  unreadable marker each a hard `AbiMismatch`.
 - Loader refusals are tested without any `.so` dependency: missing library,
   garbage file, and a libc masquerading as libgpod (missing symbols).
 

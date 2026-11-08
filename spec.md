@@ -59,6 +59,36 @@ Provide a dedicated UI in the Rufin player to connect to and sync with an iPod d
   - Given pending device playback statistics, When a device write could consume them, Then preserve those statistics durably first so retrying an interrupted sync neither loses nor imports them twice, even if numeric device track IDs change.
   - Given the device update succeeds but host write-back is refused or fails, When the operation is reported, Then retain the pending host changes for recovery and report partial success; do not bypass the host sentinel check or replay already-imported statistics.
 
+### R-06: Safe backend wrapper and non-mutating reads
+The libgpod backend is accessed exclusively through the safe `ipod` wrapper crate. Reads are provably non-mutating on well-formed trees, the device model is never invented, artwork state is reported explicitly instead of trusting parse success, native access is serialized with an ABI check at load, and write APIs exist but are not reachable from any enabled sync path until B-010.
+
+- **S-14: Backend loading and unavailability**
+  - Given Rufin needs the backend, When the shared library or a required symbol is missing, incompatible, or fails to load, Then `IpodBackend::load()` returns an actionable `BackendUnavailable` and never panics, crashes, or falls back to file copying.
+  - Given a mounted supported iPod but an unavailable backend, When connection is attempted, Then the FSM shows "Sync unavailable" with the backend diagnostic and keeps sync disabled.
+
+- **S-15: Session surface (read side)**
+  - Given a mount point, When `open()` succeeds, Then `DeviceSession` provides owned results for `device_info`, `tracks`, `playlists`, `artwork_status`, and `playback_stats`, each returning a structured `IpodError` on failure instead of exposing native pointers, GLib lists, or `GError` handles. All borrowed native strings/lists are converted to owned Rust values before any call returns; `itdb_free` is paired with the session drop.
+  - Given a parse failure, When a read call is made, Then the session reports the diagnostic without leaking or double-freeing native memory.
+
+- **S-16: Model identification is honest**
+  - Given a device whose `SysInfo` is empty or unreadable, When `device_info()` runs, Then the model is reported as unknown (`None`), never silently resolved to a default model, and the FSM must not reach Ready on that basis alone (S-03/S-05; readiness is B-004).
+  - Given an empty `SysInfo`, When the wrapper parses the tree, Then the silent artwork-skip behavior documented in the B-007 research must be visible in `artwork_status` (S-17), not hidden by parse success.
+
+- **S-17: Artwork status is explicit**
+  - Given a parsed session, When `artwork_status()` runs, Then the wrapper reports (a) whether artwork parsing ran at all (model gate), (b) how many tracks carry decoded thumbnails, and (c) a verdict against the independently counted ArtworkDB entries — `Ok`, `Missing` (declared entries without parsed thumbnails), or `SkippedUnknownModel` — with a diagnostic, rather than relying on `itdb_parse`'s unchecked success.
+  - Given the restored-device snapshot with seeded model, When `artwork_status()` runs, Then 3356 tracks with thumbnails is reported as `Ok`.
+  - Given the same snapshot with empty SysInfo, When `artwork_status()` runs, Then `SkippedUnknownModel` is reported even though `itdb_parse` succeeded.
+  - Given a fixture with the ArtworkDB removed, When `artwork_status()` runs, Then `Missing` is reported while track parsing still succeeds.
+
+- **S-18: Reads are provably non-mutating**
+  - Given any read-side wrapper call, When it runs against a disposable snapshot, Then the snapshot tree hash (files and directories) is unchanged; the wrapper never invokes libgpod entry points that can create or unlink device files (`itdb_init_ipod`, `itdb_write*`, hash-info extraction, artwork-dir creation) on read paths. Where an upstream read can mutate, the wrapper documents it and tests run only on disposable copies.
+
+- **S-19: Serialized access and ABI check**
+  - Given concurrent calls, When any wrapper function runs, Then access to the native library is serialized (single mutex around load/session/drop), and `IpodBackend::load()` verifies the loaded library's declared version/ABI before use; an ABI mismatch yields `BackendUnavailable`, not undefined behavior.
+
+- **S-20: Write operations are defined but gated**
+  - Given the sync engine, When it needs create/update/remove track, playlist changes, artwork set, or `write_library`, Then the wrapper defines these on `DeviceSession` but they are not reachable from any enabled sync path until B-010's safety verification; B-007 ships them behind a not-for-production gate.
+
 ## Out of Scope
 - Support for the iOS family (iPod touch) and all non-iPod devices (initial scope).
 - Manual file management on the device outside of the sync process.

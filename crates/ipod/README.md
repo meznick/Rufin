@@ -66,14 +66,19 @@ IPOD_TEST_TREE=/tmp/opencode/libgpod-check/fakepod \
   cargo test -p ipod --features sync-writes
 ```
 
-- Unit (34): marker parser, loader refusals (missing/garbage/wrong library),
-  synthetic + real ArtworkDB parsing, RGB565 decoder, tree hash, verdict
-  table, feature gate.
-- Integration (6): structured parse failure; fresh fixture reads; empty-SysInfo
+- Unit (40): marker parser + ABI policy table (matching/missing/mismatch/
+  unreadable), loader refusals (missing/garbage/wrong library), `with_native`
+  serialization (8 threads against an overlap/nesting assertion), synthetic +
+  real ArtworkDB parsing, RGB565 decoder, tree hash, verdict table, feature
+  gate.
+- Integration (9): structured parse failure; fresh fixture reads; empty-SysInfo
   model gate; full create/copy/artwork/write/reparse round-trip with the
-  independent artwork verdict `Ok`; read non-mutation via tree hash; the
-  restored-device snapshot (3373 tracks / 9 playlists / ArtworkDB 3356
-  entries, verdict `Ok` with 3356 parsed thumbnails when `SysInfo` is seeded).
+  independent artwork verdict `Ok`; read non-mutation via tree hash; ArtworkDB
+  removed and corrupt (both `Missing` while tracks still parse); removed
+  `.ithmb` banks (proof-read forces `Missing`); concurrent sessions across 4
+  threads sharing one backend; the restored-device snapshot (3373 tracks /
+  9 playlists / ArtworkDB 3356 entries, verdict `Ok` with 3356 parsed
+  thumbnails when `SysInfo` is seeded).
 
 ## Facts discovered during implementation (recorded in delta §8)
 
