@@ -1,0 +1,33 @@
+[package]
+name = "ipod"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description.workspace = true
+repository.workspace = true
+readme.workspace = true
+publish.workspace = true
+
+[features]
+# Not-for-production gate (delta B-007 W-7): enables the *defined* write
+# APIs (create/copy/update/remove track, playlist changes, artwork set,
+# `write_library`) and the fixture-builder testkit. No sync path may enable
+# this feature until B-010's safety verification is done. Tests that exercise
+# the write surface run with `--features sync-writes`.
+sync-writes = []
+
+[dependencies]
+libc.workspace = true
+libloading.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+walkdir.workspace = true
+
+[lints]
+workspace = true
