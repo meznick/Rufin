@@ -4,7 +4,9 @@
 **Spec reference**: R-02, S-05, R-04; new R-06 (below); constitution §3
 **Plan reference**: Phase 1, Data Models & Interfaces, Testing Strategy, Risks and Tradeoffs
 **Date**: 2026-11-08
-**Status**: approved by owner 2026-11-08 as the B-007 research-gate closure; wrapper implementation remains pending
+**Status**: approved by owner 2026-11-08 as the B-007 research-gate closure; wrapper
+implemented on `feature/ipod-page-task-B-007` (§8 implementation record); the B-007
+check-off in tasks.md remains an owner decision (implementation vs verification wording)
 
 This single file closes the B-007 research gate (R1 and R2 of
 [B-001 follow-up research](b001_research.md#10-follow-up-research-required-before-implementation)),
@@ -385,3 +387,71 @@ itdb_free()                         // close
 - `iTunesPrefs.plist` `EstimatedDeviceTotals` is a free capacity source for the device
   card (B-005); the frpd blobs name the last syncing machine and iTunes version.
 - Backup/recovery: WIP, owned by B-010 (see §5).
+
+## 8. Implementation record (facts collected while writing the wrapper, 2026-11-08)
+
+The wrapper lives in `crates/ipod` (README: `crates/ipod/README.md`; rustdoc is the
+normative API doc). This section records what implementing it taught us — facts that
+refine §1–§2 and must survive a future rewrite or a pin bump.
+
+### 8.1 New facts about libgpod itself
+
+- `itdb_device_get_ipod_info()` **never returns NULL for a valid device**: an
+  unresolvable model is reported as the INVALID (0) or UNKNOWN (1) table entry
+  (verified in `itdb_device.c`). The W-3 model gate therefore checks the model
+  *value*, not the pointer. `itdb_init_ipod` seeds `SysInfo` with
+  `ModelNumStr: <model>`; an empty `SysInfo` yields the INVALID entry — the exact
+  restored-pod situation §1.2 describes, now reproduced in a fixture test.
+- The `SysInfo` file format is text `Key: value` lines (`fgets` + split at the first
+  `:`, `itdb_device.c`), which is what the testkit's `seed_sysinfo` writes.
+- `itdb_track_add()` assigns a unique random dbid immediately (not at write time),
+  so `create_track` returns a usable id before `write_library`.
+- libgpod exports **no version/ABI symbol** (153 exported symbols, all `itdb_`/
+  `ipod_`-prefixed, SONAME `libgpod.so.4`) — the runtime ABI check had to be the
+  packaging marker (`rufin-libgpod.abi`, `VERSION` + `LAYOUTS=sha256:<layouts.rs>`),
+  matching the §1.3 direction.
+- libgpod does not read `iTunesControl` at all (no source references) — its absence
+  in the snapshot copies was irrelevant to parsing.
+- `remove_track` unlinks + frees the track but deliberately leaves the media file on
+  the pod; destructive file removal stays B-010.
+
+### 8.2 New facts about the device formats (add to itl-player NOTES.md §20 as well)
+
+- The real ArtworkDB has **3356 image-list `mhii` and 0 album-list entries** — the
+  independent declared count is the image list only.
+- ArtworkDB bank file names inside `mhni` mhods are **UTF-16LE** in libgpod-written
+  files (encoding byte 2), ASCII with a leading `:` in the real iTunes file; the
+  parser handles encodings 0/1/2 and strips the `:` (mirrors `ipod_inspect.py`).
+- `mhfd` header length 0x84, `mhsd` image-list index is a **u16** at +0x0C (unlike
+  iTunesDB); `mhii`/`mhni` field offsets are documented in `artwork.rs` and match
+  the python parser.
+- Struct layout probes (against the pinned headers, recorded in
+  `ffi/layouts.rs`): `Itdb_Track` 640 B (`title` 8, `id` 216, `rating` 292,
+  `time_played` 280, `explicit_flag` 386, `artwork` 520), `Itdb_iTunesDB` 104 B,
+  `Itdb_Playlist` 224 B, `Itdb_IpodInfo` 56 B, `GList` 24 B, `GError` 16 B.
+
+### 8.3 What the wrapper proves in tests
+
+- **34 unit + 6 integration tests** (env-gated like `ITL_TEST_PATH`; nothing runs
+  against a live pod). The fixture builder uses libgpod's own `itdb_init_ipod` —
+  the §1.1 methodology, now in the suite.
+- The restored-device snapshot **through the wrapper**: 3373 tracks, 9 playlists,
+  declared 3356, verdict `Ok` with 3356 parsed thumbnails when `SysInfo` is seeded;
+  `SkippedUnknownModel` with 0 parsed when not.
+- The fixture round-trip (create/copy/set-artwork/write/reparse) proves the wrapper's
+  own ArtworkDB parser and RGB565 decoder **against libgpod's own writer**:
+  verdict `Ok`, proof-read decodes the libgpod-written ithmb banks. UTF-8 metadata
+  (Russian) survives the round-trip.
+- Read non-mutation (W-5) is proven by tree hash before/after all read calls on a
+  fixture.
+- Loader refusals are tested without any `.so` dependency: missing library,
+  garbage file, and a libc masquerading as libgpod (missing symbols).
+
+### 8.4 Deviations from §2 recorded during implementation
+
+None normative. One mechanism clarification: W-3's "reported as unknown" is
+implemented as the model-*value* gate of §8.1 (the pointer is never null), which
+supersedes the phrase "device_info runs → model reported as unknown (`None`)" in
+its mechanism, not in its requirement. The W-7 surface gained `itdb_artwork_new`
+(an artwork block is allocated on first `set_artwork`), and `remove_track` was
+scoped to database removal only (§8.1).
