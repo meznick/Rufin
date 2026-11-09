@@ -72,4 +72,8 @@ real `/proc/self/mountinfo` source with the whole `iPod_Control/` subtree
 hashed — on the Video layout that includes the media library (23G on the
 30g image), so the gate is deliberately sized for `test-device-30g.img`,
 not the 240G one. The only production mount source reads
-`/proc/self/mountinfo` (Linux-only, matching the wrapper).
+`/proc/self/mountinfo` (Linux-only, matching the wrapper); its parser
+decodes the kernel's octal escapes and follows a skip-malformed-lines
+tolerance policy — malformed lines (including overflowing escapes like
+`\400`) are dropped with a debug trace, never a panic, and a mount point
+literally named `-` still parses as the mount point.

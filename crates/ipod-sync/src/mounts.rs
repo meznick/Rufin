@@ -71,8 +71,14 @@ fn parse_line(line: &str) -> Option<MountEntry> {
     if fields.len() < 8 {
         return None;
     }
-    // Find the `-` separator that ends the optional-fields section.
-    let separator = fields.iter().position(|field| *field == "-")?;
+    // Find the `-` separator that ends the optional-fields section. The
+    // search starts after the five mandatory fields (0..=4), so a mount
+    // point literally named `-` is not mistaken for the separator (the
+    // kernel never escapes `-`).
+    let separator = fields[5..]
+        .iter()
+        .position(|field| *field == "-")
+        .map(|index| index + 5)?;
     // fstype and source directly follow the separator.
     let fstype = fields.get(separator + 1)?;
     let source = fields.get(separator + 2)?;
@@ -85,7 +91,9 @@ fn parse_line(line: &str) -> Option<MountEntry> {
 
 /// Undo the mountinfo octal escapes: `\040` space, `\011` tab, `\012`
 /// newline, `\134` backslash. Any other backslash sequence is malformed
-/// (the caller drops the line).
+/// (the caller drops the line), including octal values above `\377` — the
+/// arithmetic is overflow-checked so a malformed line is skipped, never a
+/// panic, per the parser's tolerance contract.
 fn unescape(field: &str) -> Option<std::borrow::Cow<'_, str>> {
     if !field.contains('\\') {
         return Some(std::borrow::Cow::Borrowed(field));
@@ -102,7 +110,7 @@ fn unescape(field: &str) -> Option<std::borrow::Cow<'_, str>> {
                 if d > 7 {
                     return None;
                 }
-                Some(acc * 8 + d)
+                acc.checked_mul(8)?.checked_add(d)
             })?;
             out.push(value);
             i += 4;
@@ -176,5 +184,26 @@ mod tests {
         // `\x99` is not an octal escape: the line is malformed and skipped.
         let line = "1 1 8:1 / /bad\\x99escape rw - vfat /dev/sdc1 rw";
         assert!(parse_mountinfo(line).is_empty());
+    }
+
+    #[test]
+    fn parse_mountinfo_skips_overflowing_octal_escape() {
+        // `\400` is valid octal digits but the value overflows a byte: the
+        // line is malformed and skipped — never a panic (overflow-checked
+        // arithmetic), per the tolerance contract.
+        let line = "1 1 8:1 / /bad\\400escape rw - vfat /dev/sdc1 rw";
+        assert!(parse_mountinfo(line).is_empty());
+    }
+
+    #[test]
+    fn parse_mountinfo_dash_mount_point_is_not_the_separator() {
+        // A mount point literally named `-` must parse as the mount point;
+        // the real `-` separator comes later. The kernel never escapes `-`.
+        let line = "1 1 8:1 / - rw - vfat /dev/sdc1 rw";
+        let entries = parse_mountinfo(line);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].mount_point, PathBuf::from("-"));
+        assert_eq!(entries[0].fstype, "vfat");
+        assert_eq!(entries[0].source, "/dev/sdc1");
     }
 }
