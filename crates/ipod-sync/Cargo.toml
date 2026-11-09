@@ -18,3 +18,8 @@ thiserror.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+# Test fixtures build fresh device trees with libgpod's own
+# `itdb_init_ipod` via `ipod::testkit::init_device` — the write surface,
+# gated by the wrapper's sync-writes feature. Dev-only: the published crate
+# keeps its normal dependency read-side.
+ipod = { workspace = true, features = ["sync-writes"] }

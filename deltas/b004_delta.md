@@ -95,14 +95,23 @@ Serial suffixes mapping to Classic (`serial_to_model_mapping`, lines
 `2C5 → B562`, `2C7 → B565`, `9ZS → C293`, `9ZU → C297`.
 
 **Fixture consequence:** `seed_sysinfo(mount, "MB029")` resolves to Classic
-1 Silver (leading `M` skipped). But `testkit::seed_sysinfo_extended`
-hardcodes serial `YM999999V9K` → `V9K` → A444 (Video 2G), and the serial
-path wins over `ModelNumStr` — so the Classic-with-FireWire fixture writes
-its own `SysInfoExtended` plist with a Classic serial (e.g.
-`YM6312345Y5N` → `Y5N` → B029) plus `FireWireGUID`. The minimal plist has
-no `DBVersion` key, so the extended-path `db_version` is 0/absent →
-CHECKSUM_NONE — irrelevant for B-004, which checks the generation-based
-prerequisite, not the actual checksum type.
+1 Silver (leading `M` skipped). `testkit::seed_sysinfo_extended` hardcodes
+serial `YM999999V9K` → `V9K` → A444 (Video 2G), and the serial path wins
+over `ModelNumStr` — so the Classic-with-FireWire fixture writes its own
+`SysInfoExtended` plist with a Classic serial (e.g. `YM6312345Y5N` → `Y5N`
+→ B029) plus `FireWireGUID`. The minimal plist has no `DBVersion` key, so
+the extended-path `db_version` is 0/absent → CHECKSUM_NONE — irrelevant
+for B-004, which checks the generation-based prerequisite, not the actual
+checksum type.
+
+**Live confirmation (2026-11-09, during implementation):** `itdb_init_ipod`
+with `MB029` **fails** with "Couldn't find the iPod firewire ID"
+(`itdb_init_ipod` → `itdb_write` at itdb_itunesdb.c:8192 →
+`itdb_device_write_checksum` at itdb_device.c:1989 → HASH58 → the hash58
+error). libgpod cannot even initialize a Classic without the GUID — the
+prerequisite this task checks bites at init time, not just at sync-write
+time. Classic test fixtures therefore init as `MA446` (Video) and rewrite
+the SysInfo afterwards.
 
 ## Design decisions (owner-approved, 2026-11-09)
 
@@ -129,9 +138,13 @@ prerequisite, not the actual checksum type.
    `set_ready_after_preflight` validates present/valid/`used <= total`
    after the callback; the callback returns Ok. Preflight's own `statvfs`
    serves only the read-only flag.
-8. **Check order** (first failure wins): session open → model resolved →
-   supported set → Classic checksum prerequisite → artwork verdict →
-   read-only flag.
+8. **Check order** (first failure wins): read-only mount → session open →
+   model resolved → supported set → Classic checksum prerequisite →
+   artwork verdict. (Adjusted from the plan's order during implementation:
+   the read-only check moved first — the cheapest and most fundamental
+   blocker, and the ro loop gate needs it because the real image's empty
+   `SysInfo` would otherwise mask the mount state behind the model check.
+   Flagged for owner review in the Results.)
 9. **Error mapping:** ipod-sync preflight returns its own `ReadinessError`
    (ipod-sync cannot depend on gtk-library's `PreflightError`);
    `BackendAbi` → `PreflightError::BackendUnavailable`, `Check` →
@@ -171,5 +184,50 @@ Real-model write acceptance is B-017, not claimed here.
 
 ## Results
 
-(to be filled after implementation: what was built, what the tests pinned,
-review findings and their fixes.)
+Implemented 2026-11-09 on `feature/ipod-page-task-B-004`:
+
+- `crates/ipod-sync/src/preflight.rs`: `ReadinessError`/`ReadinessCheck`,
+  the pure `evaluate` matrix, `preflight`, the `statvfs` `ST_RDONLY` mount
+  check, and the supported-set consts (pinned against
+  `ipod::ffi::layouts` by a unit test). Read-only is the FIRST check — the
+  most fundamental blocker and the cheapest one, so a ro mount is reported
+  without even parsing (and the ro loop gate needs it: the real image's
+  empty `SysInfo` would otherwise mask it behind the model check).
+- Glue (`crates/gtk-library/src/ipod_discovery.rs`): `apply_scan` gained
+  the `preflight` closure (the B-002 callback boundary); the ABI verdict is
+  consumed in the glue (`BackendUnavailable`, preflight never called, the
+  Ready-downgrade branch for a flipped report); preflight runs exactly once
+  per appearance; `preflight_with_backend` + `map_readiness` are the
+  production composition. 24 pre-existing tests migrated (Ready is now a
+  real outcome; `Connecting` is transient) + 11 new ones.
+- Gates (`crates/ipod-sync/tests/preflight.rs`, 10 tests): snapshot →
+  `Ok` with a tree-hash no-write proof; ro loop mount → `ReadOnly`; fresh
+  `itdb_init_ipod` fixtures for Video/Classic/unknown/Nano/corruption/
+  EACCES/ArtworkDB-corruption. Two research numbers pinned: `MA350` →
+  Nano 1G (unsupported), and the Classic fixtures must be built by seeding
+  `SysInfo` after a Video init (see below).
+- `scripts/ipod-dev test-full` green end-to-end (synthetic, wrapper,
+  snapshot, mounted, lint).
+
+Findings during implementation:
+
+1. **`itdb_init_ipod` refuses a Classic without the FireWire GUID** —
+   `itdb_init_ipod` (itdb_itunesdb.c:8139) writes the fresh database via
+   `itdb_write` (line 8192) → `itdb_device_write_checksum`
+   (itdb_device.c:1989) → HASH58 → the hash58 error at itdb_hash58.c:250.
+   The prerequisite this task checks bites at init time, not just at
+   sync-write time. The Classic fixtures therefore init as `MA446` and
+   rewrite the `SysInfo` afterwards.
+2. The mounted gate needed the read-only check to run first: the real
+   device image has an empty `SysInfo` (unknown model), so the original
+   model-first order would have reported Model instead of the mount state.
+   Reordered (read-only first; rationale in the module docs) — a deviation
+   from the plan's check order, flagged for owner review.
+3. The ABI-unverified rescan path would have re-retrieved on every scan
+   (the `BackendUnavailable` recovery branch is ambiguous once the ABI gate
+   also produces that state). The recovery branch now requires
+   `abi_verified`, and a same-device unverified rescan only refreshes the
+   diagnostic — the retrieval-once-per-appearance invariant holds
+   (`abi_unverified_rescan_does_not_reparse_or_reclobber`).
+
+Review findings and their fixes: (none yet — awaiting review).
