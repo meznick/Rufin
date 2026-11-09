@@ -14,6 +14,7 @@ publish.workspace = true
 gtk-media-menus.workspace = true
 sources.workspace = true
 downloads.workspace = true
+ipod-sync.workspace = true
 
 tracing.workspace = true
 gtk-widgets.workspace = true
