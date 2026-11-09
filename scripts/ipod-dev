@@ -263,6 +263,11 @@ cmd_test_mounted() {
 cmd_lint() {
     (
         cd "$REPO_ROOT"
+        # Fail the scenario on the FIRST failing check. Without `set -e`
+        # the subshell's exit code would be the last command's, silently
+        # swallowing fmt/clippy/rustdoc failures (caught by the B-004
+        # review: fmt diffs were printed, lint still said OK).
+        set -e
         cargo fmt -p ipod-sync --check
         cargo fmt -p ipod --check
         rustfmt --edition 2024 --check crates/gtk-library/src/ipod_discovery.rs
