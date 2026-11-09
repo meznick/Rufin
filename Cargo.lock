@@ -3334,7 +3334,10 @@ name = "gtk-library"
 version = "0.16.6"
 dependencies = [
  "artwork",
+ "async-channel",
  "downloads",
+ "gio",
+ "glib",
  "glib-build-tools",
  "gtk-media-menus",
  "gtk-widgets",
