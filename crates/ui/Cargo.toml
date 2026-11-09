@@ -12,6 +12,10 @@ publish.workspace = true
 
 [dependencies]
 ipod-sync.workspace = true
+# The production preflight composition (`preflight_with_backend`) needs the
+# backend handle. The ipod crate is pure Rust with runtime dlopen, so this
+# stays a compile-time-only edge — builds without libgpod.so still work.
+ipod.workspace = true
 adw = { workspace = true, features = ["v1_9", "gtk_v4_20"] }
 app-identity.workspace = true
 async-channel.workspace = true
