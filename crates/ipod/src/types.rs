@@ -101,8 +101,9 @@ impl DeviceInfo {
     /// libgpod merges `FireWireGUID` from `SysInfoExtended` into the plain
     /// sysinfo hash under the key `FirewireGuid` at parse time, so `None`
     /// here means the device carries no `SysInfoExtended` entry — the common
-    /// case on the Video snapshot. B-005 consumes this; the Classic checksum
-    /// requirement (B-004) keys off the same value.
+    /// case on the Video snapshot. B-005 consumes this; the Classic/Nano
+    /// Video database checksum (the B-008+ sync write path, not B-004's
+    /// preflight) keys off the same value.
     pub fn firewire_id(&self) -> Option<&str> {
         self.sysinfo
             .iter()
