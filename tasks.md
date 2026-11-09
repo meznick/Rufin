@@ -28,7 +28,7 @@ Tasks are listed in dependency order; IDs stay stable, so B-007 precedes discove
   - Plan reference: Phase 1, Connection FSM
   - Verification: A mount scan finds candidate `iPod_Control` directories and passes them to the wrapper; it does not mark a candidate Ready. Fixtures cover detection, missing backend, permissions, removal, and unrelated volumes; no initialization or capability-file writes occur during discovery.
   - Depends on: B-007
-- [ ] **B-005: Implement DeviceInfo retrieval**
+- [x] **B-005: Implement DeviceInfo retrieval**
   - Spec reference: R-03, S-06
   - Plan reference: Phase 1, Data Models & Interfaces
   - Research gate before implementation: R3 resolved 2026-11-09 with owner review — the display name is the iTunesDB master-playlist name (type-1 `mhyp`; libgpod exposes it and reads no volume label anywhere). On the device snapshot the FAT32 label `IPOD USER` (uppercase-only format) is a derived lossy copy of the master playlist's `iPod user`; `Device/SysInfo` has no name key, and the real `SysInfo` is empty. No volume-name fallback (owner decision); a missing name stays explicit. Evidence in [deltas/b005_delta.md](deltas/b005_delta.md).
