@@ -11,6 +11,22 @@ readme.workspace = true
 publish.workspace = true
 
 [dependencies]
+<<<<<<< HEAD:crates/ui/Cargo.toml
+=======
+gtk-media-menus.workspace = true
+sources.workspace = true
+downloads.workspace = true
+ipod-sync.workspace = true
+
+tracing.workspace = true
+gtk-widgets.workspace = true
+rufin-core.workspace = true
+library.workspace = true
+playback.workspace = true
+artwork.workspace = true
+localization.workspace = true
+gtk = { workspace = true, features = ["v4_20"] }
+>>>>>>> e2af598d (B-003: wire discovery into the connection FSM; delta spec):crates/gtk-library/Cargo.toml
 adw = { workspace = true, features = ["v1_9", "gtk_v4_20"] }
 app-identity.workspace = true
 async-channel.workspace = true
