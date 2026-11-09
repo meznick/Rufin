@@ -23,7 +23,7 @@ Tasks are listed in dependency order; IDs stay stable, so B-007 precedes discove
   - Research gate before implementation: investigate [R1 and R2](deltas/b001_research.md#10-follow-up-research-required-before-implementation), document evidence and tests, and obtain owner review of resulting wrapper/design changes.
   - Verification: Owner approves loading/linking and packaging before implementation. Wrapper tests cover ownership, allocation/freeing, GLib strings/lists, GError, ABI compatibility, and serialized access. Backend-enabled calls work on disposable fixtures; backend-disabled/missing/incompatible configurations report unavailable and never fall back to copying. Write APIs are not exposed as an enabled destructive sync until B-010 safety verification.
   - Depends on: B-002
-- [ ] **B-003: Implement mounted-device discovery using libgpod**
+- [x] **B-003: Implement mounted-device discovery using libgpod**
   - Spec reference: R-02, S-02, S-05
   - Plan reference: Phase 1, Connection FSM
   - Verification: A mount scan finds candidate `iPod_Control` directories and passes them to the wrapper; it does not mark a candidate Ready. Fixtures cover detection, missing backend, permissions, removal, and unrelated volumes; no initialization or capability-file writes occur during discovery.
