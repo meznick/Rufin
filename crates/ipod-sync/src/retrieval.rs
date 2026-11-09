@@ -151,7 +151,11 @@ fn filesystem_usage(mount_point: &Path) -> (Option<u64>, Option<u64>) {
         );
         return (None, None);
     }
-    let fragment = if stat.f_frsize > 0 { stat.f_frsize } else { stat.f_bsize } as u64;
+    let fragment = if stat.f_frsize > 0 {
+        stat.f_frsize
+    } else {
+        stat.f_bsize
+    } as u64;
     let total = stat.f_blocks as u64 * fragment;
     let used = (stat.f_blocks as u64).saturating_sub(stat.f_bfree as u64) * fragment;
     (Some(total), Some(used.min(total)))

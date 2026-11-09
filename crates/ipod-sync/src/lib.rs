@@ -36,7 +36,7 @@
 //! and caches success; a failed load is retried on every scan, so a backend can
 //! only transition from unavailable to loaded at runtime. Every
 //! [`ScanReport`] carries the status explicitly:
-//! [`BackendStatus::Loaded`] with [`IpodBackend::abi_verified`] (the ABI
+//! [`BackendStatus::Loaded`] with `IpodBackend::abi_verified` (the ABI
 //! marker verdict — `false` means a distro build was soft-accepted and the
 //! consumer should surface the unverified state), or
 //! [`BackendStatus::Unavailable`] with the load failure as the reason.
@@ -63,4 +63,4 @@ pub use discovery::{
     BackendStatus, BlockedMount, Candidate, Discovery, IPOD_CONTROL_DIR, ScanReport,
 };
 pub use mounts::{MountEntry, MountError, MountSource, ProcMountInfo};
-pub use retrieval::{collect, DeviceFacts, DeviceRead, RetrieveError};
+pub use retrieval::{DeviceFacts, DeviceRead, RetrieveError, collect};

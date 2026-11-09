@@ -4269,6 +4269,7 @@ name = "ipod-sync"
 version = "0.16.6"
 dependencies = [
  "ipod",
+ "libc",
  "tempfile",
  "thiserror 2.0.21",
  "tracing",

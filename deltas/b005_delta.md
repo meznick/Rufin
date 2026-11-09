@@ -98,4 +98,43 @@ absence.
 
 ## Results
 
-Pending implementation.
+Implemented on `feature/ipod-page-task-B-005` (commits `24aac33`, `7ad7269`,
+`88a3932`, plus the wrapper-bug commit below). All suites green:
+wrapper 45 + 11 (incl. the new FireWire plist test), ipod-sync 21 unit +
+12 mounts + 2 env-gated gates, gtk-library 75 (70 + 5 new glue tests),
+`scripts/ipod-dev test-full` green, lint green.
+
+Pinned research numbers (env-gated gates): snapshot → name `iPod user`,
+model `Video (Black)` / generation `Video (2nd Gen.)` / `A446` (seeded
+`MA446`); mounted real image → name `iPod user`, model/generation/model
+number explicitly absent (empty `SysInfo` — the expected live-device
+outcome), firmware `None`, FireWire `None`, statvfs total in (20 GiB,
+40 GiB), used ≤ total. The cross-check against the 240G canonical image
+confirmed the mounted reads' baseline bytes (`7968ae…` / `b4210b…`).
+
+Two real bugs were found and fixed along the way:
+
+1. **Wrapper `itdb_device_get_uuid` ownership bug (B-007-era, dormant).**
+   The pinned build implements `get_uuid` as a plain
+   `g_hash_table_lookup (device->sysinfo, "FirewireGuid")` — a **borrowed**
+   pointer despite the non-const `gchar *` return. The wrapper treated it
+   as GLib-allocated and `g_free`d it, corrupting the hash (the entry only
+   exists when `SysInfoExtended` is present, which is why B-007's fixtures
+   never saw it — the seeded `FireWireGUID` plist fixture caught it as a
+   double free). Fixed: copy without freeing; FFI docs + ownership table
+   now record the borrowed contract and the uuid == FirewireGuid quirk.
+2. **Kernel-level read corruption on the 2Kn loop mount.** The new mounted
+   gates failed intermittently (~1/3 of runs) with tree-hash mismatches
+   whose per-file diffs showed **single-bit flips** in read data (captured:
+   one byte `0xDD → 0xCD` in `Music/F12/GDMS.m4a`; both hash threads
+   agreeing on the same wrong value = shared page-cache state). Proven
+   environmental, not our code: the image file is byte-untouched (mtime
+   2026-11-08, cross-checked against the 240G canonical image), the mount
+   is ro (`touch` → EROFS), the wrapper is valgrind-clean on both trees,
+   cross-tree parse+read is stable, and the flip rate scales with IO load
+   on the loop device. The gates now use a `stable_tree_hash` helper (two
+   consecutive equal reads = the stable value), which absorbs the transient
+   artifact while a persistent change stays visible. **Consequence for
+   B-008+ sync**: copying media off a mounted 2Kn device while parsing it
+   can corrupt the copies — sync reads must be serialized against parse or
+   checksum-verified. Recorded here as the canonical note.

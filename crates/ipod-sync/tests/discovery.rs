@@ -398,7 +398,7 @@ fn env_gated_mounted_device_is_detected_and_unmodified() {
         mount.display()
     );
 
-    let before = ipod::tree_hash(&control).unwrap();
+    let before = stable_tree_hash(&control);
     let mut discovery = Discovery::new();
     let report = discovery.scan(&ProcMountInfo).unwrap();
     assert!(
@@ -407,8 +407,29 @@ fn env_gated_mounted_device_is_detected_and_unmodified() {
         mount.display()
     );
     assert_eq!(
-        ipod::tree_hash(&control).unwrap(),
+        stable_tree_hash(&control),
         before,
         "a scan against a mounted device image must not modify iPod_Control/"
+    );
+}
+
+/// The loop device's 2Kn read path has been observed serving transient
+/// single-bit-corrupted reads under IO load (one captured instance: byte
+/// 0xDD → 0xCD in a music file; the image file itself never changed — see
+/// deltas/b005_delta.md). A flip can hit ANY single read, so the gates
+/// take two consecutive equal hashes as the stable value: two corrupted
+/// reads in a row agreeing is beyond plausible, while a real (persistent)
+/// change stays visible in every read.
+fn stable_tree_hash(root: &Path) -> String {
+    for attempt in 0..5 {
+        let first = ipod::tree_hash(root).unwrap();
+        let second = ipod::tree_hash(root).unwrap();
+        if first == second {
+            return first;
+        }
+        eprintln!("transient read artifact (attempt {attempt}); re-reading");
+    }
+    panic!(
+        "tree hash did not stabilize after 5 attempts — the device tree is changing or the read path is badly corrupted"
     );
 }
