@@ -16,6 +16,9 @@ ipod-sync.workspace = true
 # backend handle. The ipod crate is pure Rust with runtime dlopen, so this
 # stays a compile-time-only edge — builds without libgpod.so still work.
 ipod.workspace = true
+gtk-widgets.workspace = true
+artwork.workspace = true
+
 adw = { workspace = true, features = ["v1_9", "gtk_v4_20"] }
 app-identity.workspace = true
 async-channel.workspace = true

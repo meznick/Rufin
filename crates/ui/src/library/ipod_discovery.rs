@@ -290,7 +290,7 @@ pub fn preflight_with_backend(
 /// `BackendAbi` → `BackendUnavailable` (an incompatible backend — the glue
 /// itself short-circuits before preflight, so this arm is classification
 /// completeness), device-level checks → `Readiness`.
-fn map_readiness(error: ipod_sync::ReadinessError) -> PreflightError {
+pub(crate) fn map_readiness(error: ipod_sync::ReadinessError) -> PreflightError {
     match error {
         ipod_sync::ReadinessError::BackendAbi { detail } => {
             PreflightError::BackendUnavailable(detail)
