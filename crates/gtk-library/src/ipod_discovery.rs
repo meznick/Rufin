@@ -16,6 +16,14 @@
 //! and must not clobber a pending diagnostic. Blocked mounts (probe denied)
 //! are report-only: a blocked mount is not a confirmed iPod, and
 //! confirmed-candidate access failures are B-004's preflight territory.
+//!
+//! Two deliberate simplifications to keep in mind for B-004: the glue does
+//! not surface `abi_verified = false` (a soft-accepted distro build) — the
+//! report carries it, and B-004's preflight must turn it into a readiness
+//! failure, never silent `Ready`. And when the backend later becomes
+//! unavailable, the backend's reason supersedes any earlier retrieval
+//! failure diagnostic (the newer cause wins); a retrieval failure itself
+//! remains visible until the next state-changing scan.
 
 use std::path::Path;
 
@@ -62,6 +70,12 @@ fn device_info_from_facts(facts: DeviceFacts, mount_point: &Path) -> DeviceInfo 
 /// retrieved. A retrieval failure keeps the mount point (the candidate is
 /// still confirmed) and moves the FSM to `Error` with the failure as the
 /// actionable diagnostic — never Ready, sync disabled.
+///
+/// Invariant this relies on: retrieval only runs when the manager has no
+/// facts for the device yet (first appearance, backend recovery), so the
+/// placeholder `set_device` on the failure path never wipes previously
+/// retrieved metadata. If B-004 ever re-retrieves on a live device, this
+/// must be reworked.
 fn set_retrieved_device(
     manager: &mut DeviceManager,
     mount: &Path,
@@ -120,6 +134,9 @@ pub fn apply_scan(
 
     match &report.backend {
         BackendStatus::Loaded { .. } => {
+            // `abi_verified` is deliberately not consumed here: surfacing a
+            // soft-accepted distro build is B-004's preflight
+            // responsibility (the report carries the verdict along).
             if !same_device || manager.state() == ConnectionState::Disconnected {
                 set_retrieved_device(manager, mount, retrieve);
             } else if manager.state() == ConnectionState::BackendUnavailable {
@@ -139,6 +156,9 @@ pub fn apply_scan(
             if manager.state() != ConnectionState::BackendUnavailable {
                 manager.set_state(ConnectionState::BackendUnavailable);
             }
+            // The newer cause wins: a backend-unavailable reason supersedes
+            // any earlier retrieval-failure diagnostic (see the module
+            // docs).
             manager.set_diagnostics(reason.clone());
         }
     }
