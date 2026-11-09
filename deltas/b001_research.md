@@ -400,3 +400,12 @@ missing-value behavior, and fixture assertions for owner review; then align the 
 plan/task wording before implementing metadata retrieval. The discrepancy remains open;
 neither the task wording nor the plan's fallback is established by this note as the final
 decision.
+
+**Resolved 2026-11-09 (owner-reviewed):** the display name is the iTunesDB
+master-playlist name. libgpod reads no volume label anywhere in its sources; `Device/SysInfo`
+has no name key (the parser stores any `Key: Value` line, but libgpod itself only ever
+queries `ModelNumStr`), and the snapshot's real `SysInfo` is empty. On the device snapshot
+the FAT32 label `IPOD USER` (uppercase-only format) is a derived copy of the master
+playlist's `iPod user` — the playlist preserves the user's case, the label cannot. No
+volume-name fallback (owner decision); a missing master-playlist name stays an explicit
+absence. Evidence and fixture implications: [b005_delta.md](b005_delta.md).

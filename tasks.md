@@ -31,8 +31,8 @@ Tasks are listed in dependency order; IDs stay stable, so B-007 precedes discove
 - [ ] **B-005: Implement DeviceInfo retrieval**
   - Spec reference: R-03, S-06
   - Plan reference: Phase 1, Data Models & Interfaces
-  - Research gate before implementation: resolve the device-name provenance discrepancy in [R3](deltas/b001_research.md#r3-device-name-provenance-discrepancy) with evidence and owner review; align plan/task wording before coding.
-  - Verification: Name provenance/fallback, model/generation, optional firmware, and applicable FireWire ID match fixture metadata under `iPod_Control/Device/`. Capacity comes from filesystem statistics, not nominal `Itdb_IpodInfo.capacity`. Missing values are explicit; metadata retrieval does not reload SysInfo on a live parsed/artwork context. No initialization or helper writes are triggered.
+  - Research gate before implementation: R3 resolved 2026-11-09 with owner review — the display name is the iTunesDB master-playlist name (type-1 `mhyp`; libgpod exposes it and reads no volume label anywhere). On the device snapshot the FAT32 label `IPOD USER` (uppercase-only format) is a derived lossy copy of the master playlist's `iPod user`; `Device/SysInfo` has no name key, and the real `SysInfo` is empty. No volume-name fallback (owner decision); a missing name stays explicit. Evidence in [deltas/b005_delta.md](deltas/b005_delta.md).
+  - Verification: The name comes from the master playlist's name; model/generation from `SysInfo` `ModelNumStr` via libgpod's model table; optional firmware and applicable FireWire ID only from device metadata that actually contains them (`SysInfoExtended`). Capacity comes from filesystem statistics, not nominal `Itdb_IpodInfo.capacity`. Missing values are explicit; metadata retrieval does not reload SysInfo on a live parsed/artwork context. No initialization or helper writes are triggered.
   - Depends on: B-003
 - [ ] **B-004: Implement device readiness preflight (no Trust step)**
   - Spec reference: R-02, S-03, S-04, S-05
