@@ -48,8 +48,10 @@ retrieval), B-004 (preflight), and B-006 (observer/UI binding) build on top.
 
 - `mounts`: `MountEntry { mount_point, fstype, source }`,
   `MountSource` trait, `ProcMountInfo` (`/proc/self/mountinfo` reader with
-  octal-escape decoding and a skip-malformed-lines tolerance policy),
-  `MountError`.
+  octal-escape decoding and a skip-malformed-lines tolerance policy;
+  escapes are overflow-checked — `\400`+ is malformed and skipped, never a
+  panic — and the `-` separator search starts after the mandatory fields,
+  so a mount point literally named `-` parses), `MountError`.
 - `discovery`: `IPOD_CONTROL_DIR`, `BackendStatus::{Loaded{abi_verified},
   Unavailable{reason}}`, `Candidate { mount_point, fstype }`,
   `BlockedMount { mount_point, error }`,
@@ -95,6 +97,12 @@ over synthetic mount tables on temp dirs; glue tests in
 - *unrelated volumes* — `fixture_unrelated_volumes_are_ignored`,
   `fixture_ipod_control_file_is_not_a_candidate`,
   `unrelated_volumes_leave_manager_untouched`.
+- *mountinfo parser tolerance* — unit tests in `mounts.rs`: well-formed
+  line, octal unescaping (`\040`/`\011`/`\012`/`\134`), the optional-fields
+  separator, malformed lines skipped (too short, missing `-`, non-octal
+  escapes, overflowing octal escapes like `\400` — dropped, never a
+  panic), and a mount point literally named `-` parsing as the mount
+  point, not the separator.
 - *no initialization or capability-file writes during discovery* —
   `fixture_scan_never_writes_to_candidate_tree` (tree hash before/after a
   scan and a rescan) and the same assertion inside the env-gated test with
@@ -122,7 +130,7 @@ over synthetic mount tables on temp dirs; glue tests in
 
 Test matrix (2026-11-09):
 
-- `ipod-sync`: 9 unit + 12 integration tests, green without any libgpod and
+- `ipod-sync`: 11 unit + 12 integration tests, green without any libgpod and
   green with `RUFIN_LIBGPOD_DIR` pointing at the pinned install (the
   env-gated test asserts `Loaded` with `abi_verified` mirroring the marker
   file next to the library). Two real-tree gates: the restored-device

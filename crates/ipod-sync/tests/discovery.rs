@@ -288,6 +288,9 @@ fn env_gated_backend_loaded_reports_abi_status() {
             );
         }
         BackendStatus::Unavailable { reason } => {
+            // Deliberately NOT a skip: a set-but-broken RUFIN_LIBGPOD_DIR
+            // means a broken test environment, and the suite must fail
+            // loudly instead of silently passing over it.
             panic!("RUFIN_LIBGPOD_DIR is set but the backend did not load: {reason}");
         }
     }
