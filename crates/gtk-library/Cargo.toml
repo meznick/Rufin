@@ -19,6 +19,9 @@ ipod-sync.workspace = true
 # backend handle. The ipod crate is pure Rust with runtime dlopen, so this
 # stays a compile-time-only edge — builds without libgpod.so still work.
 ipod.workspace = true
+# The B-006 observer stream (glib 0.22 dropped watch_channel; async-channel
+# is its sanctioned replacement and already a workspace dependency).
+async-channel.workspace = true
 
 tracing.workspace = true
 gtk-widgets.workspace = true

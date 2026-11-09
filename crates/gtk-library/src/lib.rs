@@ -2,6 +2,7 @@ pub mod activity;
 mod catalog;
 pub mod device_manager;
 mod home_layout;
+pub mod ipod_connection;
 pub mod ipod_discovery;
 mod playlist_entry_model;
 mod release_kind;
