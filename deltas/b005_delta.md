@@ -68,6 +68,10 @@ absence.
    the session's already-parsed structures.
 7. **Zero writes.** Same discipline as B-003: read-only mounts, no
    initialization, no helper files. A treehash before/after gate proves it.
+8. **Name field shape: keep the B-002 `String` contract** (owner decision
+   2026-11-09: "empty string for now"). Absence = empty string in
+   `name/model/generation`; the UI layer owns any display placeholder.
+   No spec change to `DeviceInfo` field types.
 
 ## Wording alignment (this delta's commits)
 
@@ -79,16 +83,6 @@ absence.
   volume-name fallback, no volume-label mention.
 - `deltas/b001_research.md` R3: resolution addendum with the evidence
   pointer.
-
-## Open point for the implementation plan (owner decision)
-
-The B-002 contract in `gtk-library` has `name/model/generation: String`
-(absence = empty string, UI decides display). "Missing name stays explicit"
-is satisfied by the empty string, but the cleaner shape is
-`name: Option<String>` (and possibly `model`/`generation` likewise). Changing
-the type ripples through B-002's merged tests and the B-003 glue. Default:
-keep the `String` contract as is; the implementation plan will either
-confirm that or propose the type change as a spec edit.
 
 ## Verification sketch (implementation phase, to be expanded in the plan)
 
