@@ -17,7 +17,7 @@ Tasks are listed in dependency order; IDs stay stable, so B-007 precedes discove
   - Result: Implemented in `crates/gtk-library/src/device_manager.rs` with no discovery, backend dependency, or write logic. All five states and their labels are defined; only `Ready` enables the manager's sync predicate. `Ready` requires a caller-supplied preflight and present, valid capacity values; backend-unavailable failures retain their diagnostics. Actual backend/model checks and UI binding remain future work. 21 device-manager tests passed; `cargo check --package gtk-library`, formatting, and `git diff --check` passed. Test follow-ups: verify label uniqueness across every pair and add a zero-total-capacity rejection test.
   - Commit: eea14b0 (task-branch HEAD)
   - Depends on: B-001
-- [ ] **B-007: Integrate the safe libgpod Rust wrapper**
+- [x] **B-007: Integrate the safe libgpod Rust wrapper**
   - Spec reference: R-02, S-05, R-04; constitution §3
   - Plan reference: Phase 1, Data Models & Interfaces, Testing Strategy
   - Research gate before implementation: investigate [R1 and R2](deltas/b001_research.md#10-follow-up-research-required-before-implementation), document evidence and tests, and obtain owner review of resulting wrapper/design changes.
