@@ -198,8 +198,10 @@ Implemented 2026-11-09 on `feature/ipod-page-task-B-004`:
   consumed in the glue (`BackendUnavailable`, preflight never called, the
   Ready-downgrade branch for a flipped report); preflight runs exactly once
   per appearance; `preflight_with_backend` + `map_readiness` are the
-  production composition. 24 pre-existing tests migrated (Ready is now a
-  real outcome; `Connecting` is transient) + 11 new ones.
+  production composition. The 18 pre-existing tests migrated to the new
+  contract (4 renamed — `Connecting` is now transient, so `enters_connecting`
+  became `reaches_ready` — and 2 folded into the capacity/ABI coverage) +
+  16 new ones (28 total).
 - Gates (`crates/ipod-sync/tests/preflight.rs`, 10 tests): snapshot →
   `Ok` with a tree-hash no-write proof; ro loop mount → `ReadOnly`; fresh
   `itdb_init_ipod` fixtures for Video/Classic/unknown/Nano/corruption/
@@ -230,4 +232,31 @@ Findings during implementation:
    diagnostic — the retrieval-once-per-appearance invariant holds
    (`abi_unverified_rescan_does_not_reparse_or_reclobber`).
 
-Review findings and their fixes: (none yet — awaiting review).
+Review findings and their fixes (self-review + owner review, 2026-11-09):
+
+1. **The lint scenario's OK was masking real lint failures.** `cargo fmt
+   --check` / `rustfmt --check` flagged 12 hunks in the two new files, and
+   clippy reported a `useless use of format!` in the preflight gates — but
+   `ipod-dev lint` still printed OK: `cmd_lint` is a `( ... )` subshell
+   without `set -e`, so its exit code is the LAST command's (`git diff
+   --check`), which swallows earlier failures. Fixed: the two files are
+   now rustfmt-clean, the plist helper takes the serial/GUID as parameters
+   (the `format!` is real interpolation again), and `cmd_lint` runs under
+   `set -e` so any failing step fails the scenario (pre-existing script
+   weakness, exposed by this task's commit).
+2. **Wrong migrated-test count in the earlier commit message** (`92020d5`:
+   "24 pre-existing tests migrated + 11 new"): the old glue module had 18
+   tests, the new one 28 — 4 renamed, 2 folded away, 16 added. The count
+   above is the corrected one; the delta is authoritative.
+3. **Read-only-first check order**: accepted by the owner during review
+   (no change).
+
+Everything else the review checked held: the recovery branch requires a
+verified ABI; rescans are idempotent; handover/removal semantics rely on
+`set_device` resetting to `Connecting`; the discarded
+`set_ready_after_preflight` bool is informational (state + diagnostics are
+set internally); a `statvfs` failure never fabricates a read-only verdict;
+`ReadinessError::BackendAbi` is never constructed by ipod-sync by design
+(contract completeness for the glue mapping); the no-write discipline is
+proven by the tree-hash gates, which ran for real (snapshot + ro mount, no
+skips, clean mount state).
