@@ -1,14 +1,23 @@
 //! B-003 fixture matrix (see `deltas/b003_delta.md`): detection, unrelated
-//! volumes, permissions, removal, missing backend, no-write guarantee, and
-//! the env-gated backend-status check against the pinned install.
+//! volumes, permissions, removal, missing backend, no-write guarantee, the
+//! env-gated backend-status check against the pinned install, and two
+//! env-gated real-tree gates (`IPOD_TEST_TREE` = the restored-device
+//! snapshot, `IPOD_TEST_MOUNT` = a mounted device image).
 //!
-//! Everything runs against synthetic mount tables over temp dirs — never a
-//! real device, never the host's mounts.
+//! Everything else runs against synthetic mount tables over temp dirs —
+//! never a real device, never the host's mounts.
+//!
+//! The skip messages are the only `eprintln!` in the crate and are
+//! diagnostics for why a gated test did not run, not print-debugging (the
+//! same convention as the wrapper's integration suite).
+#![allow(clippy::print_stderr)]
 
 use std::path::{Path, PathBuf};
 
 use ipod::{BackendSearch, MARKER_FILE_NAME};
-use ipod_sync::{BackendStatus, Discovery, IPOD_CONTROL_DIR, MountEntry, MountError, MountSource};
+use ipod_sync::{
+    BackendStatus, Discovery, IPOD_CONTROL_DIR, MountEntry, MountError, MountSource, ProcMountInfo,
+};
 
 /// A mount source fed by a plain vector; mutated between scans to simulate
 /// mounts appearing and disappearing.
@@ -325,4 +334,78 @@ fn fixture_multiple_candidates_are_sorted_and_deduped() {
         points
     );
     assert!(report.candidates.iter().all(|c| c.fstype == "vfat"));
+}
+
+/// Env-gated on `IPOD_TEST_TREE` (the wrapper's convention): the
+/// restored-device snapshot — 3373 tracks / 9 playlists / ArtworkDB 3356 —
+/// fed through a synthetic mount table must be detected as a candidate and
+/// left byte-identical (whole-tree hash).
+#[test]
+fn env_gated_restored_snapshot_is_detected_and_unmodified() {
+    let Some(tree) = std::env::var_os("IPOD_TEST_TREE") else {
+        eprintln!("skipping: IPOD_TEST_TREE unset (the restored-device snapshot)");
+        return;
+    };
+    let tree = PathBuf::from(tree);
+    assert!(
+        tree.join(IPOD_CONTROL_DIR).is_dir(),
+        "IPOD_TEST_TREE must be a mount root containing iPod_Control/ (got {})",
+        tree.display()
+    );
+
+    let before = ipod::tree_hash(&tree).unwrap();
+    // Production backend search (FromEnv): whatever loads or not, detection
+    // and the no-write guarantee must not depend on it.
+    let mut discovery = Discovery::new();
+    let source = FakeMounts {
+        entries: vec![mount(&tree)],
+    };
+
+    let report = discovery.scan(&source).unwrap();
+    assert_eq!(report.candidates.len(), 1);
+    assert_eq!(report.candidates[0].mount_point, tree);
+    assert_eq!(report.candidates[0].fstype, "vfat");
+    assert_eq!(
+        ipod::tree_hash(&tree).unwrap(),
+        before,
+        "a scan against the restored-device snapshot must not modify it"
+    );
+}
+
+/// Env-gated on `IPOD_TEST_MOUNT`: a **mounted** device image (p2 of
+/// `ipod/test-device-30g.img` in the itl-player repo; mounting itself is a
+/// manual `losetup` + `mount` step, the test only consumes the path). Runs
+/// the full production path — the real `/proc/self/mountinfo` source and the
+/// real mount — and proves the probe leaves `iPod_Control/` byte-identical.
+/// On the Video layout `iPod_Control/` also contains the media library
+/// (23G on the 30g image), so this gate hashes the whole tree, media
+/// included — the strongest no-write proof, deliberately sized for the 30g
+/// image rather than the 240G one.
+#[test]
+fn env_gated_mounted_device_is_detected_and_unmodified() {
+    let Some(mount) = std::env::var_os("IPOD_TEST_MOUNT") else {
+        eprintln!("skipping: IPOD_TEST_MOUNT unset (mount p2 of ipod/test-device-30g.img)");
+        return;
+    };
+    let mount = PathBuf::from(mount);
+    let control = mount.join(IPOD_CONTROL_DIR);
+    assert!(
+        control.is_dir(),
+        "IPOD_TEST_MOUNT must point at a mounted iPod volume (no iPod_Control under {})",
+        mount.display()
+    );
+
+    let before = ipod::tree_hash(&control).unwrap();
+    let mut discovery = Discovery::new();
+    let report = discovery.scan(&ProcMountInfo).unwrap();
+    assert!(
+        report.candidates.iter().any(|c| c.mount_point == mount),
+        "the mounted image must be detected among the real mounts (is it still mounted? {})",
+        mount.display()
+    );
+    assert_eq!(
+        ipod::tree_hash(&control).unwrap(),
+        before,
+        "a scan against a mounted device image must not modify iPod_Control/"
+    );
 }

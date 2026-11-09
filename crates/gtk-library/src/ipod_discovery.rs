@@ -39,8 +39,13 @@ fn detected_device(mount_point: &Path) -> DeviceInfo {
 
 /// Apply one discovery scan to the FSM. Never reaches `Ready`.
 ///
-/// Multiple simultaneous candidates are out of scope: the first by sorted
-/// mount point wins (the report itself lists all of them).
+/// Multiple simultaneous candidates are out of scope and follow the
+/// deliberate **first-wins** policy (owner-approved): the report carries all
+/// of them, but the FSM follows the first by sorted mount point. Removing
+/// the current device hands the FSM over to the next candidate; removing a
+/// non-current one is invisible to the FSM; plugging in a device that sorts
+/// before the current one takes the FSM over (first wins, not first seen).
+/// All of it is tested below.
 pub fn apply_scan(manager: &mut DeviceManager, report: &ScanReport) {
     // 1. Removal: the current device's mount left the candidate set.
     if let Some(mount) = manager
@@ -240,6 +245,102 @@ mod tests {
         apply_scan(&mut manager, &report);
         assert_eq!(manager.state(), ConnectionState::Disconnected);
         assert!(manager.current_device().is_none());
+    }
+
+    /// First-wins policy: with two candidates in one scan, only the first
+    /// (sorted by mount point) becomes the current device.
+    #[test]
+    fn multiple_candidates_only_first_gets_fsm() {
+        let mut manager = DeviceManager::new();
+        apply_scan(
+            &mut manager,
+            &candidate_report(
+                vec![candidate("/mnt/ipod-aaa"), candidate("/mnt/ipod-bbb")],
+                LOADED,
+            ),
+        );
+        assert_eq!(
+            manager.current_device().unwrap().mount_point,
+            std::path::PathBuf::from("/mnt/ipod-aaa")
+        );
+        assert_eq!(manager.state(), ConnectionState::Connecting);
+    }
+
+    /// Removing the active device hands the FSM over to the next candidate.
+    #[test]
+    fn device_handover_when_active_removed() {
+        let mut manager = DeviceManager::new();
+        apply_scan(
+            &mut manager,
+            &candidate_report(
+                vec![candidate("/mnt/ipod-aaa"), candidate("/mnt/ipod-bbb")],
+                LOADED,
+            ),
+        );
+        assert_eq!(
+            manager.current_device().unwrap().mount_point,
+            std::path::PathBuf::from("/mnt/ipod-aaa")
+        );
+        // The first device unmounts; the second is still there.
+        let mut next = candidate_report(vec![candidate("/mnt/ipod-bbb")], LOADED);
+        next.removed = vec!["/mnt/ipod-aaa".into()];
+        apply_scan(&mut manager, &next);
+        assert_eq!(
+            manager.current_device().unwrap().mount_point,
+            std::path::PathBuf::from("/mnt/ipod-bbb"),
+            "the FSM must hand over to the remaining candidate"
+        );
+        assert_eq!(manager.state(), ConnectionState::Connecting);
+    }
+
+    /// Removing a non-current device leaves the FSM alone: the active
+    /// candidate is still mounted and stays current.
+    #[test]
+    fn non_active_removal_is_invisible() {
+        let mut manager = DeviceManager::new();
+        apply_scan(
+            &mut manager,
+            &candidate_report(
+                vec![candidate("/mnt/ipod-aaa"), candidate("/mnt/ipod-bbb")],
+                LOADED,
+            ),
+        );
+        let mut next = candidate_report(vec![candidate("/mnt/ipod-aaa")], LOADED);
+        next.removed = vec!["/mnt/ipod-bbb".into()];
+        apply_scan(&mut manager, &next);
+        assert_eq!(
+            manager.current_device().unwrap().mount_point,
+            std::path::PathBuf::from("/mnt/ipod-aaa")
+        );
+        assert_eq!(manager.state(), ConnectionState::Connecting);
+    }
+
+    /// First wins, not first seen: plugging in a device that sorts before
+    /// the current one takes the FSM over (deliberate, owner-approved).
+    #[test]
+    fn lower_sorting_candidate_takes_over() {
+        let mut manager = DeviceManager::new();
+        apply_scan(
+            &mut manager,
+            &candidate_report(vec![candidate("/mnt/ipod-bbb")], LOADED),
+        );
+        assert_eq!(
+            manager.current_device().unwrap().mount_point,
+            std::path::PathBuf::from("/mnt/ipod-bbb")
+        );
+        apply_scan(
+            &mut manager,
+            &candidate_report(
+                vec![candidate("/mnt/ipod-aaa"), candidate("/mnt/ipod-bbb")],
+                LOADED,
+            ),
+        );
+        assert_eq!(
+            manager.current_device().unwrap().mount_point,
+            std::path::PathBuf::from("/mnt/ipod-aaa"),
+            "the first candidate by mount point wins the FSM"
+        );
+        assert_eq!(manager.state(), ConnectionState::Connecting);
     }
 
     #[test]
