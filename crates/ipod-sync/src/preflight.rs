@@ -135,8 +135,7 @@ impl std::fmt::Display for ReadinessError {
 
 impl std::error::Error for ReadinessError {}
 
-const READ_ONLY_DETAIL: &str =
-    "the device is mounted read-only; sync needs a writable mount";
+const READ_ONLY_DETAIL: &str = "the device is mounted read-only; sync needs a writable mount";
 
 /// The pure check logic (see the module docs for the order). Everything is
 /// fixture-constructible, so the whole matrix runs without a backend.
@@ -243,14 +242,18 @@ pub fn preflight(backend: &IpodBackend, mount: &Path) -> Result<(), ReadinessErr
         kind: ReadinessCheck::Database,
         detail: format!("the device database cannot be opened or parsed: {error}"),
     })?;
-    let info = session.device_info().map_err(|error| ReadinessError::Check {
-        kind: ReadinessCheck::Database,
-        detail: format!("the device identity cannot be read: {error}"),
-    })?;
-    let artwork = session.artwork_status().map_err(|error| ReadinessError::Check {
-        kind: ReadinessCheck::Artwork,
-        detail: format!("the artwork state cannot be assessed: {error}"),
-    })?;
+    let info = session
+        .device_info()
+        .map_err(|error| ReadinessError::Check {
+            kind: ReadinessCheck::Database,
+            detail: format!("the device identity cannot be read: {error}"),
+        })?;
+    let artwork = session
+        .artwork_status()
+        .map_err(|error| ReadinessError::Check {
+            kind: ReadinessCheck::Artwork,
+            detail: format!("the artwork state cannot be assessed: {error}"),
+        })?;
 
     evaluate(info.model.as_ref(), info.firewire_id(), &artwork, false)
 }
@@ -284,10 +287,7 @@ mod tests {
     const RW: bool = false;
     const RO: bool = true;
 
-    fn check(
-        result: Result<(), ReadinessError>,
-        kind: ReadinessCheck,
-    ) -> ReadinessError {
+    fn check(result: Result<(), ReadinessError>, kind: ReadinessCheck) -> ReadinessError {
         match result {
             Ok(()) => panic!("expected a {kind} failure, got Ok"),
             Err(error) => {
@@ -466,7 +466,10 @@ mod tests {
     fn read_only_fails_first() {
         // The ro verdict wins over any other failure: it is the most
         // fundamental blocker (see the module docs).
-        let error = check(evaluate(None, None, &artwork(ArtworkVerdict::Ok, None), RO), ReadinessCheck::ReadOnly);
+        let error = check(
+            evaluate(None, None, &artwork(ArtworkVerdict::Ok, None), RO),
+            ReadinessCheck::ReadOnly,
+        );
         assert!(
             error.to_string().contains("read-only"),
             "diagnostic must name the mount state: {error}"
@@ -479,7 +482,10 @@ mod tests {
             kind: ReadinessCheck::ChecksumPrerequisite,
             detail: "boom".to_string(),
         };
-        assert_eq!(error.to_string(), "boom (checksum prerequisite check failed)");
+        assert_eq!(
+            error.to_string(),
+            "boom (checksum prerequisite check failed)"
+        );
         assert_eq!(
             ReadinessError::BackendAbi {
                 detail: "distro build".to_string(),

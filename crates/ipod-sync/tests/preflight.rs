@@ -57,16 +57,17 @@ fn fixture(backend: &IpodBackend, model_number: &str) -> tempfile::TempDir {
 /// The Classic-with-FireWire fixture: `testkit::seed_sysinfo_extended`
 /// hardcodes a Video serial (`V9K` → A444), and the serial path wins over
 /// `ModelNumStr` — so this test writes its own plist with a Classic serial
-/// (`Y5N` → B029) plus the `FireWireGUID` (delta §2.5).
-fn seed_classic_sysinfo_extended(mount: &Path) {
+/// plus the `FireWireGUID` (delta §2.5). The serial and the GUID are
+/// parameters so the plist contents stay visible at the call site.
+fn seed_classic_sysinfo_extended(mount: &Path, serial: &str, firewire_guid: &str) {
     let dir = mount.join("iPod_Control").join("Device");
     let plist = format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
          <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \
          \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
          <plist version=\"1.0\"><dict>\n\
-         <key>FireWireGUID</key><string>000A27001DB3C2D6</string>\n\
-         <key>SerialNumber</key><string>YM6312345Y5N</string>\n\
+         <key>FireWireGUID</key><string>{firewire_guid}</string>\n\
+         <key>SerialNumber</key><string>{serial}</string>\n\
          </dict></plist>\n"
     );
     std::fs::write(dir.join("SysInfoExtended"), plist).unwrap();
@@ -188,7 +189,7 @@ fn classic_with_firewire_passes() {
         return;
     };
     let dir = fixture(&backend, "MB029");
-    seed_classic_sysinfo_extended(dir.path());
+    seed_classic_sysinfo_extended(dir.path(), "YM6312345Y5N", "000A27001DB3C2D6");
     preflight(&backend, dir.path()).unwrap();
 }
 

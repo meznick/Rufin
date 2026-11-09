@@ -40,8 +40,7 @@ use crate::device_manager::{ConnectionState, DeviceInfo, DeviceManager, Prefligh
 /// (`BackendStatus::Loaded { abi_verified: false }`): the library loads,
 /// but its struct layouts are not covered by the wrapper's pinned ABI
 /// marker, so syncing is not supported.
-const ABI_UNVERIFIED_DIAGNOSTIC: &str =
-    "the installed libgpod backend is a soft-accepted distro build \
+const ABI_UNVERIFIED_DIAGNOSTIC: &str = "the installed libgpod backend is a soft-accepted distro build \
      (ABI unverified) and is not supported for syncing";
 
 /// The `DeviceInfo` for a freshly detected candidate whose metadata could
@@ -164,8 +163,7 @@ pub fn apply_scan(
             // Retrieval transitions: only when the candidate newly becomes
             // current (new device, backend recovery) — a rescan must not
             // re-parse the device.
-            let recovering =
-                manager.state() == ConnectionState::BackendUnavailable && same_device;
+            let recovering = manager.state() == ConnectionState::BackendUnavailable && same_device;
             if !same_device || manager.state() == ConnectionState::Disconnected {
                 set_retrieved_device(manager, mount, retrieve);
             } else if recovering {
@@ -264,7 +262,9 @@ mod tests {
     }
 
     const LOADED: BackendStatus = BackendStatus::Loaded { abi_verified: true };
-    const LOADED_DISTRO: BackendStatus = BackendStatus::Loaded { abi_verified: false };
+    const LOADED_DISTRO: BackendStatus = BackendStatus::Loaded {
+        abi_verified: false,
+    };
 
     fn unavailable(reason: &str) -> BackendStatus {
         BackendStatus::Unavailable {
@@ -330,7 +330,10 @@ mod tests {
             manager.current_device().unwrap().mount_point,
             std::path::PathBuf::from("/mnt/ipod")
         );
-        assert!(manager.sync_enabled(), "a verified candidate is sync-enabled");
+        assert!(
+            manager.sync_enabled(),
+            "a verified candidate is sync-enabled"
+        );
     }
 
     #[test]
@@ -486,7 +489,11 @@ mod tests {
             "diagnostic must name the ABI verdict: {:?}",
             manager.diagnostics()
         );
-        assert_eq!(calls.get(), 0, "preflight must not run on an unverified ABI");
+        assert_eq!(
+            calls.get(),
+            0,
+            "preflight must not run on an unverified ABI"
+        );
         assert!(
             manager.current_device().is_some(),
             "the device info is retained"
@@ -526,9 +533,7 @@ mod tests {
 
     #[test]
     fn abi_unverified_with_failed_retrieval_keeps_retrieval_diagnostic() {
-        let retrieve = |_mount: &Path| {
-            Err(RetrieveError::NotFound("iTunesDB corrupt".to_string()))
-        };
+        let retrieve = |_mount: &Path| Err(RetrieveError::NotFound("iTunesDB corrupt".to_string()));
         let mut manager = DeviceManager::new();
         apply_scan(
             &mut manager,
@@ -906,7 +911,11 @@ mod tests {
             std::path::PathBuf::from("/mnt/ipod"),
             "the confirmed candidate is retained with the failure"
         );
-        assert_eq!(calls.get(), 0, "preflight must not run after a failed retrieval");
+        assert_eq!(
+            calls.get(),
+            0,
+            "preflight must not run after a failed retrieval"
+        );
         assert!(!manager.sync_enabled());
         // A rescan with the same candidate must not clobber the diagnostic
         // or re-attempt retrieval.
