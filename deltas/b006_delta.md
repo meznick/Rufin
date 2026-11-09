@@ -160,10 +160,10 @@ Connecting cycle, fresh retrieval + preflight); interrupted-operation
 notices are preserved separately (service-owned, survive removal/retry,
 explicit clear only).
 
-Green: 112 gtk-library unit tests (was 85: −2 folded, +13 glue, +12 service,
-+2 monitor, +2 gates as a separate target), fmt/clippy clean on both crates,
-`ipod-dev test-full` exit 0 with the gates wired into the snapshot and
-mounted scenarios, mount state clean.
+Green: 112 gtk-library unit tests (was 85: +13 glue, +12 service, +2
+monitor) plus the 2 env-gated observer gates as a separate test target,
+fmt/clippy clean on both crates, `ipod-dev test-full` exit 0 with the gates
+wired into the snapshot and mounted scenarios, mount state clean.
 
 Implementation findings that shaped the code (recorded in decisions 9–11):
 the Connecting-before-retrieval gap (plan deviation, flagged for owner
