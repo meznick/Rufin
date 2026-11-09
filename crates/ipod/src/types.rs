@@ -76,9 +76,11 @@ pub struct DeviceInfo {
     /// the empty-`SysInfo` case. `None` here is exactly the W-3 "model
     /// unknown" signal and must never be replaced by a default model.
     pub model: Option<ModelInfo>,
-    /// Device GUID (from `itdb_device_get_uuid`). Endianness gotcha for
-    /// consumers: libgpod's `db->id` is the byte-reverse of the GUID string;
-    /// this field is the GUID in the conventional order.
+    /// Device GUID (from `itdb_device_get_uuid`). Quirk of the pinned build:
+    /// the implementation returns the sysinfo hash's `FirewireGuid` entry
+    /// (borrowed, copied by the wrapper) rather than a database id, so this
+    /// equals [`DeviceInfo::firewire_id`] whenever the device exposes one,
+    /// and is `None` otherwise.
     pub uuid: Option<String>,
     /// Key/value pairs from `SysInfo` (`ModelNumStr`, `SerialNumber`, ...).
     /// Empty when `SysInfo` is absent or unreadable.
@@ -91,6 +93,20 @@ impl DeviceInfo {
         self.sysinfo
             .iter()
             .find(|(key, _)| key == "ModelNumStr")
+            .map(|(_, value)| value.as_str())
+    }
+
+    /// The device FireWire ID, if the device exposed one.
+    ///
+    /// libgpod merges `FireWireGUID` from `SysInfoExtended` into the plain
+    /// sysinfo hash under the key `FirewireGuid` at parse time, so `None`
+    /// here means the device carries no `SysInfoExtended` entry — the common
+    /// case on the Video snapshot. B-005 consumes this; the Classic checksum
+    /// requirement (B-004) keys off the same value.
+    pub fn firewire_id(&self) -> Option<&str> {
+        self.sysinfo
+            .iter()
+            .find(|(key, _)| key == "FirewireGuid")
             .map(|(_, value)| value.as_str())
     }
 }

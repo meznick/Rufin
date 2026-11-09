@@ -17,9 +17,18 @@
 //! | Source | Ownership | What the wrapper does |
 //! |---|---|---|
 //! | struct fields (`track->title`, `playlist->name`, ...) | owned by the database, freed by `itdb_free` | copy to `String`, never free |
-//! | `itdb_device_get_uuid/sysinfo`, `itdb_get_artworkdb_path` | newly allocated, freed with `g_free` | copy, then `g_free` |
+//! | `itdb_device_get_sysinfo`, `itdb_get_artworkdb_path` | newly allocated, freed with `g_free` | copy, then `g_free` |
+//! | `itdb_device_get_uuid` | **borrowed** into the device's sysinfo hash | copy to `String`, never free |
 //! | `GError` returned via `GError**` | freed with `g_error_free` | copy domain/code/message, then `g_error_free` |
 //! | `g_quark_to_string` result | static, no free | copy |
+//!
+//! `itdb_device_get_uuid` deserves its own note: despite the non-const
+//! `gchar *` return type, the implementation is
+//! `g_hash_table_lookup (device->sysinfo, "FirewireGuid")` — a pointer into
+//! the hash, not a copy (itdb_device.c, verified against the pinned build).
+//! Freeing it would corrupt the hash (use-after-free, then a double free at
+//! `itdb_free`) — which is exactly what a seeded `SysInfoExtended` fixture
+//! caught in the B-005 wrapper work. The wrapper copies and never frees.
 //!
 //! `g_free`/`g_error_free`/`g_quark_to_string` are resolved through the
 //! loaded libgpod handle (glibc `dlsym` searches the dependency tree, and
