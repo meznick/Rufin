@@ -30,6 +30,7 @@ gtk-preferences = { path = "crates/gtk-preferences" }
 gtk-shell = { path = "crates/gtk-shell" }
 gtk-widgets = { path = "crates/gtk-widgets" }
 ipod = { path = "crates/ipod" }
+ipod-sync = { path = "crates/ipod-sync" }
 library = { path = "crates/library" }
 localization = { path = "crates/localization" }
 lyrics = { path = "crates/lyrics" }

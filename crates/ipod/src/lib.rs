@@ -172,7 +172,7 @@ pub(crate) fn with_native<T>(f: impl FnOnce() -> T) -> T {
     result
 }
 
-pub use backend::{BackendUnavailable, IpodBackend, MARKER_FILE_NAME};
+pub use backend::{BackendSearch, BackendUnavailable, IpodBackend, MARKER_FILE_NAME};
 pub use session::DeviceSession;
 pub use treehash::{TreeHashError, tree_hash};
 pub use types::{

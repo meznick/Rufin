@@ -3339,6 +3339,7 @@ dependencies = [
  "gtk-media-menus",
  "gtk-widgets",
  "gtk4",
+ "ipod-sync",
  "libadwaita",
  "library",
  "localization",
@@ -4261,6 +4262,16 @@ dependencies = [
  "thiserror 2.0.21",
  "tracing",
  "walkdir",
+]
+
+[[package]]
+name = "ipod-sync"
+version = "0.16.6"
+dependencies = [
+ "ipod",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tracing",
 ]
 
 [[package]]

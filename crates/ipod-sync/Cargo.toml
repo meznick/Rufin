@@ -1,0 +1,19 @@
+[package]
+name = "ipod-sync"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description.workspace = true
+repository.workspace = true
+readme.workspace = true
+publish.workspace = true
+
+[dependencies]
+ipod.workspace = true
+tracing.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
