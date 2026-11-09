@@ -1,4 +1,5 @@
-//! Mounted-device discovery for Rufin's iPod integration (B-003).
+//! Mounted-device discovery and metadata retrieval for Rufin's iPod
+//! integration (B-003 discovery, B-005 retrieval).
 //!
 //! This crate finds mounted candidate volumes — mount points whose root
 //! contains an [`IPOD_CONTROL_DIR`] directory — and reports them together
@@ -25,8 +26,9 @@
 //! `dlopen` — and it is proven by a tree-hash fixture.
 //!
 //! Parsing candidates, retrieving metadata, and measuring capacity belong to
-//! B-005/B-004. Discovery must never mark a candidate Ready; the FSM glue in
-//! `gtk-library` (`ipod_discovery::apply_scan`) asserts exactly that.
+//! B-005/B-004 (see [`retrieval`]); discovery must never mark a candidate
+//! Ready. The FSM glue in `gtk-library` (`ipod_discovery::apply_scan`)
+//! asserts exactly that.
 //!
 //! # Backend availability
 //!
@@ -55,8 +57,10 @@
 
 pub mod discovery;
 pub mod mounts;
+pub mod retrieval;
 
 pub use discovery::{
     BackendStatus, BlockedMount, Candidate, Discovery, IPOD_CONTROL_DIR, ScanReport,
 };
 pub use mounts::{MountEntry, MountError, MountSource, ProcMountInfo};
+pub use retrieval::{collect, DeviceFacts, DeviceRead, RetrieveError};
