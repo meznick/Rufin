@@ -100,16 +100,37 @@ over synthetic mount tables on temp dirs; glue tests in
   scan and a rescan) and the same assertion inside the env-gated test with
   the backend loaded (dlopen included). Structural guarantee: the scan path
   contains no parse, no open, no mkdir.
+- *real device trees* — two env-gated gates beyond the synthetic fixtures:
+  `env_gated_restored_snapshot_is_detected_and_unmodified` (`IPOD_TEST_TREE`
+  = the restored-device snapshot, whole-tree hash) and
+  `env_gated_mounted_device_is_detected_and_unmodified` (`IPOD_TEST_MOUNT` =
+  a mounted p2 of `ipod/test-device-30g.img`; the full production path
+  through the real `/proc/self/mountinfo` source). The mount gate hashes the
+  whole `iPod_Control/` subtree — on the Video layout that includes the
+  media library (23G on the 30g image) — the strongest no-write proof,
+  deliberately sized for the 30g image.
+- *multiple matching devices (first-wins, owner-approved 2026-11-09)* — the
+  report lists every candidate sorted; the FSM follows the first. Tested at
+  both levels: `fixture_multiple_candidates_are_sorted_and_deduped` (report),
+  and in the glue `multiple_candidates_only_first_gets_fsm`,
+  `device_handover_when_active_removed`,
+  `non_active_removal_is_invisible`, `lower_sorting_candidate_takes_over`
+  (first wins, not first seen — plugging in a device that sorts before the
+  current one takes the FSM over, deliberately).
 
 ## Results
 
 Test matrix (2026-11-09):
 
-- `ipod-sync`: 9 unit + 10 integration tests, green without any libgpod and
+- `ipod-sync`: 9 unit + 12 integration tests, green without any libgpod and
   green with `RUFIN_LIBGPOD_DIR` pointing at the pinned install (the
   env-gated test asserts `Loaded` with `abi_verified` mirroring the marker
-  file next to the library).
-- `gtk-library`: 66 tests green (57 pre-existing + 9 glue).
+  file next to the library). Two real-tree gates: the restored-device
+  snapshot through a synthetic mount table, and a mounted device image
+  through the real `ProcMountInfo` source — both detected, both
+  byte-identical after the scan.
+- `gtk-library`: 70 tests green (57 pre-existing + 13 glue, incl. the
+  first-wins multi-device semantics).
 - `ipod` wrapper regression: 45 unit + 10 integration green (unchanged).
 - `cargo check --workspace`, `cargo fmt --check`, `git diff --check`, clippy
   (`ipod-sync`, `gtk-library` all-targets), rustdoc clean.
@@ -120,7 +141,8 @@ Test matrix (2026-11-09):
   via `set_device` after metadata retrieval; consume `Discovery::backend()`.
 - B-006: observer stream / UI binding; periodic or event-driven re-scan
   policy.
-- Multiple simultaneous candidates: first-by-sorted-mount-point wins
-  (documented limitation; revisit if ever needed).
+- Multiple simultaneous candidates: first-wins by sorted mount point is the
+  deliberate policy (owner-approved), with the steal/handover/invisible
+  semantics tested in the glue. No revisit planned.
 - tasks.md checkoff stays the owner's commit, per the B-007 convention.
 - Packaging strict-marker follow-up (b007 delta §5) unchanged.

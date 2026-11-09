@@ -42,16 +42,34 @@ diagnostic; removal → `Disconnected` + cleared device. The glue never calls
 `set_ready_after_preflight` and the tests assert the state never reaches
 `Ready` — readiness stays B-004's gate.
 
+Multiple simultaneous devices follow the deliberate **first-wins** policy:
+the report lists every candidate sorted by mount point, the FSM follows the
+first. Removing the current device hands over to the next candidate;
+removing a non-current one is invisible to the FSM; plugging in a device
+that sorts before the current one takes the FSM over (first wins, not first
+seen). All four behaviors are tested.
+
 ## Tests
 
 ```bash
 # unit + integration over synthetic mount tables (no backend needed)
 cargo test -p ipod-sync
 
-# plus the env-gated backend-status check against a libgpod install
-RUFIN_LIBGPOD_DIR=/tmp/opencode/libgpod-install/lib cargo test -p ipod-sync
+# plus the env-gated gates: pinned install, restored-device snapshot, and a
+# mounted device image (mount p2 of ipod/test-device-30g.img yourself; the
+# test only consumes the path)
+RUFIN_LIBGPOD_DIR=/tmp/opencode/libgpod-install/lib \
+IPOD_TEST_TREE=/tmp/opencode/libgpod-check/fakepod \
+IPOD_TEST_MOUNT=/mnt/ipod \
+  cargo test -p ipod-sync
 ```
 
-The only production mount source reads `/proc/self/mountinfo` (Linux-only,
-matching the wrapper). Tests feed a `FakeMounts` source; nothing touches the
-host's mounts or a real device.
+The synthetic tests feed a `FakeMounts` source and never touch the host's
+mounts or a real device. The two real-tree gates prove detection and the
+no-write guarantee against the actual device data: the restored snapshot
+whole-tree-hashed, and the mounted image (`IPOD_TEST_MOUNT`) through the
+real `/proc/self/mountinfo` source with the whole `iPod_Control/` subtree
+hashed — on the Video layout that includes the media library (23G on the
+30g image), so the gate is deliberately sized for `test-device-30g.img`,
+not the 240G one. The only production mount source reads
+`/proc/self/mountinfo` (Linux-only, matching the wrapper).
