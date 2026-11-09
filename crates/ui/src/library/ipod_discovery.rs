@@ -234,7 +234,11 @@ mod tests {
     #[test]
     fn unrelated_volumes_leave_manager_untouched() {
         let mut manager = DeviceManager::new();
-        apply_scan(&mut manager, &candidate_report(Vec::new(), LOADED), &no_retrieval);
+        apply_scan(
+            &mut manager,
+            &candidate_report(Vec::new(), LOADED),
+            &no_retrieval,
+        );
         assert_eq!(manager.state(), ConnectionState::Disconnected);
         assert!(manager.current_device().is_none());
         assert_eq!(manager.diagnostics(), None);
@@ -603,9 +607,7 @@ mod tests {
     #[test]
     fn retrieval_failure_never_marks_ready() {
         let mut manager = DeviceManager::new();
-        let failing = |_mount: &Path| {
-            Err(ipod_sync::RetrieveError::NotFound("boom".to_string()))
-        };
+        let failing = |_mount: &Path| Err(ipod_sync::RetrieveError::NotFound("boom".to_string()));
         apply_scan(
             &mut manager,
             &candidate_report(vec![candidate("/mnt/ipod")], LOADED),

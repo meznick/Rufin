@@ -10,10 +10,10 @@
 //! same convention as the wrapper's integration suite).
 #![allow(clippy::print_stderr)]
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use ipod::{BackendSearch, DeviceSession};
-use ipod_sync::{collect, IPOD_CONTROL_DIR};
+use ipod_sync::{IPOD_CONTROL_DIR, collect};
 
 /// Load the backend via the production search, or skip with an explanation.
 /// A set-but-broken `RUFIN_LIBGPOD_DIR` is a test-environment failure and
@@ -60,9 +60,15 @@ fn env_gated_snapshot_retrieval_matches_research_numbers() {
         "seeded ModelNumStr MA446 must resolve to A446"
     );
     assert_eq!(facts.model, "Video (Black)", "libgpod model table, MA446");
-    assert_eq!(facts.generation, "Video (2nd Gen.)", "libgpod generation string");
+    assert_eq!(
+        facts.generation, "Video (2nd Gen.)",
+        "libgpod generation string"
+    );
     assert_eq!(facts.firmware, None, "no SysInfoExtended in the snapshot");
-    assert_eq!(facts.firewire_id, None, "no SysInfoExtended in the snapshot");
+    assert_eq!(
+        facts.firewire_id, None,
+        "no SysInfoExtended in the snapshot"
+    );
     let total = facts.total_capacity.expect("statvfs must succeed");
     let used = facts.used_capacity.expect("statvfs must succeed");
     assert!(total > 0);
@@ -100,7 +106,7 @@ fn env_gated_mounted_retrieval_pins_unknown_model_outcome() {
         return;
     };
 
-    let before = ipod::tree_hash(&control).unwrap();
+    let before = stable_tree_hash(&control);
     let session = DeviceSession::open(&backend, &mount).unwrap();
     let facts = collect(&session, &mount).unwrap();
 
@@ -110,11 +116,21 @@ fn env_gated_mounted_retrieval_pins_unknown_model_outcome() {
         "the real device has an empty SysInfo — the model must stay unknown"
     );
     assert_eq!(facts.model, "", "model unknown is an explicit empty string");
-    assert_eq!(facts.generation, "", "generation unknown is an explicit empty string");
+    assert_eq!(
+        facts.generation, "",
+        "generation unknown is an explicit empty string"
+    );
     assert_eq!(facts.firmware, None);
-    assert_eq!(facts.firewire_id, None, "no SysInfoExtended on the Video snapshot");
-    let total = facts.total_capacity.expect("statvfs must succeed on the mounted volume");
-    let used = facts.used_capacity.expect("statvfs must succeed on the mounted volume");
+    assert_eq!(
+        facts.firewire_id, None,
+        "no SysInfoExtended on the Video snapshot"
+    );
+    let total = facts
+        .total_capacity
+        .expect("statvfs must succeed on the mounted volume");
+    let used = facts
+        .used_capacity
+        .expect("statvfs must succeed on the mounted volume");
     const GIB: u64 = 1024 * 1024 * 1024;
     assert!(
         (20 * GIB..=40 * GIB).contains(&total),
@@ -122,8 +138,29 @@ fn env_gated_mounted_retrieval_pins_unknown_model_outcome() {
     );
     assert!(used <= total);
     assert_eq!(
-        ipod::tree_hash(&control).unwrap(),
+        stable_tree_hash(&control),
         before,
         "metadata retrieval must not modify the mounted device tree"
+    );
+}
+
+/// The loop device's 2Kn read path has been observed serving transient
+/// single-bit-corrupted reads under IO load (one captured instance: byte
+/// 0xDD → 0xCD in a music file; the image file itself never changed — see
+/// deltas/b005_delta.md). A flip can hit ANY single read, so the gates
+/// take two consecutive equal hashes as the stable value: two corrupted
+/// reads in a row agreeing is beyond plausible, while a real (persistent)
+/// change stays visible in every read.
+fn stable_tree_hash(root: &Path) -> String {
+    for attempt in 0..5 {
+        let first = ipod::tree_hash(root).unwrap();
+        let second = ipod::tree_hash(root).unwrap();
+        if first == second {
+            return first;
+        }
+        eprintln!("transient read artifact (attempt {attempt}); re-reading");
+    }
+    panic!(
+        "tree hash did not stabilize after 5 attempts — the device tree is changing or the read path is badly corrupted"
     );
 }
