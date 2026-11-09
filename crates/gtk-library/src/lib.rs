@@ -4,6 +4,7 @@ pub mod device_manager;
 mod home_layout;
 pub mod ipod_connection;
 pub mod ipod_discovery;
+pub mod ipod_monitor;
 mod playlist_entry_model;
 mod release_kind;
 mod track_model;

@@ -22,6 +22,9 @@ ipod.workspace = true
 # The B-006 observer stream (glib 0.22 dropped watch_channel; async-channel
 # is its sanctioned replacement and already a workspace dependency).
 async-channel.workspace = true
+# The B-006 event-driven scan monitor (VolumeMonitor mount signals).
+gio.workspace = true
+glib.workspace = true
 
 tracing.workspace = true
 gtk-widgets.workspace = true
