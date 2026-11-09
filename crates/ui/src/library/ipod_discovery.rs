@@ -23,12 +23,23 @@
 //! remains visible until the next state-changing scan.
 //!
 //! Preflight runs exactly once per device appearance: after the retrieval
-//! transitions, the state `Connecting` can only exist when retrieval just
-//! succeeded in this same scan — rescans never produce it (B-003/B-005),
-//! and preflight leaves `Ready`/`Error`/`BackendUnavailable`. So
-//! `Connecting` is a transient state within one `apply_scan` call
-//! (unobservable by synchronous UI observers), and a rescan never re-parses
-//! the device or clobbers a pending diagnostic.
+//! transitions, the state `Connecting` can only exist while retrieval or
+//! preflight just ran in this same scan — rescans never produce it
+//! (B-003/B-005), and preflight leaves `Ready`/`Error`/
+//! `BackendUnavailable`. So `Connecting` is a transient state within one
+//! `apply_scan` call: synchronous readers of `manager.state()` see only the
+//! terminal state, but the B-006 `emit` callback delivers the full sequence
+//! to subscribers. On a fresh detection the glue enters `Connecting` with
+//! the placeholder device **before** the (multi-second) retrieval parse, so
+//! observers see the candidate the moment the scan finds it (S-02). A
+//! rescan never re-parses the device or clobbers a pending diagnostic.
+//!
+//! The `emit` callback fires after every mutating step, but only when the
+//! observable snapshot — `(state, current device, diagnostics)` — changed
+//! since the previous emission within the call. Idempotent rescans emit
+//! nothing; a fresh appearance emits `Connecting` twice (placeholder, then
+//! retrieved facts) because the device info genuinely changed. Subscribers
+//! render state, not emission counts.
 
 use std::path::Path;
 
@@ -84,7 +95,8 @@ fn device_info_from_facts(facts: DeviceFacts, mount_point: &Path) -> DeviceInfo 
 /// actionable diagnostic — never Ready, sync disabled.
 ///
 /// Invariant this relies on: retrieval only runs when the manager has no
-/// facts for the device yet (first appearance, backend recovery), so the
+/// facts for the device yet (first appearance — where B-006's detection
+/// step has just installed the placeholder — or backend recovery), so the
 /// placeholder `set_device` on the failure path never wipes previously
 /// retrieved metadata. If B-004 ever re-retrieves on a live device, this
 /// must be reworked.
@@ -100,6 +112,36 @@ fn set_retrieved_device(
             manager.set_state(ConnectionState::Error);
             manager.set_diagnostics(error.to_string());
         }
+    }
+}
+
+/// The observable snapshot of the manager: everything B-006 subscribers
+/// receive. `DeviceInfo` is cloned wholesale — it is strings and numbers,
+/// and the emission path is the UI boundary, not a hot loop.
+type Observable = (ConnectionState, Option<DeviceInfo>, Option<String>);
+
+fn observed(manager: &DeviceManager) -> Observable {
+    (
+        manager.state(),
+        manager.current_device().cloned(),
+        manager.diagnostics().map(str::to_string),
+    )
+}
+
+/// Emit the current snapshot if it changed since the previous emission
+/// within this `apply_scan` call. The entry snapshot seeds `last`, so an
+/// idempotent rescan (no mutating step touched the manager) emits nothing,
+/// and a same-value update (e.g. an unchanged backend reason) emits nothing
+/// either.
+fn emit_if_changed(
+    manager: &DeviceManager,
+    last: &mut Option<Observable>,
+    emit: &mut dyn FnMut(&DeviceManager),
+) {
+    let current = observed(manager);
+    if last.as_ref().is_none_or(|previous| *previous != current) {
+        emit(manager);
+        *last = Some(current);
     }
 }
 
@@ -120,6 +162,11 @@ fn set_retrieved_device(
 /// `Ready`. On `abi_verified = false` the glue short-circuits to
 /// `BackendUnavailable` itself and `preflight` is not called.
 ///
+/// `emit` (B-006) receives the manager after every mutating step, but only
+/// when the observable snapshot changed since the previous emission within
+/// this call — see the module docs for the exact contract. Callers that
+/// don't need the sequence pass a no-op.
+///
 /// Tests inject stubs; a `DeviceFacts::default()` stub behaves like the old
 /// metadata-less placeholder, and an `Ok(())` preflight stub reaches
 /// `Ready` only when the facts carry valid capacities (B-002's built-in
@@ -137,7 +184,10 @@ pub fn apply_scan(
     report: &ScanReport,
     retrieve: &dyn Fn(&Path) -> Result<DeviceFacts, RetrieveError>,
     preflight: &dyn Fn(&Path) -> Result<(), PreflightError>,
+    emit: &mut dyn FnMut(&DeviceManager),
 ) {
+    let mut last = Some(observed(manager));
+
     // 1. Removal: the current device's mount left the candidate set.
     if let Some(mount) = manager
         .current_device()
@@ -145,6 +195,7 @@ pub fn apply_scan(
     {
         if report.removed.contains(&mount) {
             manager.clear_device();
+            emit_if_changed(manager, &mut last, emit);
         }
     }
 
@@ -165,6 +216,11 @@ pub fn apply_scan(
             // re-parse the device.
             let recovering = manager.state() == ConnectionState::BackendUnavailable && same_device;
             if !same_device || manager.state() == ConnectionState::Disconnected {
+                // Detection: enter Connecting with the placeholder BEFORE
+                // the (multi-second) retrieval parse, so observers see the
+                // candidate the moment the scan finds it (S-02).
+                manager.set_device(detected_device(mount));
+                emit_if_changed(manager, &mut last, emit);
                 set_retrieved_device(manager, mount, retrieve);
             } else if recovering {
                 if *abi_verified {
@@ -178,6 +234,7 @@ pub fn apply_scan(
                     manager.set_diagnostics(ABI_UNVERIFIED_DIAGNOSTIC.to_string());
                 }
             }
+            emit_if_changed(manager, &mut last, emit);
 
             // Fresh Connecting == retrieval just succeeded in this scan (see
             // the module docs): run the readiness gate exactly once per
@@ -201,10 +258,12 @@ pub fn apply_scan(
                 manager.set_state(ConnectionState::BackendUnavailable);
                 manager.set_diagnostics(ABI_UNVERIFIED_DIAGNOSTIC.to_string());
             }
+            emit_if_changed(manager, &mut last, emit);
         }
         BackendStatus::Unavailable { reason } => {
             if !same_device || manager.state() == ConnectionState::Disconnected {
                 manager.set_device(detected_device(mount));
+                emit_if_changed(manager, &mut last, emit);
             }
             if manager.state() != ConnectionState::BackendUnavailable {
                 manager.set_state(ConnectionState::BackendUnavailable);
@@ -213,6 +272,7 @@ pub fn apply_scan(
             // any earlier retrieval-failure diagnostic (see the module
             // docs).
             manager.set_diagnostics(reason.clone());
+            emit_if_changed(manager, &mut last, emit);
         }
     }
 }
@@ -243,6 +303,39 @@ fn map_readiness(error: ipod_sync::ReadinessError) -> PreflightError {
 mod tests {
     use super::*;
     use ipod_sync::{Candidate, ScanReport};
+
+    /// The old 4-arg call shape for tests that don't assert emission
+    /// sequences: `apply_scan` with a no-op emitter.
+    fn apply_scan_quiet(
+        manager: &mut DeviceManager,
+        report: &ScanReport,
+        retrieve: &dyn Fn(&Path) -> Result<DeviceFacts, RetrieveError>,
+        preflight: &dyn Fn(&Path) -> Result<(), PreflightError>,
+    ) {
+        apply_scan(manager, report, retrieve, preflight, &mut |_manager| {});
+    }
+
+    /// Collect the observable tuple — state, full device info, diagnostics —
+    /// per emission, the B-006 subscriber shape. Sequence tests assert the
+    /// state progression (and the device info where the placeholder/facts
+    /// distinction matters).
+    fn collecting<'a>(
+        events: &'a mut Vec<(ConnectionState, Option<DeviceInfo>, Option<String>)>,
+    ) -> impl FnMut(&DeviceManager) + 'a {
+        |manager| {
+            events.push((
+                manager.state(),
+                manager.current_device().cloned(),
+                manager.diagnostics().map(str::to_string),
+            ));
+        }
+    }
+
+    fn states(
+        events: &[(ConnectionState, Option<DeviceInfo>, Option<String>)],
+    ) -> Vec<ConnectionState> {
+        events.iter().map(|(state, _, _)| *state).collect()
+    }
 
     fn candidate_report(candidates: Vec<Candidate>, backend: BackendStatus) -> ScanReport {
         ScanReport {
@@ -319,7 +412,7 @@ mod tests {
     #[test]
     fn candidate_with_ok_preflight_reaches_ready() {
         let mut manager = DeviceManager::new();
-        apply_scan(
+        apply_scan_quiet(
             &mut manager,
             &candidate_report(vec![candidate("/mnt/ipod")], LOADED),
             &retrieved_with_capacity,
@@ -341,7 +434,7 @@ mod tests {
         let calls = std::cell::Cell::new(0);
         let preflight = failing_preflight(&calls, "should not run");
         let mut manager = DeviceManager::new();
-        apply_scan(
+        apply_scan_quiet(
             &mut manager,
             &candidate_report(vec![candidate("/mnt/ipod")], unavailable("dlopen failed")),
             &no_retrieval,
@@ -360,7 +453,7 @@ mod tests {
     #[test]
     fn removal_returns_to_disconnected_and_clears_device() {
         let mut manager = DeviceManager::new();
-        apply_scan(
+        apply_scan_quiet(
             &mut manager,
             &candidate_report(vec![candidate("/mnt/ipod")], LOADED),
             &retrieved_with_capacity,
@@ -369,7 +462,7 @@ mod tests {
         assert_eq!(manager.state(), ConnectionState::Ready);
         let mut removal = candidate_report(Vec::new(), LOADED);
         removal.removed = vec!["/mnt/ipod".into()];
-        apply_scan(&mut manager, &removal, &no_retrieval, &ok_preflight);
+        apply_scan_quiet(&mut manager, &removal, &no_retrieval, &ok_preflight);
         assert_eq!(manager.state(), ConnectionState::Disconnected);
         assert!(manager.current_device().is_none());
     }
@@ -377,7 +470,7 @@ mod tests {
     #[test]
     fn unrelated_volumes_leave_manager_untouched() {
         let mut manager = DeviceManager::new();
-        apply_scan(
+        apply_scan_quiet(
             &mut manager,
             &candidate_report(Vec::new(), LOADED),
             &no_retrieval,
@@ -393,7 +486,7 @@ mod tests {
         let calls = std::cell::Cell::new(0);
         let preflight = counting_preflight(&calls);
         let mut manager = DeviceManager::new();
-        apply_scan(
+        apply_scan_quiet(
             &mut manager,
             &candidate_report(vec![candidate("/mnt/ipod")], LOADED),
             &retrieved_with_capacity,
@@ -401,7 +494,7 @@ mod tests {
         );
         assert_eq!(manager.state(), ConnectionState::Ready);
         assert_eq!(calls.get(), 1, "preflight runs once per appearance");
-        apply_scan(
+        apply_scan_quiet(
             &mut manager,
             &candidate_report(vec![candidate("/mnt/ipod")], LOADED),
             &retrieved_with_capacity,
@@ -417,7 +510,7 @@ mod tests {
         let calls = std::cell::Cell::new(0);
         let preflight = failing_preflight(&calls, "ArtworkDB corrupt");
         let mut manager = DeviceManager::new();
-        apply_scan(
+        apply_scan_quiet(
             &mut manager,
             &candidate_report(vec![candidate("/mnt/ipod")], LOADED),
             &retrieved_with_capacity,
@@ -427,7 +520,7 @@ mod tests {
         assert_eq!(manager.diagnostics(), Some("ArtworkDB corrupt"));
         assert_eq!(calls.get(), 1);
         // A rescan must not clobber the diagnostic or re-run preflight.
-        apply_scan(
+        apply_scan_quiet(
             &mut manager,
             &candidate_report(vec![candidate("/mnt/ipod")], LOADED),
             &retrieved_with_capacity,
@@ -444,7 +537,7 @@ mod tests {
         let calls = std::cell::Cell::new(0);
         let preflight = failing_preflight(&calls, "unsupported model: Nano");
         let mut manager = DeviceManager::new();
-        apply_scan(
+        apply_scan_quiet(
             &mut manager,
             &candidate_report(vec![candidate("/mnt/ipod")], LOADED),
             &retrieved_with_capacity,
@@ -461,7 +554,7 @@ mod tests {
         let preflight =
             |_mount: &Path| Err(PreflightError::BackendUnavailable("no lib".to_string()));
         let mut manager = DeviceManager::new();
-        apply_scan(
+        apply_scan_quiet(
             &mut manager,
             &candidate_report(vec![candidate("/mnt/ipod")], LOADED),
             &retrieved_with_capacity,
@@ -477,7 +570,7 @@ mod tests {
         let calls = std::cell::Cell::new(0);
         let preflight = counting_preflight(&calls);
         let mut manager = DeviceManager::new();
-        apply_scan(
+        apply_scan_quiet(
             &mut manager,
             &candidate_report(vec![candidate("/mnt/ipod")], LOADED_DISTRO),
             &retrieved_with_capacity,
@@ -509,7 +602,7 @@ mod tests {
             Ok(DeviceFacts::default())
         };
         let mut manager = DeviceManager::new();
-        apply_scan(
+        apply_scan_quiet(
             &mut manager,
             &candidate_report(vec![candidate("/mnt/ipod")], LOADED_DISTRO),
             &retrieve,
@@ -517,7 +610,7 @@ mod tests {
         );
         assert_eq!(manager.state(), ConnectionState::BackendUnavailable);
         assert_eq!(retrieved.get(), 1, "appearance retrieves once");
-        apply_scan(
+        apply_scan_quiet(
             &mut manager,
             &candidate_report(vec![candidate("/mnt/ipod")], LOADED_DISTRO),
             &retrieve,
@@ -535,7 +628,7 @@ mod tests {
     fn abi_unverified_with_failed_retrieval_keeps_retrieval_diagnostic() {
         let retrieve = |_mount: &Path| Err(RetrieveError::NotFound("iTunesDB corrupt".to_string()));
         let mut manager = DeviceManager::new();
-        apply_scan(
+        apply_scan_quiet(
             &mut manager,
             &candidate_report(vec![candidate("/mnt/ipod")], LOADED_DISTRO),
             &retrieve,
@@ -548,14 +641,14 @@ mod tests {
     #[test]
     fn ready_downgrades_on_a_flipped_unverified_report() {
         let mut manager = DeviceManager::new();
-        apply_scan(
+        apply_scan_quiet(
             &mut manager,
             &candidate_report(vec![candidate("/mnt/ipod")], LOADED),
             &retrieved_with_capacity,
             &ok_preflight,
         );
         assert_eq!(manager.state(), ConnectionState::Ready);
-        apply_scan(
+        apply_scan_quiet(
             &mut manager,
             &candidate_report(vec![candidate("/mnt/ipod")], LOADED_DISTRO),
             &retrieved_with_capacity,
@@ -569,7 +662,7 @@ mod tests {
     #[test]
     fn missing_capacity_refuses_ready_despite_ok_preflight() {
         let mut manager = DeviceManager::new();
-        apply_scan(
+        apply_scan_quiet(
             &mut manager,
             &candidate_report(vec![candidate("/mnt/ipod")], LOADED),
             &no_retrieval,
@@ -589,7 +682,7 @@ mod tests {
         // plan.md S-06: missing firmware alone never blocks readiness. The
         // retrieval facts always carry firmware: None today.
         let mut manager = DeviceManager::new();
-        apply_scan(
+        apply_scan_quiet(
             &mut manager,
             &candidate_report(vec![candidate("/mnt/ipod")], LOADED),
             &retrieved_with_capacity,
@@ -605,7 +698,7 @@ mod tests {
         let calls = std::cell::Cell::new(0);
         let preflight = counting_preflight(&calls);
         let mut manager = DeviceManager::new();
-        apply_scan(
+        apply_scan_quiet(
             &mut manager,
             &candidate_report(vec![candidate("/mnt/ipod")], unavailable("dlopen failed")),
             &no_retrieval,
@@ -613,7 +706,7 @@ mod tests {
         );
         assert_eq!(manager.state(), ConnectionState::BackendUnavailable);
         assert_eq!(calls.get(), 0);
-        apply_scan(
+        apply_scan_quiet(
             &mut manager,
             &candidate_report(vec![candidate("/mnt/ipod")], LOADED),
             &retrieved_with_capacity,
@@ -633,7 +726,7 @@ mod tests {
         let calls = std::cell::Cell::new(0);
         let preflight = counting_preflight(&calls);
         let mut manager = DeviceManager::new();
-        apply_scan(
+        apply_scan_quiet(
             &mut manager,
             &candidate_report(vec![candidate("/mnt/ipod")], LOADED),
             &retrieved_with_capacity,
@@ -642,9 +735,9 @@ mod tests {
         assert_eq!(manager.state(), ConnectionState::Ready);
         let mut removal = candidate_report(Vec::new(), LOADED);
         removal.removed = vec!["/mnt/ipod".into()];
-        apply_scan(&mut manager, &removal, &no_retrieval, &preflight);
+        apply_scan_quiet(&mut manager, &removal, &no_retrieval, &preflight);
         assert_eq!(manager.state(), ConnectionState::Disconnected);
-        apply_scan(
+        apply_scan_quiet(
             &mut manager,
             &candidate_report(vec![candidate("/mnt/ipod")], LOADED),
             &retrieved_with_capacity,
@@ -661,7 +754,7 @@ mod tests {
         let calls = std::cell::Cell::new(0);
         let failing = failing_preflight(&calls, "mounted read-only");
         let mut manager = DeviceManager::new();
-        apply_scan(
+        apply_scan_quiet(
             &mut manager,
             &candidate_report(vec![candidate("/mnt/ipod")], LOADED),
             &retrieved_with_capacity,
@@ -671,10 +764,10 @@ mod tests {
         assert_eq!(manager.diagnostics(), Some("mounted read-only"));
         let mut removal = candidate_report(Vec::new(), LOADED);
         removal.removed = vec!["/mnt/ipod".into()];
-        apply_scan(&mut manager, &removal, &no_retrieval, &failing);
+        apply_scan_quiet(&mut manager, &removal, &no_retrieval, &failing);
         assert_eq!(manager.state(), ConnectionState::Disconnected);
         let ok = counting_preflight(&calls);
-        apply_scan(
+        apply_scan_quiet(
             &mut manager,
             &candidate_report(vec![candidate("/mnt/ipod")], LOADED),
             &retrieved_with_capacity,
@@ -692,7 +785,7 @@ mod tests {
             mount_point: "/mnt/other".into(),
             error: "Permission denied (os error 13)".to_string(),
         }];
-        apply_scan(&mut manager, &report, &no_retrieval, &ok_preflight);
+        apply_scan_quiet(&mut manager, &report, &no_retrieval, &ok_preflight);
         assert_eq!(manager.state(), ConnectionState::Disconnected);
         assert!(manager.current_device().is_none());
     }
@@ -702,7 +795,7 @@ mod tests {
     #[test]
     fn multiple_candidates_only_first_gets_fsm() {
         let mut manager = DeviceManager::new();
-        apply_scan(
+        apply_scan_quiet(
             &mut manager,
             &candidate_report(
                 vec![candidate("/mnt/ipod-aaa"), candidate("/mnt/ipod-bbb")],
@@ -722,7 +815,7 @@ mod tests {
     #[test]
     fn device_handover_when_active_removed() {
         let mut manager = DeviceManager::new();
-        apply_scan(
+        apply_scan_quiet(
             &mut manager,
             &candidate_report(
                 vec![candidate("/mnt/ipod-aaa"), candidate("/mnt/ipod-bbb")],
@@ -739,7 +832,7 @@ mod tests {
         // The first device unmounts; the second is still there.
         let mut next = candidate_report(vec![candidate("/mnt/ipod-bbb")], LOADED);
         next.removed = vec!["/mnt/ipod-aaa".into()];
-        apply_scan(&mut manager, &next, &retrieved_with_capacity, &ok_preflight);
+        apply_scan_quiet(&mut manager, &next, &retrieved_with_capacity, &ok_preflight);
         assert_eq!(
             manager.current_device().unwrap().mount_point,
             std::path::PathBuf::from("/mnt/ipod-bbb"),
@@ -753,7 +846,7 @@ mod tests {
     #[test]
     fn non_active_removal_is_invisible() {
         let mut manager = DeviceManager::new();
-        apply_scan(
+        apply_scan_quiet(
             &mut manager,
             &candidate_report(
                 vec![candidate("/mnt/ipod-aaa"), candidate("/mnt/ipod-bbb")],
@@ -764,7 +857,7 @@ mod tests {
         );
         let mut next = candidate_report(vec![candidate("/mnt/ipod-aaa")], LOADED);
         next.removed = vec!["/mnt/ipod-bbb".into()];
-        apply_scan(&mut manager, &next, &retrieved_with_capacity, &ok_preflight);
+        apply_scan_quiet(&mut manager, &next, &retrieved_with_capacity, &ok_preflight);
         assert_eq!(
             manager.current_device().unwrap().mount_point,
             std::path::PathBuf::from("/mnt/ipod-aaa")
@@ -777,7 +870,7 @@ mod tests {
     #[test]
     fn lower_sorting_candidate_takes_over() {
         let mut manager = DeviceManager::new();
-        apply_scan(
+        apply_scan_quiet(
             &mut manager,
             &candidate_report(vec![candidate("/mnt/ipod-bbb")], LOADED),
             &retrieved_with_capacity,
@@ -787,7 +880,7 @@ mod tests {
             manager.current_device().unwrap().mount_point,
             std::path::PathBuf::from("/mnt/ipod-bbb")
         );
-        apply_scan(
+        apply_scan_quiet(
             &mut manager,
             &candidate_report(
                 vec![candidate("/mnt/ipod-aaa"), candidate("/mnt/ipod-bbb")],
@@ -835,7 +928,7 @@ mod tests {
             ),
         ];
         for (report, expected) in &scenarios {
-            apply_scan(
+            apply_scan_quiet(
                 &mut manager,
                 report,
                 &retrieved_with_capacity,
@@ -867,7 +960,7 @@ mod tests {
                 firewire_id: None,
             })
         };
-        apply_scan(
+        apply_scan_quiet(
             &mut manager,
             &candidate_report(vec![candidate("/mnt/ipod")], LOADED),
             &retrieve,
@@ -898,7 +991,7 @@ mod tests {
                 "iTunesDB corrupt".to_string(),
             ))
         };
-        apply_scan(
+        apply_scan_quiet(
             &mut manager,
             &candidate_report(vec![candidate("/mnt/ipod")], LOADED),
             &retrieve,
@@ -919,7 +1012,7 @@ mod tests {
         assert!(!manager.sync_enabled());
         // A rescan with the same candidate must not clobber the diagnostic
         // or re-attempt retrieval.
-        apply_scan(
+        apply_scan_quiet(
             &mut manager,
             &candidate_report(vec![candidate("/mnt/ipod")], LOADED),
             &retrieve,
@@ -940,14 +1033,14 @@ mod tests {
         };
         let mut manager = DeviceManager::new();
 
-        apply_scan(
+        apply_scan_quiet(
             &mut manager,
             &candidate_report(vec![candidate("/mnt/ipod")], LOADED),
             &retrieve,
             &ok_preflight,
         );
         assert_eq!(calls.get(), 1, "appearance retrieves once");
-        apply_scan(
+        apply_scan_quiet(
             &mut manager,
             &candidate_report(vec![candidate("/mnt/ipod")], LOADED),
             &retrieve,
@@ -957,9 +1050,9 @@ mod tests {
 
         let mut removal = candidate_report(Vec::new(), LOADED);
         removal.removed = vec!["/mnt/ipod".into()];
-        apply_scan(&mut manager, &removal, &retrieve, &ok_preflight);
+        apply_scan_quiet(&mut manager, &removal, &retrieve, &ok_preflight);
         assert_eq!(calls.get(), 1, "removal does not retrieve");
-        apply_scan(
+        apply_scan_quiet(
             &mut manager,
             &candidate_report(vec![candidate("/mnt/ipod")], LOADED),
             &retrieve,
@@ -968,13 +1061,13 @@ mod tests {
         assert_eq!(calls.get(), 2, "reappearance retrieves again");
 
         // Backend recovery re-enters Connecting: a fresh retrieval.
-        apply_scan(
+        apply_scan_quiet(
             &mut manager,
             &candidate_report(vec![candidate("/mnt/ipod")], unavailable("dlopen failed")),
             &retrieve,
             &ok_preflight,
         );
-        apply_scan(
+        apply_scan_quiet(
             &mut manager,
             &candidate_report(vec![candidate("/mnt/ipod")], LOADED),
             &retrieve,
@@ -994,7 +1087,7 @@ mod tests {
         };
         let mut manager = DeviceManager::new();
 
-        apply_scan(
+        apply_scan_quiet(
             &mut manager,
             &candidate_report(
                 vec![candidate("/mnt/ipod-aaa"), candidate("/mnt/ipod-bbb")],
@@ -1011,7 +1104,7 @@ mod tests {
 
         let mut next = candidate_report(vec![candidate("/mnt/ipod-bbb")], LOADED);
         next.removed = vec!["/mnt/ipod-aaa".into()];
-        apply_scan(&mut manager, &next, &retrieve, &ok_preflight);
+        apply_scan_quiet(&mut manager, &next, &retrieve, &ok_preflight);
         assert_eq!(
             *retrieved.borrow(),
             vec![
@@ -1039,5 +1132,441 @@ mod tests {
             }),
             PreflightError::Readiness("ro mount".to_string())
         );
+    }
+
+    /// B-006: the fresh-candidate sequence — `Connecting` (placeholder, at
+    /// detection) → `Connecting` (retrieved facts) → `Ready`.
+    #[test]
+    fn emissions_follow_the_fresh_candidate_sequence() {
+        let mut manager = DeviceManager::new();
+        let mut events = Vec::new();
+        {
+            let mut emit = collecting(&mut events);
+            apply_scan(
+                &mut manager,
+                &candidate_report(vec![candidate("/mnt/ipod")], LOADED),
+                &retrieved_with_capacity,
+                &ok_preflight,
+                &mut emit,
+            );
+        }
+        assert_eq!(
+            states(&events),
+            vec![
+                ConnectionState::Connecting,
+                ConnectionState::Connecting,
+                ConnectionState::Ready,
+            ]
+        );
+        assert!(events.iter().all(|(_, device, _)| {
+            device
+                .as_ref()
+                .is_some_and(|device| device.mount_point == *std::path::Path::new("/mnt/ipod"))
+        }));
+    }
+
+    /// B-006: the detection emission carries the placeholder device (no
+    /// facts yet — no name, no capacities), the retrieval emission carries
+    /// the facts.
+    #[test]
+    fn fresh_detection_emits_placeholder_then_facts() {
+        let mut manager = DeviceManager::new();
+        let mut events = Vec::new();
+        {
+            let mut emit = collecting(&mut events);
+            apply_scan(
+                &mut manager,
+                &candidate_report(vec![candidate("/mnt/ipod")], LOADED),
+                &retrieved_with_capacity,
+                &ok_preflight,
+                &mut emit,
+            );
+        }
+        assert_eq!(events[0].1.as_ref().unwrap().name, "");
+        assert_eq!(events[0].1.as_ref().unwrap().total_capacity, None);
+        assert_eq!(
+            events[1].1.as_ref().unwrap().total_capacity,
+            Some(30 * 1024 * 1024 * 1024),
+            "the retrieval emission carries the measured capacity"
+        );
+    }
+
+    /// B-006: a failed retrieval emits `Connecting` at detection, then
+    /// `Error` with the retrieval diagnostic.
+    #[test]
+    fn retrieval_failure_emits_connecting_then_error() {
+        let retrieve = |_mount: &Path| Err(RetrieveError::NotFound("iTunesDB corrupt".to_string()));
+        let mut manager = DeviceManager::new();
+        let mut events = Vec::new();
+        {
+            let mut emit = collecting(&mut events);
+            apply_scan(
+                &mut manager,
+                &candidate_report(vec![candidate("/mnt/ipod")], LOADED),
+                &retrieve,
+                &ok_preflight,
+                &mut emit,
+            );
+        }
+        assert_eq!(
+            states(&events),
+            vec![ConnectionState::Connecting, ConnectionState::Error]
+        );
+        assert_eq!(events[1].2.as_deref(), Some("iTunesDB corrupt"));
+    }
+
+    /// B-006: an unverified ABI emits the detection `Connecting`, the
+    /// retrieval `Connecting`, then `BackendUnavailable` with the ABI
+    /// diagnostic — preflight never runs.
+    #[test]
+    fn abi_unverified_emits_connecting_then_backend_unavailable() {
+        let mut manager = DeviceManager::new();
+        let mut events = Vec::new();
+        {
+            let mut emit = collecting(&mut events);
+            apply_scan(
+                &mut manager,
+                &candidate_report(vec![candidate("/mnt/ipod")], LOADED_DISTRO),
+                &retrieved_with_capacity,
+                &ok_preflight,
+                &mut emit,
+            );
+        }
+        assert_eq!(
+            states(&events),
+            vec![
+                ConnectionState::Connecting,
+                ConnectionState::Connecting,
+                ConnectionState::BackendUnavailable,
+            ]
+        );
+        assert!(
+            events[2].2.as_deref().unwrap().contains("ABI unverified"),
+            "the terminal diagnostic must name the ABI verdict"
+        );
+    }
+
+    /// B-006: a first scan without a backend emits `Connecting` (the
+    /// candidate is detected), then `BackendUnavailable` ("Sync
+    /// unavailable") with the load reason.
+    #[test]
+    fn unavailable_backend_emits_connecting_then_backend_unavailable() {
+        let mut manager = DeviceManager::new();
+        let mut events = Vec::new();
+        {
+            let mut emit = collecting(&mut events);
+            apply_scan(
+                &mut manager,
+                &candidate_report(vec![candidate("/mnt/ipod")], unavailable("dlopen failed")),
+                &no_retrieval,
+                &ok_preflight,
+                &mut emit,
+            );
+        }
+        assert_eq!(
+            states(&events),
+            vec![
+                ConnectionState::Connecting,
+                ConnectionState::BackendUnavailable,
+            ]
+        );
+        assert_eq!(events[1].2.as_deref(), Some("dlopen failed"));
+    }
+
+    /// B-006: removal emits `Disconnected` with the device cleared.
+    #[test]
+    fn removal_emits_disconnected() {
+        let mut manager = DeviceManager::new();
+        let mut events = Vec::new();
+        {
+            let mut emit = collecting(&mut events);
+            apply_scan(
+                &mut manager,
+                &candidate_report(vec![candidate("/mnt/ipod")], LOADED),
+                &retrieved_with_capacity,
+                &ok_preflight,
+                &mut emit,
+            );
+        }
+        assert_eq!(manager.state(), ConnectionState::Ready);
+        events.clear();
+        {
+            let mut removal = candidate_report(Vec::new(), LOADED);
+            removal.removed = vec!["/mnt/ipod".into()];
+            let mut emit = collecting(&mut events);
+            apply_scan(
+                &mut manager,
+                &removal,
+                &no_retrieval,
+                &ok_preflight,
+                &mut emit,
+            );
+        }
+        assert_eq!(states(&events), vec![ConnectionState::Disconnected]);
+        assert!(events[0].1.is_none(), "the device info is cleared");
+    }
+
+    /// B-006: an idempotent rescan emits nothing — no mutating step ran.
+    #[test]
+    fn rescan_while_ready_emits_nothing() {
+        let mut manager = DeviceManager::new();
+        let mut events = Vec::new();
+        {
+            let mut emit = collecting(&mut events);
+            apply_scan(
+                &mut manager,
+                &candidate_report(vec![candidate("/mnt/ipod")], LOADED),
+                &retrieved_with_capacity,
+                &ok_preflight,
+                &mut emit,
+            );
+        }
+        assert_eq!(manager.state(), ConnectionState::Ready);
+        events.clear();
+        {
+            let mut emit = collecting(&mut events);
+            apply_scan(
+                &mut manager,
+                &candidate_report(vec![candidate("/mnt/ipod")], LOADED),
+                &retrieved_with_capacity,
+                &ok_preflight,
+                &mut emit,
+            );
+        }
+        assert!(events.is_empty(), "a rescan must not emit: {events:?}");
+    }
+
+    /// B-006: a rescan in Error preserves the diagnostic silently — the
+    /// subscriber sees no new emission.
+    #[test]
+    fn rescan_while_error_emits_nothing() {
+        let calls = std::cell::Cell::new(0);
+        let failing = failing_preflight(&calls, "mounted read-only");
+        let mut manager = DeviceManager::new();
+        let mut events = Vec::new();
+        {
+            let mut emit = collecting(&mut events);
+            apply_scan(
+                &mut manager,
+                &candidate_report(vec![candidate("/mnt/ipod")], LOADED),
+                &retrieved_with_capacity,
+                &failing,
+                &mut emit,
+            );
+        }
+        assert_eq!(manager.state(), ConnectionState::Error);
+        events.clear();
+        {
+            let mut emit = collecting(&mut events);
+            apply_scan(
+                &mut manager,
+                &candidate_report(vec![candidate("/mnt/ipod")], LOADED),
+                &retrieved_with_capacity,
+                &failing,
+                &mut emit,
+            );
+        }
+        assert!(
+            events.is_empty(),
+            "an Error rescan must not emit: {events:?}"
+        );
+    }
+
+    /// B-006: a rescan with the same backend-unavailable reason emits
+    /// nothing — the snapshot did not change (the reason re-set is the
+    /// same value).
+    #[test]
+    fn unavailable_backend_rescan_with_same_reason_emits_nothing() {
+        let mut manager = DeviceManager::new();
+        let mut events = Vec::new();
+        {
+            let mut emit = collecting(&mut events);
+            apply_scan(
+                &mut manager,
+                &candidate_report(vec![candidate("/mnt/ipod")], unavailable("dlopen failed")),
+                &no_retrieval,
+                &ok_preflight,
+                &mut emit,
+            );
+        }
+        assert_eq!(events.len(), 2);
+        {
+            let mut emit = collecting(&mut events);
+            apply_scan(
+                &mut manager,
+                &candidate_report(vec![candidate("/mnt/ipod")], unavailable("dlopen failed")),
+                &no_retrieval,
+                &ok_preflight,
+                &mut emit,
+            );
+        }
+        assert_eq!(events.len(), 2, "an unchanged reason must not emit");
+    }
+
+    /// B-006: backend recovery emits `Connecting` (fresh retrieval) then
+    /// `Ready`.
+    #[test]
+    fn backend_recovery_emits_connecting_then_ready() {
+        let mut manager = DeviceManager::new();
+        let mut events = Vec::new();
+        {
+            let mut emit = collecting(&mut events);
+            apply_scan(
+                &mut manager,
+                &candidate_report(vec![candidate("/mnt/ipod")], unavailable("dlopen failed")),
+                &no_retrieval,
+                &ok_preflight,
+                &mut emit,
+            );
+        }
+        events.clear();
+        {
+            let mut emit = collecting(&mut events);
+            apply_scan(
+                &mut manager,
+                &candidate_report(vec![candidate("/mnt/ipod")], LOADED),
+                &retrieved_with_capacity,
+                &ok_preflight,
+                &mut emit,
+            );
+        }
+        assert_eq!(
+            states(&events),
+            vec![ConnectionState::Connecting, ConnectionState::Ready]
+        );
+    }
+
+    /// B-006: removing the active device hands the FSM over to the next
+    /// candidate — `Disconnected`, then the fresh sequence on the new mount.
+    #[test]
+    fn handover_emits_disconnected_then_fresh_sequence() {
+        let mut manager = DeviceManager::new();
+        let mut events = Vec::new();
+        {
+            let mut emit = collecting(&mut events);
+            apply_scan(
+                &mut manager,
+                &candidate_report(
+                    vec![candidate("/mnt/ipod-aaa"), candidate("/mnt/ipod-bbb")],
+                    LOADED,
+                ),
+                &retrieved_with_capacity,
+                &ok_preflight,
+                &mut emit,
+            );
+        }
+        events.clear();
+        {
+            let mut next = candidate_report(vec![candidate("/mnt/ipod-bbb")], LOADED);
+            next.removed = vec!["/mnt/ipod-aaa".into()];
+            let mut emit = collecting(&mut events);
+            apply_scan(
+                &mut manager,
+                &next,
+                &retrieved_with_capacity,
+                &ok_preflight,
+                &mut emit,
+            );
+        }
+        assert_eq!(
+            states(&events),
+            vec![
+                ConnectionState::Disconnected,
+                ConnectionState::Connecting,
+                ConnectionState::Connecting,
+                ConnectionState::Ready,
+            ]
+        );
+        assert_eq!(
+            events[1].1.as_ref().unwrap().mount_point,
+            std::path::PathBuf::from("/mnt/ipod-bbb"),
+            "the handover emits the fresh sequence for the new winner"
+        );
+    }
+
+    /// B-006: a lower-sorting candidate taking over emits the fresh
+    /// sequence on the new mount.
+    #[test]
+    fn takeover_emits_connecting_then_ready() {
+        let mut manager = DeviceManager::new();
+        let mut events = Vec::new();
+        {
+            let mut emit = collecting(&mut events);
+            apply_scan(
+                &mut manager,
+                &candidate_report(vec![candidate("/mnt/ipod-bbb")], LOADED),
+                &retrieved_with_capacity,
+                &ok_preflight,
+                &mut emit,
+            );
+        }
+        events.clear();
+        {
+            let mut emit = collecting(&mut events);
+            apply_scan(
+                &mut manager,
+                &candidate_report(
+                    vec![candidate("/mnt/ipod-aaa"), candidate("/mnt/ipod-bbb")],
+                    LOADED,
+                ),
+                &retrieved_with_capacity,
+                &ok_preflight,
+                &mut emit,
+            );
+        }
+        assert_eq!(
+            states(&events),
+            vec![
+                ConnectionState::Connecting,
+                ConnectionState::Connecting,
+                ConnectionState::Ready,
+            ]
+        );
+        assert_eq!(
+            events[1].1.as_ref().unwrap().mount_point,
+            std::path::PathBuf::from("/mnt/ipod-aaa")
+        );
+    }
+
+    /// B-006: the newer-cause-wins diagnostic refresh is observable — the
+    /// recovering unverified rescan emits `BackendUnavailable` with the ABI
+    /// diagnostic replacing the earlier load reason, without re-parsing.
+    #[test]
+    fn recovering_unverified_refresh_emits_newer_diagnostic() {
+        let retrieved = std::cell::Cell::new(0);
+        let retrieve = |_mount: &Path| {
+            retrieved.set(retrieved.get() + 1);
+            Ok(DeviceFacts::default())
+        };
+        let mut manager = DeviceManager::new();
+        let mut events = Vec::new();
+        {
+            let mut emit = collecting(&mut events);
+            apply_scan(
+                &mut manager,
+                &candidate_report(vec![candidate("/mnt/ipod")], unavailable("dlopen failed")),
+                &retrieve,
+                &ok_preflight,
+                &mut emit,
+            );
+        }
+        events.clear();
+        {
+            let mut emit = collecting(&mut events);
+            apply_scan(
+                &mut manager,
+                &candidate_report(vec![candidate("/mnt/ipod")], LOADED_DISTRO),
+                &retrieve,
+                &ok_preflight,
+                &mut emit,
+            );
+        }
+        assert_eq!(states(&events), vec![ConnectionState::BackendUnavailable]);
+        assert!(
+            events[0].2.as_deref().unwrap().contains("ABI unverified"),
+            "the newer cause wins: {:?}",
+            events[0].2
+        );
+        assert_eq!(retrieved.get(), 0, "no retrieval on the unverified rescan");
     }
 }
