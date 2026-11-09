@@ -187,6 +187,11 @@ cmd_test_snapshot() {
         RUFIN_LIBGPOD_DIR="$LIBGPOD_DIR" \
         IPOD_TEST_TREE="$IPOD_TEST_TREE" \
         cargo test -p ipod-sync)
+    # The B-006 observer gate: Ready end-to-end on the snapshot.
+    (cd "$REPO_ROOT" && \
+        RUFIN_LIBGPOD_DIR="$LIBGPOD_DIR" \
+        IPOD_TEST_TREE="$IPOD_TEST_TREE" \
+        cargo test -p gtk-library --test ipod_connection_gate)
 }
 
 # Recreate the snapshot from the image (see the header): the canonical
@@ -253,6 +258,13 @@ cmd_test_mounted() {
         IPOD_TEST_MOUNT="$IPOD_MOUNT_POINT" \
         IPOD_TEST_TREE="$IPOD_TEST_TREE" \
         cargo test -p ipod-sync)
+    # The B-006 observer gate: the ro-mount Error path end-to-end (and the
+    # snapshot Ready path again when the snapshot exists).
+    (cd "$REPO_ROOT" && \
+        RUFIN_LIBGPOD_DIR="$LIBGPOD_DIR" \
+        IPOD_TEST_MOUNT="$IPOD_MOUNT_POINT" \
+        IPOD_TEST_TREE="$IPOD_TEST_TREE" \
+        cargo test -p gtk-library --test ipod_connection_gate)
     cleanup_mount
     trap - EXIT
     echo "ipod-dev: mounted gate passed; device unmounted and detached"
@@ -271,6 +283,9 @@ cmd_lint() {
         cargo fmt -p ipod-sync --check
         cargo fmt -p ipod --check
         rustfmt --edition 2024 --check crates/gtk-library/src/ipod_discovery.rs
+        rustfmt --edition 2024 --check crates/gtk-library/src/ipod_connection.rs
+        rustfmt --edition 2024 --check crates/gtk-library/src/ipod_monitor.rs
+        rustfmt --edition 2024 --check crates/gtk-library/tests/ipod_connection_gate.rs
         cargo clippy -p ipod-sync --all-targets
         cargo clippy -p gtk-library --all-targets
         cargo doc -p ipod-sync --no-deps
