@@ -515,3 +515,11 @@ _build-flatpak:
     cp "$work_bundle_path" "$temporary_bundle_path"
     mv -f "$temporary_bundle_path" "$bundle_path"
     echo "Built ${bundle_path}"
+
+# Run an iPod dev-test scenario from scripts/ipod-dev (host-side; see its
+# header for the scenario list and env overrides):
+#   just ipod-test test-mounted
+#   just ipod-test rebuild-snapshot
+#   just ipod-test test-full
+ipod-test target="help":
+    @scripts/ipod-dev {{target}}

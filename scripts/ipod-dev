@@ -1,0 +1,352 @@
+#!/usr/bin/env bash
+# scripts/ipod-dev — dev-test scenarios for the iPod integration (B-003+).
+#
+# One script, one scenario per subcommand. All scenarios are host-side: they
+# run plain `cargo` (not the repo's container tooling) and, where a mounted
+# device is involved, use losetup/mount directly.
+#
+# Scenarios (see `ipod-dev help` for the full list):
+#
+#   test-synthetic   Fast loop: ipod-sync + gtk-library suites over pure
+#                    tempdir fixtures. No external data, no env gates, no
+#                    sudo. Run this while iterating.
+#   test-wrapper     B-007 wrapper regression against the pinned libgpod
+#                    install and the restored-device snapshot, including the
+#                    sync-writes fixtures (`cargo test -p ipod --features
+#                    sync-writes`).
+#   test-snapshot    The env-gated snapshot gate (`IPOD_TEST_TREE`): the
+#                    restored device tree goes through a synthetic mount
+#                    table and must be detected byte-identical. Requires the
+#                    snapshot to exist; rebuild it with rebuild-snapshot.
+#   rebuild-snapshot Recreate the snapshot from the test image: mount p2
+#                    read-only, rsync the canonical selective set
+#                    (`iTunes/iTunesDB`, `Artwork/{ArtworkDB,*.ithmb}`,
+#                    `Device/*` — the itl-player docs/LIBGPOD.md fakepod,
+#                    deliberately without `iTunes/iTunesControl` and the
+#                    media library), then seed `Device/SysInfo` exactly like
+#                    `ipod::testkit::seed_sysinfo` does (`ModelNumStr:
+#                    MA446`), because the wrapper's snapshot test expects
+#                    the seeded `Ok` verdict.
+#   test-mounted     THE device scenario: attach the fake pod image, mount p2
+#                    read-only, run the mounted gate through the real
+#                    /proc/self/mountinfo, then unmount + detach. Cleanup is
+#                    trap-based, so it runs even when the test fails or the
+#                    run is interrupted.
+#   test-full        All test scenarios in order, with a per-scenario
+#                    summary; fails at the end if anything failed.
+#   lint             fmt / clippy / rustdoc / diff-check — only for the
+#                    crates and files this integration owns. Workspace-wide
+#                    `cargo fmt --check` is deliberately NOT used: the repo
+#                    has pre-existing fmt drift in other crates (sources,
+#                    rufin-core, gtk-preferences, and gtk-library's
+#                    collections/columns/search), so it fails on code this
+#                    integration never touched.
+#
+# Conventions:
+#
+#   - Everything touches COPIES only. The images are research snapshots from
+#     the itl-player repo (`ipod/test-device.img`, `ipod/test-device-30g.img`);
+#     the real device is never mounted and never written to.
+#   - Mounts are ALWAYS read-only (`mount -o ro`): the test suite is
+#     no-write by design (treehash before/after), and ro is a second,
+#     hardware-level guarantee. Sync-write experiments need an rw mount with
+#     uid/gid/umask options — deliberately out of scope for this script.
+#   - The mount gate treehashes the whole `iPod_Control/` subtree. On the
+#     Video layout that includes the media library (23G on the 30g image),
+#     so the gate refuses images larger than ~40G — the 240G image would
+#     take forever. Keep the 240G image for experiments, not for the gate.
+#   - Mount scenarios need passwordless sudo (`losetup`, `mount`). The script
+#     checks and dies with a hint when it is missing.
+#   - The env override names below mirror the ones the test suite itself
+#     reads, so what you pass here is exactly what the tests see.
+#
+# Environment overrides (defaults in brackets):
+#
+#   IPOD_IMG          the test image
+#                     [$HOME/Documents/Projects/itl-player/ipod/test-device-30g.img]
+#   IPOD_MOUNT_POINT  where p2 gets mounted [/tmp/opencode/ipod-mount]
+#   IPOD_TEST_TREE    the restored snapshot [/tmp/opencode/libgpod-check/fakepod]
+#   RUFIN_LIBGPOD_DIR the pinned libgpod install [/tmp/opencode/libgpod-install/lib]
+
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# --- scenario configuration (env-overridable) ---
+IPOD_IMG="${IPOD_IMG:-$HOME/Documents/Projects/itl-player/ipod/test-device-30g.img}"
+IPOD_MOUNT_POINT="${IPOD_MOUNT_POINT:-/tmp/opencode/ipod-mount}"
+IPOD_TEST_TREE="${IPOD_TEST_TREE:-/tmp/opencode/libgpod-check/fakepod}"
+# RUFIN_LIBGPOD_DIR is read by the test suite; the script keeps its default
+# in a separate variable so plain scenarios (test-synthetic) never export it.
+LIBGPOD_DIR="${RUFIN_LIBGPOD_DIR:-/tmp/opencode/libgpod-install/lib}"
+
+# The loop device of the current mount, tracked so the EXIT trap can always
+# detach it (set by mount_image, cleared by cleanup_mount).
+LOOP_DEV=""
+# Whether THIS script mounted $IPOD_MOUNT_POINT. Cleanup only unmounts when
+# this is set: a pre-existing mount (which mount_image refuses to work with
+# anyway) must never be unmounted by the trap.
+MOUNTED_BY_US=0
+
+die() {
+    echo "ipod-dev: $*" >&2
+    exit 1
+}
+
+need_sudo() {
+    if ! sudo -n true 2>/dev/null; then
+        die "passwordless sudo is required (losetup/mount); run 'sudo -v' first or configure NOPASSWD sudo"
+    fi
+}
+
+# Mount p2 of the given image read-only at $IPOD_MOUNT_POINT. Sets the
+# globals $LOOP_DEV and $MOUNTED_BY_US — callers MUST invoke this as a
+# plain command, never via command substitution: the assignments would be
+# lost in the subshell and cleanup would skip the unmount. Dies cleanly
+# (unmounting + detaching) if the mounted volume turns out not to be an
+# iPod volume. The caller is responsible for cleanup_mount — directly or
+# via an EXIT trap installed before this call.
+mount_image() {
+    local img="$1"
+    need_sudo
+    command -v losetup >/dev/null || die "losetup not found"
+    command -v mountpoint >/dev/null || die "mountpoint not found"
+    [[ -f "$img" ]] || die "image not found: $img (set IPOD_IMG)"
+    mkdir -p "$IPOD_MOUNT_POINT"
+    if mountpoint -q "$IPOD_MOUNT_POINT"; then
+        die "already mounted at $IPOD_MOUNT_POINT — unmount it first"
+    fi
+    if [[ -n "$(ls -A "$IPOD_MOUNT_POINT")" ]]; then
+        die "mount point is not empty: $IPOD_MOUNT_POINT"
+    fi
+
+    # The flashmod quirk: the device uses 2048-byte sectors, and the image
+    # replicates that. `-b 2048` is what makes the partition offsets line up;
+    # without it losetup misreads the MBR.
+    LOOP_DEV="$(sudo losetup -f --show -P -b 2048 "$img")"
+    sudo mount -o ro "${LOOP_DEV}p2" "$IPOD_MOUNT_POINT"
+    MOUNTED_BY_US=1
+    if [[ ! -d "$IPOD_MOUNT_POINT/iPod_Control" ]]; then
+        # Never leave a half-mounted image behind: this is either the wrong
+        # partition or not an iPod volume at all.
+        sudo umount "$IPOD_MOUNT_POINT" || true
+        MOUNTED_BY_US=0
+        sudo losetup -d "$LOOP_DEV" || true
+        LOOP_DEV=""
+        die "mounted volume has no iPod_Control/ — not an iPod image? ($img)"
+    fi
+    echo "ipod-dev: mounted $img read-only at $IPOD_MOUNT_POINT"
+}
+
+# Unmount (only what this script mounted) and detach, if anything is left.
+# Idempotent and non-fatal: safe to call from the EXIT trap and again on the
+# success path. A mount that pre-existed the script is never touched.
+cleanup_mount() {
+    if ((MOUNTED_BY_US)) && mountpoint -q "$IPOD_MOUNT_POINT" 2>/dev/null; then
+        sudo umount "$IPOD_MOUNT_POINT" || true
+    fi
+    MOUNTED_BY_US=0
+    if [[ -n "$LOOP_DEV" ]]; then
+        sudo losetup -d "$LOOP_DEV" || true
+        LOOP_DEV=""
+    fi
+}
+
+# The mounted gate hashes the entire iPod_Control/ subtree (23G on the 30g
+# image). Refuse images that would turn that into an hour-long read.
+ensure_gate_image() {
+    local size
+    size="$(stat -c %s "$IPOD_IMG")"
+    if ((size > 40 * 1024 * 1024 * 1024)); then
+        die "refusing $IPOD_IMG for the mounted gate: hashing its iPod_Control/ would take forever. Use test-device-30g.img."
+    fi
+}
+
+# Fast loop over the pure-fixture suites. No external data, no env gates, no
+# sudo: this is the scenario to run while iterating on ipod-sync/gtk-library.
+cmd_test_synthetic() {
+    (cd "$REPO_ROOT" && cargo test -p ipod-sync)
+    (cd "$REPO_ROOT" && cargo test -p gtk-library)
+}
+
+# B-007 wrapper regression: pinned libgpod + restored snapshot, including
+# the sync-writes fixtures (they write only into tempdir copies).
+cmd_test_wrapper() {
+    (cd "$REPO_ROOT" && \
+        RUFIN_LIBGPOD_DIR="$LIBGPOD_DIR" \
+        IPOD_TEST_TREE="$IPOD_TEST_TREE" \
+        cargo test -p ipod --features sync-writes)
+}
+
+# The env-gated snapshot gate: detection + no-write proof against the real
+# restored device tree (no mounts involved).
+cmd_test_snapshot() {
+    [[ -d "$IPOD_TEST_TREE/iPod_Control" ]] || \
+        die "snapshot not found at $IPOD_TEST_TREE — build it first: scripts/ipod-dev rebuild-snapshot"
+    (cd "$REPO_ROOT" && \
+        RUFIN_LIBGPOD_DIR="$LIBGPOD_DIR" \
+        IPOD_TEST_TREE="$IPOD_TEST_TREE" \
+        cargo test -p ipod-sync)
+}
+
+# Recreate the snapshot from the image (see the header): the canonical
+# selective set from itl-player's docs/LIBGPOD.md — `iTunes/iTunesDB`,
+# `Artwork/{ArtworkDB,*.ithmb}`, `Device/*` — plus the seeded SysInfo.
+# Deliberately NOT the whole `iPod_Control/`: the image's `iTunes/` also
+# holds `iTunesControl` (239M play-state DB) and prefs/Photos files that no
+# test reads; the snapshot carries only what the parser needs.
+cmd_rebuild_snapshot() {
+    need_sudo
+    command -v rsync >/dev/null || die "rsync not found"
+    # Safety: the destination must be a plain directory. Never rebuild over
+    # a mounted tree (a mis-set IPOD_TEST_TREE must not be able to wipe a
+    # live device mount).
+    if mountpoint -q "$IPOD_TEST_TREE" 2>/dev/null; then
+        die "refusing to rebuild over a mounted tree: $IPOD_TEST_TREE"
+    fi
+    # The trap must be in place BEFORE mount_image: if the mount fails
+    # mid-way, the half-attached loop device is still detached on exit.
+    trap cleanup_mount EXIT
+    mount_image "$IPOD_IMG"
+    mkdir -p "$IPOD_TEST_TREE"
+    # Fresh start: rsync --delete cannot prune files outside the synced
+    # set (e.g. iTunesControl from an earlier full-tree copy), so drop the
+    # three snapshot subdirs first and let rsync recreate them.
+    rm -rf "$IPOD_TEST_TREE/iPod_Control"
+    # rsync creates only the final component, so the iPod_Control parent
+    # must exist before the first file-level sync.
+    mkdir -p "$IPOD_TEST_TREE/iPod_Control"
+    rsync -a \
+        "$IPOD_MOUNT_POINT/iPod_Control/iTunes/iTunesDB" \
+        "$IPOD_TEST_TREE/iPod_Control/iTunes/"
+    rsync -a \
+        "$IPOD_MOUNT_POINT/iPod_Control/Artwork/" \
+        "$IPOD_TEST_TREE/iPod_Control/Artwork/"
+    rsync -a \
+        "$IPOD_MOUNT_POINT/iPod_Control/Device/" \
+        "$IPOD_TEST_TREE/iPod_Control/Device/"
+    # The real device's SysInfo is not enough for libgpod's model table
+    # (wrapper research §1.2: SkippedUnknownModel); the seeded line is the
+    # canonical snapshot state, matching ipod::testkit::seed_sysinfo(dir,
+    # "MA446") byte-for-byte.
+    printf 'ModelNumStr: MA446\n' > "$IPOD_TEST_TREE/iPod_Control/Device/SysInfo"
+    cleanup_mount
+    trap - EXIT
+    echo "ipod-dev: snapshot rebuilt at $IPOD_TEST_TREE"
+}
+
+# THE device scenario: attach the fake pod, mount read-only, run the
+# mounted gate through the real /proc/self/mountinfo, then unmount and
+# detach. The EXIT trap guarantees cleanup even when the test fails or the
+# run is Ctrl-C'd mid-hash.
+cmd_test_mounted() {
+    ensure_gate_image
+    # The trap must be in place BEFORE mount_image: if the mount fails
+    # mid-way, the half-attached loop device is still detached on exit.
+    trap cleanup_mount EXIT
+    mount_image "$IPOD_IMG"
+    # Run the whole ipod-sync suite with the mount env: the mounted gate
+    # (42s treehash), the abi gate, and — when the snapshot exists — the
+    # snapshot gate, all in one pass.
+    (cd "$REPO_ROOT" && \
+        RUFIN_LIBGPOD_DIR="$LIBGPOD_DIR" \
+        IPOD_TEST_MOUNT="$IPOD_MOUNT_POINT" \
+        IPOD_TEST_TREE="$IPOD_TEST_TREE" \
+        cargo test -p ipod-sync)
+    cleanup_mount
+    trap - EXIT
+    echo "ipod-dev: mounted gate passed; device unmounted and detached"
+}
+
+# fmt / clippy / rustdoc / diff-check, scoped to this integration's files
+# (see the header for why workspace-wide fmt --check is not used).
+cmd_lint() {
+    (
+        cd "$REPO_ROOT"
+        cargo fmt -p ipod-sync --check
+        cargo fmt -p ipod --check
+        rustfmt --edition 2024 --check crates/gtk-library/src/ipod_discovery.rs
+        cargo clippy -p ipod-sync --all-targets
+        cargo clippy -p gtk-library --all-targets
+        cargo doc -p ipod-sync --no-deps
+        git diff --check
+    )
+}
+
+# One step of test-full: run the scenario, record the outcome, keep going.
+# The `if` context is what lets a failing step not abort the orchestration
+# under `set -e`.
+run_step() {
+    local name="$1"
+    shift
+    echo "== ipod-dev: $name =="
+    if "$@"; then
+        echo "== ipod-dev: $name: OK =="
+    else
+        echo "== ipod-dev: $name: FAILED ==" >&2
+        FAILED+=("$name")
+    fi
+}
+
+# All test scenarios in order, with a summary at the end. Mount steps need
+# passwordless sudo; the snapshot steps need the snapshot built.
+cmd_test_full() {
+    FAILED=()
+    run_step synthetic cmd_test_synthetic
+    run_step wrapper cmd_test_wrapper
+    run_step snapshot cmd_test_snapshot
+    run_step mounted cmd_test_mounted
+    run_step lint cmd_lint
+    if ((${#FAILED[@]} > 0)); then
+        echo "== ipod-dev: FAILED: ${FAILED[*]} ==" >&2
+        exit 1
+    fi
+    echo "== ipod-dev: all scenarios passed =="
+}
+
+usage() {
+    cat <<'EOF'
+usage: scripts/ipod-dev <scenario>
+
+Scenarios for developing/testing the iPod integration (B-003+):
+
+  test-synthetic   Fast loop: ipod-sync + gtk-library suites over pure
+                   tempdir fixtures. No external data, no env gates, no sudo.
+  test-wrapper     B-007 wrapper regression: pinned libgpod + the restored
+                   snapshot, incl. the sync-writes fixtures.
+  test-snapshot    The env-gated snapshot gate over IPOD_TEST_TREE (detection
+                   + no-write proof against the real device tree).
+  rebuild-snapshot Recreate the snapshot from the test image: mounts p2
+                   read-only, rsyncs the canonical selective set (iTunesDB, ArtworkDB + *.ithmb, Device/*), seeds
+                   Device/SysInfo, unmounts. Needs passwordless sudo.
+  test-mounted     Mount the fake pod from the image, run the mounted gate
+                   through the real /proc/self/mountinfo, unmount + detach.
+                   Cleanup runs even when the test fails. Needs sudo.
+  test-full        All test scenarios in order, with a per-scenario summary.
+  lint             fmt / clippy / rustdoc / diff-check for this integration's
+                   files only (workspace fmt-check has pre-existing drift).
+
+Environment overrides (defaults in brackets):
+  IPOD_IMG          the test image
+                    [$HOME/Documents/Projects/itl-player/ipod/test-device-30g.img]
+  IPOD_MOUNT_POINT  where p2 gets mounted [/tmp/opencode/ipod-mount]
+  IPOD_TEST_TREE    the restored snapshot [/tmp/opencode/libgpod-check/fakepod]
+  RUFIN_LIBGPOD_DIR the pinned libgpod install [/tmp/opencode/libgpod-install/lib]
+EOF
+}
+
+main() {
+    case "${1:-}" in
+        test-synthetic) cmd_test_synthetic ;;
+        test-wrapper) cmd_test_wrapper ;;
+        test-snapshot) cmd_test_snapshot ;;
+        rebuild-snapshot) cmd_rebuild_snapshot ;;
+        test-mounted) cmd_test_mounted ;;
+        test-full) cmd_test_full ;;
+        lint) cmd_lint ;;
+        "" | help | -h | --help) usage ;;
+        *) usage >&2; exit 2 ;;
+    esac
+}
+
+main "$@"
