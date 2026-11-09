@@ -57,10 +57,12 @@
 
 pub mod discovery;
 pub mod mounts;
+pub mod preflight;
 pub mod retrieval;
 
 pub use discovery::{
     BackendStatus, BlockedMount, Candidate, Discovery, IPOD_CONTROL_DIR, ScanReport,
 };
 pub use mounts::{MountEntry, MountError, MountSource, ProcMountInfo};
+pub use preflight::{ReadinessCheck, ReadinessError, preflight};
 pub use retrieval::{DeviceFacts, DeviceRead, RetrieveError, collect};
