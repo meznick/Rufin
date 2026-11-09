@@ -3339,6 +3339,7 @@ dependencies = [
  "gtk-media-menus",
  "gtk-widgets",
  "gtk4",
+ "ipod",
  "ipod-sync",
  "libadwaita",
  "library",
