@@ -142,6 +142,12 @@ Test matrix (2026-11-09):
 - `ipod` wrapper regression: 45 unit + 10 integration green (unchanged).
 - `cargo check --workspace`, `cargo fmt --check`, `git diff --check`, clippy
   (`ipod-sync`, `gtk-library` all-targets), rustdoc clean.
+- Dev scenarios scripted: `scripts/ipod-dev` (test-synthetic, test-wrapper,
+  test-snapshot, rebuild-snapshot, test-mounted, test-full, lint) plus the
+  `just ipod-test` recipe. All scenarios live-verified on the host: the
+  mounted gate runs the real losetup/mount/treehash/cleanup cycle, and the
+  rebuild reproduces the canonical 328M snapshot (selective set per
+  itl-player docs/LIBGPOD.md, seeded SysInfo) from the 30g image.
 
 ## Follow-ups
 
