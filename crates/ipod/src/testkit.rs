@@ -91,6 +91,29 @@ pub fn seed_sysinfo(mount: &Path, model_num_str: &str) -> std::io::Result<()> {
     )
 }
 
+/// Seed a `Device/SysInfoExtended` XML plist with `FireWireGUID` and
+/// `SerialNumber` entries — the shape libgpod's `SysInfoExtended` parser
+/// (`itdb_sysinfo_extended_parser.c`, field mappings `"FireWireGUID" →
+/// firewire_guid`, `"SerialNumber" → serial_number`) reads. At parse time
+/// libgpod merges `FireWireGUID` into the plain sysinfo hash under
+/// `FirewireGuid` (what [`crate::DeviceInfo::firewire_id`] reads), and the
+/// model resolver prefers the serial path when the extended properties
+/// exist — real devices always carry a serial, so the fixture does too.
+pub fn seed_sysinfo_extended(mount: &Path, firewire_guid: &str) -> std::io::Result<()> {
+    let dir = mount.join("iPod_Control").join("Device");
+    std::fs::create_dir_all(&dir)?;
+    let plist = format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+         <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \
+         \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
+         <plist version=\"1.0\"><dict>\n\
+         <key>FireWireGUID</key><string>{firewire_guid}</string>\n\
+         <key>SerialNumber</key><string>YM999999V9K</string>\n\
+         </dict></plist>\n"
+    );
+    std::fs::write(dir.join("SysInfoExtended"), plist)
+}
+
 /// Allocate a GLib-owned copy of a string, for tests that set track fields
 /// directly (the string fields of tracks added via `create_track` are set
 /// through the write surface; this helper covers the raw paths).

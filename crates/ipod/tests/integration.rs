@@ -114,6 +114,29 @@ fn fixture_unknown_model_gates_artwork() {
     assert_eq!(status.declared_entries, Some(0));
 }
 
+/// B-005 plumbing: a seeded `SysInfoExtended` (`FireWireGUID` key) must
+/// surface through the sysinfo hash as `FirewireGuid` — libgpod merges the
+/// extended properties into the plain sysinfo at parse time, and the wrapper
+/// surfaces the merged key via [`ipod::DeviceInfo::firewire_id`].
+#[cfg(feature = "sync-writes")]
+#[test]
+fn firewire_guid_from_sysinfo_extended_surfaces() {
+    let Some(backend) = backend_or_skip() else {
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    ipod::testkit::init_device(&backend, dir.path(), "MA446", "fixture-pod").unwrap();
+    ipod::testkit::seed_sysinfo(dir.path(), "MA446").unwrap();
+    ipod::testkit::seed_sysinfo_extended(dir.path(), "0x000A270012345678").unwrap();
+
+    let session = ipod::DeviceSession::open(&backend, dir.path()).unwrap();
+    let info = session.device_info().unwrap();
+    assert_eq!(info.firewire_id(), Some("0x000A270012345678"));
+    // `itdb_device_get_uuid` quirk: it returns the sysinfo hash's
+    // FirewireGuid entry (borrowed) — so uuid and firewire_id agree here.
+    assert_eq!(info.uuid.as_deref(), Some("0x000A270012345678"));
+}
+
 /// The full write round-trip through libgpod's own writer, then a reparse
 /// that must see exactly what was written — including the artwork status
 /// `Ok` with our independent ArtworkDB count and the ithmb proof-read.

@@ -67,8 +67,12 @@ pub type FnItdbDeviceGetSysinfo =
 
 /// `gchar *itdb_device_get_uuid (const Itdb_Device *device);`
 ///
-/// Result is GLib-allocated (`g_free`). See the crate root docs for the
-/// `db->id` byte-order gotcha.
+/// **Borrowed, do not free.** Despite the non-const return type, the pinned
+/// build implements this as `g_hash_table_lookup (device->sysinfo,
+/// "FirewireGuid")` — a pointer into the hash (itdb_device.c). It is valid
+/// while the device lives; freeing it corrupts the hash (double free at
+/// `itdb_free`). Also note the semantic quirk: the "uuid" is actually the
+/// merged `FirewireGuid` entry, not a database id.
 pub type FnItdbDeviceGetUuid = unsafe extern "C" fn(device: *const Itdb_Device) -> *mut c_char;
 
 /// `const gchar *itdb_info_get_ipod_model_name_string (Itdb_IpodModel model);`

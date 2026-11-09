@@ -43,7 +43,12 @@ use crate::with_native;
 /// SysInfo keys surfaced in [`DeviceInfo::sysinfo`]. Kept small on purpose:
 /// the wrapper reports what the device database says, the name-provenance
 /// question itself is B-005's.
-const SYSINFO_KEYS: [&str; 2] = ["ModelNumStr", "SerialNumber"];
+///
+/// `FirewireGuid` is not usually written into the plain `SysInfo` by the
+/// device: libgpod merges it in from `SysInfoExtended` (key `FireWireGUID`)
+/// at parse time (`itdb_device_read_sysinfo_extended`, itdb_device.c) — so
+/// the key appears exactly when the device actually exposes one.
+const SYSINFO_KEYS: [&str; 3] = ["ModelNumStr", "SerialNumber", "FirewireGuid"];
 
 /// A parsed device session. See the module docs for the ownership and
 /// threading contracts.
@@ -151,9 +156,11 @@ impl<'a> DeviceSession<'a> {
         let uuid = if device.is_null() {
             None
         } else {
-            // SAFETY: `device` valid; result is GLib-allocated and consumed
-            // by `gstr_take` exactly once.
-            unsafe { gstr_take((read.itdb_device_get_uuid)(device), glib) }
+            // SAFETY: `device` valid. `itdb_device_get_uuid` returns a
+            // BORROWED pointer into the sysinfo hash (see the symbol docs:
+            // the pinned build implements it as a plain hash lookup), so it
+            // is copied without freeing — freeing it would corrupt the hash.
+            unsafe { cstr_copy((read.itdb_device_get_uuid)(device)) }
         };
 
         let mut sysinfo = Vec::new();
