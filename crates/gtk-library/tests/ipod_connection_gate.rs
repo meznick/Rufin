@@ -16,7 +16,7 @@
 //! print-debugging (the same convention as the other suites).
 #![allow(clippy::print_stderr)]
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use gtk_library::device_manager::ConnectionState;
@@ -182,11 +182,57 @@ fn env_gated_mounted_readonly_lands_error_through_the_observer_path() {
     );
 }
 
+/// The files under `iPod_Control` the scan pipeline opens, for the
+/// no-write hash: `iTunesDB` (the libgpod parse target; `iTunesStats` when
+/// present), `ArtworkDB` (parsed by `artwork_status`), and the whole
+/// `Device/` subtree (SysInfo plists). Deliberately excluded:
+/// `iTunesControl` (libgpod never touches it) and the `*.ithmb` banks
+/// (opened strictly read-only by the proof-read). Hashing the full tree
+/// takes minutes on a real device — the ithmb banks alone are ~320 MB —
+/// and covers files the pipeline never opens; the full-tree no-write
+/// proof was already done once on the image (`09457e3`).
+const HASHED_DB_FILES: [&str; 3] = ["iTunes/iTunesDB", "iTunes/iTunesStats", "Artwork/ArtworkDB"];
+
+/// Snapshot the files the scan pipeline opens: `(relative path, contents)`
+/// pairs, missing files skipped (`iTunesStats` is model-dependent).
+/// Stable if and only if the scan path wrote nothing to them.
+fn snapshot_touched_files(control: &Path) -> Vec<(PathBuf, Vec<u8>)> {
+    let mut snapshot = Vec::new();
+    for relative in HASHED_DB_FILES {
+        let path = control.join(relative);
+        match std::fs::read(&path) {
+            Ok(contents) => snapshot.push((PathBuf::from(relative), contents)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => panic!("read iPod_Control/{relative}: {error}"),
+        }
+    }
+    let device_dir = control.join("Device");
+    let read = std::fs::read_dir(&device_dir)
+        .unwrap_or_else(|error| panic!("read_dir {}: {error}", device_dir.display()));
+    for entry in read {
+        let entry =
+            entry.unwrap_or_else(|error| panic!("read_dir {}: {error}", device_dir.display()));
+        let path = entry.path();
+        if entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
+            let name = path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned();
+            let contents = std::fs::read(&path)
+                .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
+            snapshot.push((PathBuf::from("Device").join(name), contents));
+        }
+    }
+    snapshot
+}
+
 /// The mounted device image (p2 of `ipod/test-device-30g.img`), mounted
 /// **read-write**: the full Ready path on a genuine vfat mount, plus the
-/// no-write tree hash. The real image has an empty `SysInfo` — under the
-/// 2026-11-10 model policy (b006 delta decision 12) that is a limited
-/// device, not a refusal, so the Ready snapshot must carry
+/// no-write hash over the files the pipeline opens (see
+/// [`snapshot_touched_files`]). The real image has an empty `SysInfo` —
+/// under the 2026-11-10 model policy (b006 delta decision 12) that is a
+/// limited device, not a refusal, so the Ready snapshot must carry
 /// `model_supported == false` and `checksum_possible == false`: the gate
 /// proves the verdict plumbing end-to-end on real hardware.
 ///
@@ -212,7 +258,7 @@ fn env_gated_mounted_rw_reaches_ready_with_limited_verdicts() {
         mount.display()
     );
 
-    let before = ipod::tree_hash(&control).expect("hash the mounted tree");
+    let before = snapshot_touched_files(&control);
     let snapshots = connection.subscribe();
     connection.scan_from(Box::new(SingleMount(mount.clone())));
 
@@ -242,15 +288,15 @@ fn env_gated_mounted_rw_reaches_ready_with_limited_verdicts() {
     assert_eq!(device.mount_point, mount);
     assert!(
         !device.model_supported,
-        "the real image has an empty SysInfo: the model verdict must be limited"
+        "the device has an empty SysInfo: the model verdict must be limited"
     );
     assert!(
         !device.checksum_possible,
         "an unresolved model keeps the checksum verdict conservative"
     );
     assert_eq!(
-        ipod::tree_hash(&control).expect("hash the mounted tree"),
+        snapshot_touched_files(&control),
         before,
-        "the service scan path must not modify a mounted device"
+        "the service scan path must not modify the files it opens"
     );
 }
