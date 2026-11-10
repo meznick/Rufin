@@ -171,7 +171,7 @@ and cancels the debounce. `Debounce` per decision 11.
 | Glue (unit, 13 new + 28 migrated) | stub closures, `Cell` counters | exact emission sequences: fresh, retrieval-failure, ABI-unverified, backend-unavailable, removal, idempotent rescans, recovery, handover, takeover, newer-cause refresh |
 | Service (unit, 12) | `Explicit(/nonexistent)` search, temp `iPod_Control` dirs, synthetic `MountSource`, FIFO-marker proofs | startup state, Connecting→BackendUnavailable, removal, retry (fresh + no-op), scan-error silence, notice survival across retry/removal, explicit clear, broadcast equality, late-subscriber no-replay, facade clones |
 | Monitor (unit, 2) | private `MainContext` + `trigger_on` seam | burst coalescing, cancel; headless construct/drop |
-| Gates (env-gated, 2) | `IPOD_TEST_TREE` snapshot, `IPOD_TEST_MOUNT` ro image, `RUFIN_LIBGPOD_DIR` | Ready end-to-end through the channel + no-write tree hash; ro-mount Error path end-to-end |
+| Gates (env-gated, 3) | `IPOD_TEST_TREE` snapshot, `IPOD_TEST_MOUNT` ro image, `IPOD_TEST_MOUNT_RW` rw image, `RUFIN_LIBGPOD_DIR` | Ready end-to-end through the channel + no-write tree hash (snapshot); ro-mount Error path end-to-end; rw-mount Ready with the limited model verdicts + no-write hash |
 
 ## Results
 
@@ -185,9 +185,10 @@ notices are preserved separately (service-owned, survive removal/retry,
 explicit clear only).
 
 Green: 112 gtk-library unit tests (was 85: +13 glue, +12 service, +2
-monitor) plus the 2 env-gated observer gates as a separate test target,
+monitor) plus the 3 env-gated observer gates as a separate test target,
 fmt/clippy clean on both crates, `ipod-dev test-full` exit 0 with the gates
-wired into the snapshot and mounted scenarios, mount state clean.
+wired into the snapshot and mounted scenarios, `ipod-dev test-mounted-rw`
+green on the real rw mount, mount state clean.
 
 Implementation findings that shaped the code (recorded in decisions 9–11):
 the Connecting-before-retrieval gap (plan deviation, flagged for owner
