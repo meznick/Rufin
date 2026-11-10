@@ -380,20 +380,9 @@ pub(crate) fn proof_read(artwork_dir: &Path, first_per_format: &[FormatThumb]) -
             break;
         }
         let file = artwork_dir.join(&thumb.ithmb_file);
-        let result = std::fs::read(&file)
-            .map_err(|e| format!("cannot read {}: {e}", file.display()))
-            .and_then(|data| {
-                let start = thumb.offset as usize;
-                let end = (thumb.offset + thumb.size) as usize;
-                let block = data.get(start..end).ok_or_else(|| {
-                    format!(
-                        "block {start}..{end} outside {} ({} bytes)",
-                        file.display(),
-                        data.len()
-                    )
-                })?;
-                decode_rgb565_le(block, thumb.width, thumb.height, thumb.hpad, thumb.vpad)
-            });
+        let result = read_thumb_block(&file, thumb.offset, thumb.size).and_then(|block| {
+            decode_rgb565_le(&block, thumb.width, thumb.height, thumb.hpad, thumb.vpad)
+        });
         match result {
             Ok(_pixels) => report.formats_checked.push(thumb.format_id as u32),
             Err(reason) => {
@@ -406,6 +395,40 @@ pub(crate) fn proof_read(artwork_dir: &Path, first_per_format: &[FormatThumb]) -
         }
     }
     report
+}
+
+/// Read one declared thumbnail block from an ithmb bank: open + seek +
+/// bounded read of exactly the declared bytes. Deliberately NOT
+/// `std::fs::read` — real bank files are hundreds of MB (F1029_1.ithmb is
+/// ~268 MB on the test device) and the block is a few KB, so slurping the
+/// whole bank would hold a plugged-in device busy and spike memory on
+/// every scan.
+fn read_thumb_block(file: &Path, offset: u64, size: u64) -> Result<Vec<u8>, String> {
+    use std::io::{Read, Seek, SeekFrom};
+
+    let mut bank =
+        std::fs::File::open(file).map_err(|e| format!("cannot read {}: {e}", file.display()))?;
+    let len = bank
+        .metadata()
+        .map_err(|e| format!("cannot read {}: {e}", file.display()))?
+        .len();
+    let start = offset;
+    let end = start
+        .checked_add(size)
+        .ok_or_else(|| format!("block {start}+{size} overflows in {}", file.display()))?;
+    if end > len {
+        return Err(format!(
+            "block {start}..{end} outside {} ({} bytes)",
+            file.display(),
+            len
+        ));
+    }
+    bank.seek(SeekFrom::Start(start))
+        .map_err(|e| format!("cannot read {}: {e}", file.display()))?;
+    let mut block = vec![0u8; size as usize];
+    bank.read_exact(&mut block)
+        .map_err(|e| format!("cannot read {}: {e}", file.display()))?;
+    Ok(block)
 }
 
 // ---------------------------------------------------------------------------
