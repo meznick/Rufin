@@ -222,4 +222,14 @@ review), the glib 0.22 `watch_channel` removal, the
   name needs an alternate source (owner direction from the B-006 review;
   firmware/USB descriptors were floated — unverified). Until then the UI
   shows the unresolved model as the limited state.
+- **`LAYOUTS_SHA256` / `layouts.rs` mismatch (debt, B-007)**: the ABI
+  marker regeneration doc says the constant must be regenerated together
+  with `ffi/layouts.rs`, but they disagree in the committed tree —
+  `sha256sum crates/ipod/src/ffi/layouts.rs` = `7c4bf12e…`, while
+  `ffi/layouts_sha.rs` carries `cd93ed97…` (both landed in the B-007
+  commit). The marker must carry the constant's value or the loader
+  refuses it, so the environment rebuild used `cd93…`; the next
+  `layouts.rs` regeneration must also refresh `layouts_sha.rs`, and the
+  stale one should be reconciled. Found during the 2026-11-10 environment
+  rebuild.
 - Packaging follow-up (b007 delta §5) unchanged.
