@@ -260,3 +260,20 @@ set internally); a `statvfs` failure never fabricates a read-only verdict;
 (contract completeness for the glue mapping); the no-write discipline is
 proven by the tree-hash gates, which ran for real (snapshot + ro mount, no
 skips, clean mount state).
+
+## Addendum 2026-11-10: the model policy (b006 delta decision 12)
+
+During the B-006 code review the owner decided the model gates are **not
+refusals** anymore: an unsupported or unresolved model — and a supported
+Classic missing its FireWire GUID — is a *limited* device, not a broken
+one (an empty `SysInfo` is the normal state of a freshly restored iPod).
+Preflight now refuses only on the read-only mount, the database parse, and
+a damaged artwork verdict; the model/checksum classifications moved into
+`DeviceFacts` as the `model_supported`/`checksum_possible` verdicts,
+computed by `retrieval::collect` from the same generation consts, and the
+UI gates sync functions on them (the `SkippedUnknownModel` artwork verdict
+passes — "cannot be assessed", never a silent artless device). The fixture
+matrix row "missing Classic FireWire ID → `ChecksumPrerequisite`" and the
+"unsupported models / unknown model → Model error" rows are superseded:
+those cases now pass preflight and assert the verdicts instead. Full
+record: `deltas/b006_delta.md` decision 12.

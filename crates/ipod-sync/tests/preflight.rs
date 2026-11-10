@@ -15,8 +15,8 @@ mod support;
 
 use std::path::{Path, PathBuf};
 
-use ipod::{BackendSearch, IpodBackend};
-use ipod_sync::{ReadinessCheck, ReadinessError, preflight};
+use ipod::{BackendSearch, DeviceSession, IpodBackend};
+use ipod_sync::{ReadinessCheck, ReadinessError, collect, preflight};
 
 /// Load the backend via the production search, or skip with an explanation.
 /// A set-but-broken `RUFIN_LIBGPOD_DIR` is a test-environment failure and
@@ -152,8 +152,17 @@ fn env_gated_mounted_readonly_fails() {
     );
 }
 
-/// A fresh Video fixture: the full pass — supported model, no checksum
-/// requirement, legitimately artless artwork, rw host filesystem.
+/// Open a session and collect the facts for the fixture mount — the
+/// verdict assertions for the 2026-11-10 model policy (b006 delta decision
+/// 12): preflight no longer refuses on model or checksum axes, the
+/// verdicts ride in `DeviceFacts` and the UI gates on them.
+fn facts(backend: &IpodBackend, mount: &Path) -> ipod_sync::DeviceFacts {
+    let session = DeviceSession::open(backend, mount).expect("open the fixture session");
+    collect(&session, mount).expect("collect the fixture facts")
+}
+
+/// A fresh Video fixture: the full pass — supported model, checksum NONE
+/// (no requirement), legitimately artless artwork, rw host filesystem.
 #[test]
 fn fresh_video_fixture_passes() {
     let Some(backend) = backend_or_skip() else {
@@ -161,67 +170,79 @@ fn fresh_video_fixture_passes() {
     };
     let dir = fixture(&backend, "MA446");
     preflight(&backend, dir.path()).unwrap();
+    let facts = facts(&backend, dir.path());
+    assert!(facts.model_supported, "MA446 is inside the supported set");
+    assert!(facts.checksum_possible, "Video needs no checksum");
 }
 
-/// A fresh Classic fixture without SysInfoExtended: the checksum
-/// prerequisite fails with an actionable FireWire diagnostic.
+/// A fresh Classic fixture without SysInfoExtended: preflight passes (the
+/// model policy) and the verdict marks the write path limited — no
+/// FireWire GUID means the HASH58 checksum cannot be generated.
 #[test]
-fn classic_without_firewire_fails_checksum_prerequisite() {
+fn classic_without_firewire_passes_with_limited_checksum() {
     let Some(backend) = backend_or_skip() else {
         return;
     };
     let dir = fixture(&backend, "MB029");
-    let error = expect_check(
-        preflight(&backend, dir.path()),
-        ReadinessCheck::ChecksumPrerequisite,
-    );
+    preflight(&backend, dir.path()).unwrap();
+    let facts = facts(&backend, dir.path());
+    assert!(facts.model_supported, "Classic is inside the supported set");
     assert!(
-        error.to_string().contains("FireWire"),
-        "diagnostic must name the FireWire ID: {error}"
+        !facts.checksum_possible,
+        "the checksum verdict must be false without the GUID"
     );
 }
 
 /// The same Classic with a SysInfoExtended plist (Classic serial + FireWire
-/// GUID): the prerequisite passes and the fixture is ready-capable.
+/// GUID): the checksum verdict recovers.
 #[test]
-fn classic_with_firewire_passes() {
+fn classic_with_firewire_passes_with_full_checksum() {
     let Some(backend) = backend_or_skip() else {
         return;
     };
     let dir = fixture(&backend, "MB029");
     seed_classic_sysinfo_extended(dir.path(), "YM6312345Y5N", "000A27001DB3C2D6");
     preflight(&backend, dir.path()).unwrap();
+    let facts = facts(&backend, dir.path());
+    assert!(facts.model_supported);
+    assert!(facts.checksum_possible, "the GUID enables the checksum");
 }
 
 /// An empty SysInfo is the unknown-model case (the real device snapshot's
-/// state): Model failure, never a silent artless device.
+/// state — normal on a freshly restored iPod): preflight passes under the
+/// model policy and the verdicts mark the device limited on both axes.
 #[test]
-fn unknown_model_fails() {
+fn unknown_model_passes_with_limited_verdicts() {
     let Some(backend) = backend_or_skip() else {
         return;
     };
     let dir = fixture(&backend, "MA446");
     std::fs::write(dir.path().join("iPod_Control/Device/SysInfo"), "").unwrap();
-    let error = expect_check(preflight(&backend, dir.path()), ReadinessCheck::Model);
+    preflight(&backend, dir.path()).unwrap();
+    let facts = facts(&backend, dir.path());
     assert!(
-        error.to_string().contains("could not be resolved"),
-        "diagnostic must explain the unknown model: {error}"
+        !facts.model_supported,
+        "an unresolved model must read unsupported"
     );
+    assert!(
+        !facts.checksum_possible,
+        "unresolved: the checksum verdict stays conservative"
+    );
+    assert_eq!(facts.model, "", "no fabricated model name");
 }
 
 /// A Nano fixture (MA350 → Nano 1G): outside the Video/Classic scope —
-/// Model failure naming the unsupported device.
+/// preflight passes under the model policy, the verdict marks it
+/// unsupported for the UI to gate on.
 #[test]
-fn unsupported_model_fails() {
+fn unsupported_model_passes_with_limited_verdict() {
     let Some(backend) = backend_or_skip() else {
         return;
     };
     let dir = fixture(&backend, "MA350");
-    let error = expect_check(preflight(&backend, dir.path()), ReadinessCheck::Model);
-    assert!(
-        error.to_string().contains("unsupported model"),
-        "diagnostic must say unsupported: {error}"
-    );
+    preflight(&backend, dir.path()).unwrap();
+    let facts = facts(&backend, dir.path());
+    assert!(!facts.model_supported, "Nano is outside the B-001 scope");
 }
 
 /// A corrupt iTunesDB fails the parse: Database failure.
