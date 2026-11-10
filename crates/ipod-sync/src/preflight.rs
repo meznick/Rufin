@@ -14,16 +14,24 @@
 //!    on a ro mount there is no point re-parsing the device.
 //! 2. **Session open** (parse): access denied, unreadable, or corrupt
 //!    iTunesDB.
-//! 3. **Model resolved**: an empty/unreadable `Device/SysInfo` leaves the
-//!    model unknown — never a silent artless device (B-007 §1.2).
-//! 4. **Supported set**: Video 5/5.5G + Classic 6/6.5/7G (the B-001
-//!    scope).
-//! 5. **Checksum prerequisite**: Classic requires a present FireWire GUID
-//!    (its database checksum is HASH58 and cannot be generated without it —
-//!    see `deltas/b004_delta.md` §2.1). Video has no such requirement.
-//! 6. **Artwork verdict**: `Missing` is corruption (declared entries not
+//! 3. **Artwork verdict**: `Missing` is corruption (declared entries not
 //!    parsed, ArtworkDB missing/corrupt, or a failed proof-read); `Ok`
 //!    passes, including a legitimately artless device.
+//!
+//! # Model policy (owner decision 2026-11-10, b006 delta decision 12)
+//!
+//! The model gates are **not refusals** anymore. An unsupported or
+//! unresolved model — and a supported Classic missing its FireWire GUID —
+//! is a *limited* device, not a broken one: an empty `SysInfo` is the
+//! normal state of a freshly restored iPod, and the frontend owns the
+//! function gating. The verdicts ride in `DeviceFacts`
+//! (`model_supported`, `checksum_possible`, computed in
+//! `retrieval::collect` via [`generation_supported`] and
+//! [`generation_requires_firewire`]) and reach the UI through
+//! `DeviceInfo`/snapshots. Consequently the artwork verdict for an
+//! unresolved model (`SkippedUnknownModel`) passes here — it means "cannot
+//! be assessed", not "artless", and the UI shows the limited state instead
+//! of pretending the device is fine.
 //!
 //! Capacity is deliberately **not** checked here: B-002's
 //! `DeviceManager::set_ready_after_preflight` validates the measured
@@ -44,7 +52,7 @@
 use std::ffi::CString;
 use std::path::Path;
 
-use ipod::{ArtworkStatus, ArtworkVerdict, DeviceSession, IpodBackend, ModelInfo};
+use ipod::{ArtworkStatus, ArtworkVerdict, DeviceSession, IpodBackend};
 
 /// Supported generations — the B-001 scope (Video 5/5.5g, Classic
 /// 6/6.5/7g). Values are the `Itdb_IpodGeneration` enum constants in
@@ -56,7 +64,11 @@ const GENERATION_CLASSIC_1: i32 = 18;
 const GENERATION_CLASSIC_2: i32 = 19;
 const GENERATION_CLASSIC_3: i32 = 26;
 
-fn generation_supported(generation: i32) -> bool {
+/// Whether a resolved model generation is inside the supported set.
+/// `pub(crate)` because `retrieval::collect` computes the
+/// `model_supported` verdict from it; not refusal logic anymore (see the
+/// module docs).
+pub(crate) fn generation_supported(generation: i32) -> bool {
     matches!(
         generation,
         GENERATION_VIDEO_1
@@ -69,7 +81,9 @@ fn generation_supported(generation: i32) -> bool {
 
 /// Classic 6/6.5/7G: the database checksum (HASH58) requires the FireWire
 /// GUID (itdb_hash58.c:249). Video checksums are NONE — no requirement.
-fn generation_requires_firewire(generation: i32) -> bool {
+/// `pub(crate)`: feeds the `checksum_possible` verdict in
+/// `retrieval::collect`.
+pub(crate) fn generation_requires_firewire(generation: i32) -> bool {
     matches!(
         generation,
         GENERATION_CLASSIC_1 | GENERATION_CLASSIC_2 | GENERATION_CLASSIC_3
@@ -102,12 +116,9 @@ pub enum ReadinessError {
 pub enum ReadinessCheck {
     /// Session open failed: access denied, unreadable, or corrupt iTunesDB.
     Database,
-    /// Model unresolved (empty `SysInfo`) or outside the supported set.
-    Model,
-    /// Artwork verdict `Missing` (or `SkippedUnknownModel`, defensively).
+    /// Artwork verdict `Missing` — declared entries not parsed, ArtworkDB
+    /// missing/corrupt, or a failed proof-read.
     Artwork,
-    /// Classic without a FireWire GUID (HASH58 prerequisite).
-    ChecksumPrerequisite,
     /// Mount is read-only (`statvfs` `ST_RDONLY`).
     ReadOnly,
 }
@@ -116,9 +127,7 @@ impl std::fmt::Display for ReadinessCheck {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
             Self::Database => "database",
-            Self::Model => "model",
             Self::Artwork => "artwork",
-            Self::ChecksumPrerequisite => "checksum prerequisite",
             Self::ReadOnly => "read-only mount",
         })
     }
@@ -139,43 +148,11 @@ const READ_ONLY_DETAIL: &str = "the device is mounted read-only; sync needs a wr
 
 /// The pure check logic (see the module docs for the order). Everything is
 /// fixture-constructible, so the whole matrix runs without a backend.
-fn evaluate(
-    model: Option<&ModelInfo>,
-    firewire_id: Option<&str>,
-    artwork: &ArtworkStatus,
-    read_only: bool,
-) -> Result<(), ReadinessError> {
+fn evaluate(artwork: &ArtworkStatus, read_only: bool) -> Result<(), ReadinessError> {
     if read_only {
         return Err(ReadinessError::Check {
             kind: ReadinessCheck::ReadOnly,
             detail: READ_ONLY_DETAIL.to_string(),
-        });
-    }
-
-    let Some(info) = model else {
-        return Err(ReadinessError::Check {
-            kind: ReadinessCheck::Model,
-            detail: "the device model could not be resolved — Device/SysInfo is empty or unreadable, and an unknown model must not be treated as a working device".to_string(),
-        });
-    };
-
-    if !generation_supported(info.generation) {
-        return Err(ReadinessError::Check {
-            kind: ReadinessCheck::Model,
-            detail: format!(
-                "unsupported model: {} ({}); Rufin syncs Video (5/5.5G) and Classic (6/6.5/7G) iPods",
-                info.model_name, info.generation_name
-            ),
-        });
-    }
-
-    if generation_requires_firewire(info.generation) && firewire_id.is_none() {
-        return Err(ReadinessError::Check {
-            kind: ReadinessCheck::ChecksumPrerequisite,
-            detail: format!(
-                "{} requires its FireWire ID for the database checksum, but the device exposes none (Device/SysInfoExtended is missing or carries no FireWireGUID); the checksum cannot be generated without it",
-                info.model_name
-            ),
         });
     }
 
@@ -191,12 +168,12 @@ fn evaluate(
                     .unwrap_or("ArtworkDB declares entries that are not parsed")
             ),
         }),
-        // Unreachable after the model gate, but never silently accepted:
-        // the verdict is the wrapper's own unknown-model signal.
-        ArtworkVerdict::SkippedUnknownModel => Err(ReadinessError::Check {
-            kind: ReadinessCheck::Model,
-            detail: "the model was unresolved at the artwork gate; the device must not be treated as artless".to_string(),
-        }),
+        // The wrapper skips the artwork assessment when it cannot resolve
+        // the model. Under the 2026-11-10 model policy an unresolved model
+        // is a limited device, not a failure — the UI gates functions, so
+        // "cannot be assessed" passes through (never silently: the limited
+        // state is visible in the UI, B-007 §1.2).
+        ArtworkVerdict::SkippedUnknownModel => Ok(()),
     }
 }
 
@@ -242,12 +219,6 @@ pub fn preflight(backend: &IpodBackend, mount: &Path) -> Result<(), ReadinessErr
         kind: ReadinessCheck::Database,
         detail: format!("the device database cannot be opened or parsed: {error}"),
     })?;
-    let info = session
-        .device_info()
-        .map_err(|error| ReadinessError::Check {
-            kind: ReadinessCheck::Database,
-            detail: format!("the device identity cannot be read: {error}"),
-        })?;
     let artwork = session
         .artwork_status()
         .map_err(|error| ReadinessError::Check {
@@ -255,24 +226,12 @@ pub fn preflight(backend: &IpodBackend, mount: &Path) -> Result<(), ReadinessErr
             detail: format!("the artwork state cannot be assessed: {error}"),
         })?;
 
-    evaluate(info.model.as_ref(), info.firewire_id(), &artwork, false)
+    evaluate(&artwork, false)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// A fixture model with just the fields the checks read.
-    fn model(generation: i32) -> ModelInfo {
-        ModelInfo {
-            model_number: "X000".to_string(),
-            model_name: "Fixture".to_string(),
-            ipod_model: 1,
-            generation,
-            generation_name: "Fixture generation".to_string(),
-            capacity_gb: Some(30.0),
-        }
-    }
 
     fn artwork(verdict: ArtworkVerdict, diagnostic: Option<&str>) -> ArtworkStatus {
         ArtworkStatus {
@@ -332,89 +291,44 @@ mod tests {
         );
     }
 
+    /// The supported set is exactly the B-001 scope: Video 5/5.5G and
+    /// Classic 6/6.5/7G — everything else is classified unsupported. The
+    /// classification feeds the `model_supported` verdict, not a refusal.
     #[test]
-    fn unknown_model_fails() {
-        let error = check(
-            evaluate(None, None, &artwork(ArtworkVerdict::Ok, None), RW),
-            ReadinessCheck::Model,
-        );
-        assert!(
-            error.to_string().contains("could not be resolved"),
-            "diagnostic must explain the unknown model: {error}"
-        );
-    }
-
-    #[test]
-    fn unsupported_generations_fail() {
+    fn supported_generation_set_matches_the_b001_scope() {
+        for generation in [
+            GENERATION_VIDEO_1,
+            GENERATION_VIDEO_2,
+            GENERATION_CLASSIC_1,
+            GENERATION_CLASSIC_2,
+            GENERATION_CLASSIC_3,
+        ] {
+            assert!(
+                generation_supported(generation),
+                "generation {generation} must be inside the supported set"
+            );
+        }
         for generation in [0, 11, 12, 20, 27] {
-            let error = check(
-                evaluate(
-                    Some(&model(generation)),
-                    None,
-                    &artwork(ArtworkVerdict::Ok, None),
-                    RW,
-                ),
-                ReadinessCheck::Model,
-            );
             assert!(
-                error.to_string().contains("unsupported model"),
-                "diagnostic must say unsupported (generation {generation}): {error}"
+                !generation_supported(generation),
+                "generation {generation} must be outside the supported set"
             );
         }
     }
 
+    /// Only the Classic set requires the FireWire GUID for the HASH58
+    /// checksum; Video needs none. The classification feeds the
+    /// `checksum_possible` verdict, not a refusal.
     #[test]
-    fn video_generations_pass_without_firewire() {
-        // The explicit "Video without that requirement" case from
-        // tasks.md: no FireWire ID, still ready-capable.
-        for generation in [GENERATION_VIDEO_1, GENERATION_VIDEO_2] {
-            evaluate(
-                Some(&model(generation)),
-                None,
-                &artwork(ArtworkVerdict::Ok, None),
-                RW,
-            )
-            .unwrap();
-        }
-    }
-
-    #[test]
-    fn classic_without_firewire_fails_checksum_prerequisite() {
+    fn firewire_requirement_matches_the_classic_set() {
+        assert!(!generation_requires_firewire(GENERATION_VIDEO_1));
+        assert!(!generation_requires_firewire(GENERATION_VIDEO_2));
         for generation in [
             GENERATION_CLASSIC_1,
             GENERATION_CLASSIC_2,
             GENERATION_CLASSIC_3,
         ] {
-            let error = check(
-                evaluate(
-                    Some(&model(generation)),
-                    None,
-                    &artwork(ArtworkVerdict::Ok, None),
-                    RW,
-                ),
-                ReadinessCheck::ChecksumPrerequisite,
-            );
-            assert!(
-                error.to_string().contains("FireWire"),
-                "diagnostic must name the FireWire ID: {error}"
-            );
-        }
-    }
-
-    #[test]
-    fn classic_with_firewire_passes() {
-        for generation in [
-            GENERATION_CLASSIC_1,
-            GENERATION_CLASSIC_2,
-            GENERATION_CLASSIC_3,
-        ] {
-            evaluate(
-                Some(&model(generation)),
-                Some("000A27001DB3C2D6"),
-                &artwork(ArtworkVerdict::Ok, None),
-                RW,
-            )
-            .unwrap();
+            assert!(generation_requires_firewire(generation));
         }
     }
 
@@ -422,8 +336,6 @@ mod tests {
     fn artwork_missing_fails_and_carries_the_verdict_diagnostic() {
         let error = check(
             evaluate(
-                Some(&model(GENERATION_VIDEO_2)),
-                None,
                 &artwork(
                     ArtworkVerdict::Missing,
                     Some("ArtworkDB declares 3 entries, 1 track carries thumbnails"),
@@ -438,36 +350,26 @@ mod tests {
         );
     }
 
+    /// Under the 2026-11-10 model policy an unresolved model is a limited
+    /// device, so the wrapper's skipped artwork assessment passes — the UI
+    /// shows the limited state, never a silent artless device.
     #[test]
-    fn artwork_skipped_unknown_model_fails_as_model() {
-        check(
-            evaluate(
-                Some(&model(GENERATION_VIDEO_2)),
-                None,
-                &artwork(ArtworkVerdict::SkippedUnknownModel, None),
-                RW,
-            ),
-            ReadinessCheck::Model,
-        );
+    fn artwork_skipped_unknown_model_passes() {
+        evaluate(&artwork(ArtworkVerdict::SkippedUnknownModel, None), RW).unwrap();
     }
 
     #[test]
     fn legitimately_artless_artwork_passes() {
-        evaluate(
-            Some(&model(GENERATION_VIDEO_2)),
-            None,
-            &artwork(ArtworkVerdict::Ok, None),
-            RW,
-        )
-        .unwrap();
+        evaluate(&artwork(ArtworkVerdict::Ok, None), RW).unwrap();
     }
 
     #[test]
     fn read_only_fails_first() {
-        // The ro verdict wins over any other failure: it is the most
-        // fundamental blocker (see the module docs).
+        // The ro verdict wins over any other failure (here: a damaged
+        // artwork verdict): it is the most fundamental blocker (see the
+        // module docs).
         let error = check(
-            evaluate(None, None, &artwork(ArtworkVerdict::Ok, None), RO),
+            evaluate(&artwork(ArtworkVerdict::Missing, None), RO),
             ReadinessCheck::ReadOnly,
         );
         assert!(
@@ -479,13 +381,10 @@ mod tests {
     #[test]
     fn display_naming_and_labels() {
         let error = ReadinessError::Check {
-            kind: ReadinessCheck::ChecksumPrerequisite,
+            kind: ReadinessCheck::Database,
             detail: "boom".to_string(),
         };
-        assert_eq!(
-            error.to_string(),
-            "boom (checksum prerequisite check failed)"
-        );
+        assert_eq!(error.to_string(), "boom (database check failed)");
         assert_eq!(
             ReadinessError::BackendAbi {
                 detail: "distro build".to_string(),

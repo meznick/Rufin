@@ -47,8 +47,11 @@ impl ConnectionState {
 ///
 /// Every value that may be absent is `Option`. `None` means unavailable, never a
 /// fabricated zero or default. Partial information can be exposed while Connecting
-/// or in Error; `Ready` requires identified supported-model capabilities and measured
-/// capacity.
+/// or in Error; `Ready` requires a writable, parseable device with a healthy
+/// artwork state and measured capacity. Model support is informational, not a
+/// readiness gate (owner decision 2026-11-10, b006 delta decision 12):
+/// `model_supported`/`checksum_possible` carry the verdicts and the UI gates
+/// sync functions on them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeviceInfo {
     pub mount_point: PathBuf,
@@ -60,6 +63,14 @@ pub struct DeviceInfo {
     pub total_capacity: Option<u64>,
     pub used_capacity: Option<u64>,
     pub firewire_id: Option<String>,
+    /// Whether the resolved model is inside the supported set (Video
+    /// 5/5.5G, Classic 6/6.5/7G). `false` for an unresolved or
+    /// out-of-scope model — informational, the UI limits sync functions.
+    pub model_supported: bool,
+    /// Whether the database checksum can be generated (`false` for a
+    /// Classic without its FireWire GUID). Informational — limits write
+    /// sync only, reads stay available.
+    pub checksum_possible: bool,
 }
 
 impl DeviceInfo {
@@ -73,7 +84,7 @@ impl DeviceInfo {
 pub enum PreflightError {
     /// The required backend is missing, disabled, or incompatible.
     BackendUnavailable(String),
-    /// A device access, parsing, model, or other readiness check failed.
+    /// A device access, parsing, artwork, or other readiness check failed.
     Readiness(String),
 }
 
@@ -127,9 +138,9 @@ impl DeviceManager {
     /// Move into a non-ready connection state.
     ///
     /// `Ready` is deliberately excluded and leaves the manager unchanged: use
-    /// `set_ready_after_preflight` so supported-model validation and backend
-    /// preflight are explicit. Any accepted non-ready transition clears prior
-    /// diagnostics; set new diagnostics after changing the state.
+    /// `set_ready_after_preflight` so backend preflight is explicit. Any
+    /// accepted non-ready transition clears prior diagnostics; set new
+    /// diagnostics after changing the state.
     pub fn set_state(&mut self, state: ConnectionState) {
         if state == ConnectionState::Ready {
             return;
@@ -144,15 +155,17 @@ impl DeviceManager {
         self.clear_diagnostics();
     }
 
-    /// Mark the current device ready only after the caller's backend/model
+    /// Mark the current device ready only after the caller's backend
     /// validation and preflight succeed, and its measured capacities are valid.
     ///
     /// This can only be called while Connecting. The callback must perform the
-    /// libgpod-backed supported-model and mount-specific readiness checks and
-    /// return a classified, actionable diagnostic on failure. The callback runs
-    /// before capacity validation so an unavailable backend is not masked by
-    /// missing measurements. This method additionally requires both capacity
-    /// values and rejects `used_capacity > total_capacity`.
+    /// libgpod-backed readiness checks (mount writability, database parse,
+    /// artwork state — model support is informational since 2026-11-10, see
+    /// [`DeviceInfo`]) and return a classified, actionable diagnostic on
+    /// failure. The callback runs before capacity validation so an unavailable
+    /// backend is not masked by missing measurements. This method additionally
+    /// requires both capacity values and rejects `used_capacity >
+    /// total_capacity`.
     pub fn set_ready_after_preflight(
         &mut self,
         preflight: impl FnOnce(&DeviceInfo) -> Result<(), PreflightError>,
@@ -274,6 +287,8 @@ mod tests {
                     total_capacity: Some(1_000),
                     used_capacity: Some(500),
                     firewire_id: None,
+                    model_supported: true,
+                    checksum_possible: true,
                 });
                 if state == ConnectionState::Ready {
                     assert!(manager.set_ready_after_preflight(|_| Ok(())));
@@ -307,6 +322,8 @@ mod tests {
             total_capacity: None, // unmeasured: preflight is pending
             used_capacity: None,
             firewire_id: None,
+            model_supported: true,
+            checksum_possible: true,
         });
         let preflight_passed = manager.set_ready_after_preflight(|_| Ok(()));
         assert!(!preflight_passed);
@@ -328,6 +345,8 @@ mod tests {
             total_capacity: Some(14_907_051_520), // measured
             used_capacity: Some(2_048_000_000),
             firewire_id: None,
+            model_supported: true,
+            checksum_possible: true,
         });
         assert!(manager.set_ready_after_preflight(|info| {
             if info.model == "iPod Video 5G" {
@@ -355,6 +374,8 @@ mod tests {
             total_capacity: Some(14_907_051_520),
             used_capacity: Some(2_048_000_000),
             firewire_id: None,
+            model_supported: true,
+            checksum_possible: true,
         });
         assert!(manager.set_ready_after_preflight(|_| Ok(())));
         assert!(manager.sync_enabled());
@@ -370,6 +391,8 @@ mod tests {
             total_capacity: Some(14_907_051_520),
             used_capacity: Some(2_048_000_000),
             firewire_id: None,
+            model_supported: true,
+            checksum_possible: true,
         });
         assert_eq!(manager.state(), ConnectionState::Connecting);
         assert!(!manager.sync_enabled());
@@ -389,6 +412,8 @@ mod tests {
             total_capacity: Some(14_907_051_520),
             used_capacity: Some(2_048_000_000),
             firewire_id: None,
+            model_supported: true,
+            checksum_possible: true,
         });
         assert_eq!(manager.state(), ConnectionState::Connecting);
         assert!(!manager.sync_enabled());
@@ -407,6 +432,8 @@ mod tests {
             total_capacity: Some(1_000),
             used_capacity: Some(500),
             firewire_id: None,
+            model_supported: false,
+            checksum_possible: false,
         });
         manager.set_state(ConnectionState::Ready);
         assert_eq!(manager.state(), ConnectionState::Connecting);
@@ -431,6 +458,8 @@ mod tests {
             total_capacity: Some(1_000),
             used_capacity: Some(1_001),
             firewire_id: None,
+            model_supported: true,
+            checksum_possible: true,
         });
         assert!(!manager.set_ready_after_preflight(|_| Ok(())));
         assert_eq!(manager.state(), ConnectionState::Error);
@@ -449,6 +478,8 @@ mod tests {
             total_capacity: Some(1_000),
             used_capacity: None,
             firewire_id: None,
+            model_supported: true,
+            checksum_possible: true,
         });
         assert!(!manager.set_ready_after_preflight(|_| Ok(())));
         assert_eq!(manager.state(), ConnectionState::Error);
@@ -472,6 +503,8 @@ mod tests {
                 total_capacity: capacity,
                 used_capacity: capacity.map(|_| 500),
                 firewire_id: None,
+                model_supported: true,
+                checksum_possible: true,
             });
             let device = manager.current_device().cloned();
 
@@ -501,6 +534,8 @@ mod tests {
             total_capacity: Some(1_000),
             used_capacity: Some(500),
             firewire_id: None,
+            model_supported: true,
+            checksum_possible: true,
         });
         assert!(
             !manager.set_ready_after_preflight(|_| Err(PreflightError::BackendUnavailable(
@@ -529,6 +564,8 @@ mod tests {
             total_capacity: Some(1_000),
             used_capacity: Some(500),
             firewire_id: None,
+            model_supported: true,
+            checksum_possible: true,
         });
 
         for state in [ConnectionState::BackendUnavailable, ConnectionState::Error] {
@@ -559,6 +596,8 @@ mod tests {
             total_capacity: Some(1_000),
             used_capacity: Some(500),
             firewire_id: None,
+            model_supported: true,
+            checksum_possible: true,
         });
         assert!(manager.set_ready_after_preflight(|_| Ok(())));
         manager.set_diagnostics("stale diagnostic".to_string());
@@ -595,6 +634,8 @@ mod tests {
             total_capacity: Some(1_000),
             used_capacity: Some(500),
             firewire_id: None,
+            model_supported: true,
+            checksum_possible: true,
         });
         assert_eq!(manager.diagnostics(), None);
 
@@ -671,6 +712,8 @@ mod tests {
             total_capacity: Some(1490705152),
             used_capacity: Some(2048000000),
             firewire_id: None,
+            model_supported: true,
+            checksum_possible: true,
         };
         assert_eq!(info.firmware.as_deref(), Some("5.1.2"));
         assert_eq!(info.total_capacity, Some(1490705152));
@@ -687,6 +730,8 @@ mod tests {
             total_capacity: None,
             used_capacity: None,
             firewire_id: None,
+            model_supported: true,
+            checksum_possible: true,
         };
         assert_eq!(sparse.firmware, None);
         assert_eq!(sparse.total_capacity, None);
@@ -702,6 +747,8 @@ mod tests {
             total_capacity: None,
             used_capacity: None,
             firewire_id: Some("A2000000:00008832:00010000:00000001-0x10000".to_string()),
+            model_supported: true,
+            checksum_possible: true,
         };
         assert_eq!(
             firewire_present.firewire_id,
@@ -718,6 +765,8 @@ mod tests {
             total_capacity: None,
             used_capacity: None,
             firewire_id: None,
+            model_supported: true,
+            checksum_possible: true,
         };
         assert_eq!(firewire_absent.firewire_id, None);
     }
@@ -740,6 +789,8 @@ mod tests {
             total_capacity: None,
             used_capacity: None,
             firewire_id: None,
+            model_supported: true,
+            checksum_possible: true,
         };
         let mut clone = info.clone();
         assert_eq!(clone, info);
@@ -763,6 +814,8 @@ mod tests {
             total_capacity: None,
             used_capacity: None,
             firewire_id: None,
+            model_supported: true,
+            checksum_possible: true,
         });
         manager.clear_device();
         assert!(manager.current_device().is_none());
@@ -791,7 +844,8 @@ mod tests {
 
     #[test]
     fn device_info_matches_plan_fields() {
-        // The plan's exact field set, including every Option.
+        // The plan's exact field set, including every Option and the two
+        // 2026-11-10 model-policy verdicts (b006 delta decision 12).
         let _ = DeviceInfo {
             mount_point: PathBuf::from("/dev/sdb1"),
             name: "iPod".to_string(),
@@ -802,6 +856,8 @@ mod tests {
             total_capacity: None,
             used_capacity: None,
             firewire_id: None,
+            model_supported: true,
+            checksum_possible: true,
         };
     }
 }

@@ -86,6 +86,16 @@ pub struct DeviceFacts {
     pub used_capacity: Option<u64>,
     /// The merged `FirewireGuid`, when the device exposes one.
     pub firewire_id: Option<String>,
+    /// Whether the resolved model is inside the supported set
+    /// (Video 5/5.5G, Classic 6/6.5/7G — the B-001 scope). `false` for an
+    /// unresolved or out-of-scope model. Informational, never a refusal:
+    /// the 2026-11-10 model policy (b006 delta decision 12) gates sync
+    /// functions in the UI.
+    pub model_supported: bool,
+    /// Whether the database checksum can be generated: Video needs none,
+    /// Classic requires its FireWire GUID. `false` limits write sync;
+    /// reads stay available. Same policy, same UI gating.
+    pub checksum_possible: bool,
 }
 
 /// Collect the device facts from an already-opened session and the mount
@@ -106,6 +116,21 @@ pub fn collect(device: &dyn DeviceRead, mount_point: &Path) -> Result<DeviceFact
         None => (String::new(), String::new(), None),
     };
     let firewire_id = info.firewire_id().map(str::to_owned);
+    // The 2026-11-10 model policy verdicts (b006 delta decision 12): model
+    // support and checksum feasibility are classifications for the UI to
+    // gate on, not refusals. Both share the preflight module's model-table
+    // knowledge so the supported set lives in exactly one place.
+    let (model_supported, checksum_possible) = match &info.model {
+        Some(model_info) => (
+            crate::preflight::generation_supported(model_info.generation),
+            !crate::preflight::generation_requires_firewire(model_info.generation)
+                || firewire_id.is_some(),
+        ),
+        // Unresolvable model (empty SysInfo — the normal state of a
+        // freshly restored iPod): limited on both axes; the UI gates
+        // everything.
+        None => (false, false),
+    };
     let (total_capacity, used_capacity) = filesystem_usage(mount_point);
 
     Ok(DeviceFacts {
@@ -117,6 +142,8 @@ pub fn collect(device: &dyn DeviceRead, mount_point: &Path) -> Result<DeviceFact
         total_capacity,
         used_capacity,
         firewire_id,
+        model_supported,
+        checksum_possible,
     })
 }
 

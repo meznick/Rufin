@@ -57,7 +57,8 @@ const ABI_UNVERIFIED_DIAGNOSTIC: &str = "the installed libgpod backend is a soft
 /// The `DeviceInfo` for a freshly detected candidate whose metadata could
 /// not be retrieved: only the mount point is known. `name`/`model`/
 /// `generation` are empty strings meaning "not retrieved" — never
-/// fabricated values. Optional fields stay `None`.
+/// fabricated values. Optional fields stay `None`; the model-policy
+/// verdicts are `false` until retrieval measures them.
 fn detected_device(mount_point: &Path) -> DeviceInfo {
     DeviceInfo {
         mount_point: mount_point.to_path_buf(),
@@ -69,6 +70,8 @@ fn detected_device(mount_point: &Path) -> DeviceInfo {
         total_capacity: None,
         used_capacity: None,
         firewire_id: None,
+        model_supported: false,
+        checksum_possible: false,
     }
 }
 
@@ -86,6 +89,8 @@ fn device_info_from_facts(facts: DeviceFacts, mount_point: &Path) -> DeviceInfo 
         total_capacity: facts.total_capacity,
         used_capacity: facts.used_capacity,
         firewire_id: facts.firewire_id,
+        model_supported: facts.model_supported,
+        checksum_possible: facts.checksum_possible,
     }
 }
 
@@ -378,6 +383,8 @@ mod tests {
         Ok(DeviceFacts {
             total_capacity: Some(30 * 1024 * 1024 * 1024),
             used_capacity: Some(23 * 1024 * 1024 * 1024),
+            model_supported: true,
+            checksum_possible: true,
             ..DeviceFacts::default()
         })
     }
@@ -535,7 +542,7 @@ mod tests {
     #[test]
     fn preflight_failure_lands_error_with_diagnostic() {
         let calls = std::cell::Cell::new(0);
-        let preflight = failing_preflight(&calls, "unsupported model: Nano");
+        let preflight = failing_preflight(&calls, "device database corrupt");
         let mut manager = DeviceManager::new();
         apply_scan_quiet(
             &mut manager,
@@ -544,7 +551,7 @@ mod tests {
             &preflight,
         );
         assert_eq!(manager.state(), ConnectionState::Error);
-        assert_eq!(manager.diagnostics(), Some("unsupported model: Nano"));
+        assert_eq!(manager.diagnostics(), Some("device database corrupt"));
         assert_eq!(calls.get(), 1);
         assert!(!manager.sync_enabled());
     }
@@ -958,6 +965,8 @@ mod tests {
                 total_capacity: Some(30 * 1024 * 1024 * 1024),
                 used_capacity: Some(23 * 1024 * 1024 * 1024),
                 firewire_id: None,
+                model_supported: true,
+                checksum_possible: true,
             })
         };
         apply_scan_quiet(
@@ -974,6 +983,11 @@ mod tests {
         assert_eq!(device.model_number.as_deref(), Some("A446"));
         assert_eq!(device.total_capacity, Some(30 * 1024 * 1024 * 1024));
         assert_eq!(device.used_capacity, Some(23 * 1024 * 1024 * 1024));
+        assert!(
+            device.model_supported,
+            "the retrieval verdict must ride along"
+        );
+        assert!(device.checksum_possible, "Video needs no checksum");
         assert_eq!(manager.state(), ConnectionState::Ready);
         assert!(manager.sync_enabled());
     }

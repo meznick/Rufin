@@ -95,6 +95,30 @@ record):
     private context (`trigger_on` seam) without touching the global default
     (which would race parallel tests that spawn futures on it).
 
+Owner decisions from the B-006 code review (2026-11-10):
+
+12. **Model policy: limitations are informational, not refusals.**
+    Unsupported or unresolved models — and a supported Classic missing its
+    FireWire GUID — reach `Ready`; the frontend knows the device is found
+    but limited and gates sync functions accordingly. Rationale: research
+    showed an empty `SysInfo` is the *normal* state of a freshly restored
+    iPod. Consequences, implemented on this branch:
+    - `ipod_sync::preflight` no longer refuses on model or checksum axes
+      (remaining refusals: read-only mount, database parse, damaged
+      artwork; `SkippedUnknownModel` artwork passes — "cannot be
+      assessed", the limited state is visible in the UI, so B-007 §1.2's
+      "never a silent artless device" holds).
+    - The classifications moved into the facts: `DeviceFacts` gains
+      `model_supported` and `checksum_possible` (computed by
+      `retrieval::collect` from the preflight module's generation consts —
+      the supported set lives in exactly one place), mirrored in B-002's
+      `DeviceInfo` and mapped by the glue, so every B-006 snapshot carries
+      the verdicts for the UI.
+    - B-002's `DeviceManager` is untouched in behavior: `Ready` still
+      requires capacities + a passed preflight; the verdicts ride along.
+    - Recorded as an addendum in `deltas/b004_delta.md` (supersedes its
+      `ChecksumPrerequisite`/`Model` fixture rows).
+
 ## Design
 
 ```
@@ -192,4 +216,9 @@ review), the glib 0.22 `watch_channel` removal, the
   hint copy.
 - The `OperationNotice` placeholder is replaced by B-010's recovery model;
   the snapshot field stays.
+- **Model identity for restored iPods (research, B-005/B-007 follow-up)**:
+  an empty `SysInfo` is normal on a freshly restored device, so the model
+  name needs an alternate source (owner direction from the B-006 review;
+  firmware/USB descriptors were floated — unverified). Until then the UI
+  shows the unresolved model as the limited state.
 - Packaging follow-up (b007 delta §5) unchanged.
