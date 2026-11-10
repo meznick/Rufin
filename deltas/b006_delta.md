@@ -173,6 +173,18 @@ review), the glib 0.22 `watch_channel` removal, the
 
 ## Open items
 
+- **Worker-thread liveness (B-013)**: a crashed worker is currently
+  indistinguishable from an idle one — a panic in the worker thread (e.g. a
+  libgpod FFI crash) drops subsequent commands with a `tracing::error!`
+  while `snapshot()` keeps serving the last stored view. B-013 owns the
+  health surface: an atomic exit flag cleared when the worker loop ends,
+  exposed as `is_worker_alive()` (or equivalent) on the facade, so the UI
+  can surface a dead service instead of a frozen page. Found in the B-006
+  code review.
+- **Command FIFO latency**: notice/retry commands queue behind multi-second
+  libgpod parses (the worker processes commands serially). Acceptable by
+  design, but B-010/B-013 must expect the interrupted-operation notice to
+  arrive with the delay of a scan already in flight.
 - `IpodConnection`/`IpodMountMonitor` get their production owner in the
   shell when the page lands (B-012/B-013); until then they are library
   surface, same as B-003/B-005's glue.
