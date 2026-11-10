@@ -32,6 +32,11 @@
 #                    /proc/self/mountinfo, then unmount + detach. Cleanup is
 #                    trap-based, so it runs even when the test fails or the
 #                    run is interrupted.
+#   test-mounted-rw  The Ready path on a real writable mount: same attach
+#                    but p2 mounted read-write; the observer gate asserts
+#                    Ready with the limited model verdicts (the image's
+#                    SysInfo is empty) plus the no-write tree hash. Not part
+#                    of test-full (the 23G hash is slow); run explicitly.
 #   test-full        All test scenarios in order, with a per-scenario
 #                    summary; fails at the end if anything failed.
 #   lint             fmt / clippy / rustdoc / diff-check — only for the
@@ -108,6 +113,7 @@ need_sudo() {
 # via an EXIT trap installed before this call.
 mount_image() {
     local img="$1"
+    local mode="${2:-ro}"
     need_sudo
     command -v losetup >/dev/null || die "losetup not found"
     command -v mountpoint >/dev/null || die "mountpoint not found"
@@ -124,7 +130,7 @@ mount_image() {
     # replicates that. `-b 2048` is what makes the partition offsets line up;
     # without it losetup misreads the MBR.
     LOOP_DEV="$(sudo losetup -f --show -P -b 2048 "$img")"
-    sudo mount -o ro "${LOOP_DEV}p2" "$IPOD_MOUNT_POINT"
+    sudo mount -o "$mode" "${LOOP_DEV}p2" "$IPOD_MOUNT_POINT"
     MOUNTED_BY_US=1
     if [[ ! -d "$IPOD_MOUNT_POINT/iPod_Control" ]]; then
         # Never leave a half-mounted image behind: this is either the wrong
@@ -270,6 +276,23 @@ cmd_test_mounted() {
     echo "ipod-dev: mounted gate passed; device unmounted and detached"
 }
 
+# The mounted-rw scenario: THE Ready path on a genuine writable vfat mount
+# (B-006 model policy): attach the fake pod image, mount p2 read-write, run
+# the observer gate (Ready with the limited model verdicts + the no-write
+# tree hash), then unmount + detach. Trap-based cleanup as above.
+cmd_test_mounted_rw() {
+    ensure_gate_image
+    trap cleanup_mount EXIT
+    mount_image "$IPOD_IMG" rw
+    (cd "$REPO_ROOT" && \
+        RUFIN_LIBGPOD_DIR="$LIBGPOD_DIR" \
+        IPOD_TEST_MOUNT_RW="$IPOD_MOUNT_POINT" \
+        cargo test -p gtk-library --test ipod_connection_gate)
+    cleanup_mount
+    trap - EXIT
+    echo "ipod-dev: mounted-rw gate passed; device unmounted and detached"
+}
+
 # fmt / clippy / rustdoc / diff-check, scoped to this integration's files
 # (see the header for why workspace-wide fmt --check is not used).
 cmd_lint() {
@@ -342,6 +365,10 @@ Scenarios for developing/testing the iPod integration (B-003+):
   test-mounted     Mount the fake pod from the image, run the mounted gate
                    through the real /proc/self/mountinfo, unmount + detach.
                    Cleanup runs even when the test fails. Needs sudo.
+  test-mounted-rw  The Ready path on a real writable mount: p2 mounted
+                   read-write, the observer gate asserts Ready with the
+                   limited model verdicts + the no-write hash. Slow (23G
+                   hash), not part of test-full. Needs sudo.
   test-full        All test scenarios in order, with a per-scenario summary.
   lint             fmt / clippy / rustdoc / diff-check for this integration's
                    files only (workspace fmt-check has pre-existing drift).
@@ -362,6 +389,7 @@ main() {
         test-snapshot) cmd_test_snapshot ;;
         rebuild-snapshot) cmd_rebuild_snapshot ;;
         test-mounted) cmd_test_mounted ;;
+        test-mounted-rw) cmd_test_mounted_rw ;;
         test-full) cmd_test_full ;;
         lint) cmd_lint ;;
         "" | help | -h | --help) usage ;;

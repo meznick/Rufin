@@ -1,8 +1,10 @@
 //! B-006 env-gated observer gates (see `deltas/b006_delta.md`): the full
 //! pipeline — scan → retrieval → preflight → observer snapshots — against
-//! the restored-device snapshot (`IPOD_TEST_TREE`) and the mounted
-//! read-only device image (`IPOD_TEST_MOUNT`), on the pinned libgpod
-//! install (`RUFIN_LIBGPOD_DIR`). The fast unit matrix lives in
+//! the restored-device snapshot (`IPOD_TEST_TREE`), the mounted read-only
+//! device image (`IPOD_TEST_MOUNT`), and the mounted read-write image
+//! (`IPOD_TEST_MOUNT_RW`, the Ready path on a genuine vfat mount with the
+//! 2026-11-10 model-policy verdicts), on the pinned libgpod install
+//! (`RUFIN_LIBGPOD_DIR`). The fast unit matrix lives in
 //! `src/ipod_connection.rs` and `src/ipod_monitor.rs`; these gates prove
 //! the Ready/Error verdicts arrive on the subscriber channel end-to-end
 //! with the real backend, and that the service scan path stays write-free.
@@ -124,6 +126,14 @@ fn env_gated_snapshot_scan_reaches_ready_through_the_observer_path() {
         tree,
         "the Ready snapshot keeps the candidate's mount point"
     );
+    assert!(
+        ready.device.as_ref().unwrap().model_supported,
+        "the seeded MA446 snapshot is inside the supported set"
+    );
+    assert!(
+        ready.device.as_ref().unwrap().checksum_possible,
+        "Video needs no checksum"
+    );
     assert_eq!(
         ipod::tree_hash(&tree).expect("hash the snapshot tree"),
         before,
@@ -169,5 +179,78 @@ fn env_gated_mounted_readonly_lands_error_through_the_observer_path() {
             .is_some_and(|detail| detail.contains("read-only")),
         "the read-only diagnostic must arrive on the channel: {:?}",
         error.diagnostics
+    );
+}
+
+/// The mounted device image (p2 of `ipod/test-device-30g.img`), mounted
+/// **read-write**: the full Ready path on a genuine vfat mount, plus the
+/// no-write tree hash. The real image has an empty `SysInfo` — under the
+/// 2026-11-10 model policy (b006 delta decision 12) that is a limited
+/// device, not a refusal, so the Ready snapshot must carry
+/// `model_supported == false` and `checksum_possible == false`: the gate
+/// proves the verdict plumbing end-to-end on real hardware.
+///
+/// Env-gated on `IPOD_TEST_MOUNT_RW` — deliberately distinct from the
+/// read-only `IPOD_TEST_MOUNT` so the two scenarios never collide in one
+/// `cargo test` invocation.
+#[test]
+fn env_gated_mounted_rw_reaches_ready_with_limited_verdicts() {
+    let Some(connection) = connection_or_skip() else {
+        return;
+    };
+    let Some(mount) = std::env::var_os("IPOD_TEST_MOUNT_RW") else {
+        eprintln!(
+            "skipping: IPOD_TEST_MOUNT_RW unset (mount p2 of ipod/test-device-30g.img read-write)"
+        );
+        return;
+    };
+    let mount = PathBuf::from(mount);
+    let control = mount.join(ipod_sync::IPOD_CONTROL_DIR);
+    assert!(
+        control.is_dir(),
+        "IPOD_TEST_MOUNT_RW must point at a mounted iPod volume (no iPod_Control under {})",
+        mount.display()
+    );
+
+    let before = ipod::tree_hash(&control).expect("hash the mounted tree");
+    let snapshots = connection.subscribe();
+    connection.scan_from(Box::new(SingleMount(mount.clone())));
+
+    let connecting = expect(&snapshots);
+    assert_eq!(connecting.state, ConnectionState::Connecting);
+    assert_eq!(
+        connecting.device.as_ref().unwrap().name,
+        "",
+        "the detection emission carries the placeholder"
+    );
+
+    let connecting = expect(&snapshots);
+    assert_eq!(connecting.state, ConnectionState::Connecting);
+    assert!(
+        !connecting.device.as_ref().unwrap().name.is_empty(),
+        "the retrieval emission carries the master-playlist name"
+    );
+
+    let ready = expect(&snapshots);
+    assert_eq!(ready.state, ConnectionState::Ready);
+    assert!(
+        ready.diagnostics.is_none(),
+        "Ready must carry no diagnostics: {:?}",
+        ready.diagnostics
+    );
+    let device = ready.device.as_ref().unwrap();
+    assert_eq!(device.mount_point, mount);
+    assert!(
+        !device.model_supported,
+        "the real image has an empty SysInfo: the model verdict must be limited"
+    );
+    assert!(
+        !device.checksum_possible,
+        "an unresolved model keeps the checksum verdict conservative"
+    );
+    assert_eq!(
+        ipod::tree_hash(&control).expect("hash the mounted tree"),
+        before,
+        "the service scan path must not modify a mounted device"
     );
 }
