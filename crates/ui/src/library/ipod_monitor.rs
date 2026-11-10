@@ -39,14 +39,17 @@ const DEBOUNCE: Duration = Duration::from_millis(300);
 /// **global default** context only and panics on a missing source — both
 /// wrong for a context-bound debounce whose one-shot may already have
 /// fired.
-pub struct Debounce {
+/// Module-private: only [`IpodMountMonitor`] consumes the debounce; the
+/// tests live in this module too. Deliberately not part of gtk-library's
+/// public API.
+struct Debounce {
     delay: Duration,
     /// The pending task's join handle and the flag that cancels it.
     pending: Option<(glib::JoinHandle<()>, Arc<AtomicBool>)>,
 }
 
 impl Debounce {
-    pub fn new(delay: Duration) -> Self {
+    fn new(delay: Duration) -> Self {
         Self {
             delay,
             pending: None,
@@ -57,7 +60,7 @@ impl Debounce {
     /// the thread-default main context (the global default — the GTK main
     /// loop — when none is pushed). `on_timeout` runs once, after the
     /// window, from that context.
-    pub fn trigger<F: FnOnce() + Send + 'static>(&mut self, on_timeout: F) {
+    fn trigger<F: FnOnce() + Send + 'static>(&mut self, on_timeout: F) {
         self.trigger_on(&glib::MainContext::ref_thread_default(), on_timeout);
     }
 
@@ -83,7 +86,7 @@ impl Debounce {
     }
 
     /// Cancel the pending call, if any. The callback will not run.
-    pub fn cancel(&mut self) {
+    fn cancel(&mut self) {
         if let Some((_task, cancelled)) = self.pending.take() {
             cancelled.store(true, Ordering::SeqCst);
         }

@@ -295,6 +295,10 @@ impl IpodConnection {
 }
 
 impl Default for IpodConnection {
+    /// Starts the worker thread with the production backend search, same as
+    /// [`IpodConnection::new`]. Note that **constructing a connection spawns
+    /// a thread** — `Default` is convenience, not for derive-heavy holder
+    /// structs where a `#[derive(Default)]` would silently spawn workers.
     fn default() -> Self {
         Self::new()
     }
@@ -392,7 +396,11 @@ mod tests {
                     thread::sleep(Duration::from_millis(5));
                 }
                 Err(async_channel::TryRecvError::Empty) => return,
-                Err(async_channel::TryRecvError::Closed) => return,
+                // A closed channel here means the worker dropped the sender
+                // — the worker died. Silence must never mask that.
+                Err(async_channel::TryRecvError::Closed) => {
+                    panic!("snapshot channel closed: the worker died during the silence window")
+                }
             }
         }
     }
