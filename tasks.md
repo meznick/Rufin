@@ -1,6 +1,6 @@
 # tasks.md
 
-Tasks are listed in dependency order; IDs stay stable, so B-007 precedes discovery and B-005 precedes preflight. B-001 and B-002 are merged into `feature/ipod-page`; their results and task-branch hashes are recorded below. B-001 research does not claim runtime or hardware acceptance.
+Tasks are listed in dependency order; IDs stay stable, so B-007 precedes discovery and B-005 precedes preflight. All Phase 1 tasks (B-001 through B-006) and B-007 are merged into `feature/ipod-page`; task-branch hashes are recorded in the entries that carry them. B-001 research does not claim runtime or hardware acceptance.
 
 ## Phase 1: Device Connection Infrastructure
 
@@ -22,6 +22,7 @@ Tasks are listed in dependency order; IDs stay stable, so B-007 precedes discove
   - Plan reference: Phase 1, Data Models & Interfaces, Testing Strategy
   - Research gate before implementation: investigate [R1 and R2](deltas/b001_research.md#10-follow-up-research-required-before-implementation), document evidence and tests, and obtain owner review of resulting wrapper/design changes.
   - Verification: Owner approves loading/linking and packaging before implementation. Wrapper tests cover ownership, allocation/freeing, GLib strings/lists, GError, ABI compatibility, and serialized access. Backend-enabled calls work on disposable fixtures; backend-disabled/missing/incompatible configurations report unavailable and never fall back to copying. Write APIs are not exposed as an enabled destructive sync until B-010 safety verification.
+  - Debt (found 2026-11-10, [b006 delta](deltas/b006_delta.md)): `ffi/layouts_sha.rs` carries `cd93…` while `sha256sum ffi/layouts.rs` is `7c4b…`, though the regeneration doc says they move together; reconcile the constant at the next `layouts.rs` regeneration.
   - Depends on: B-002
 - [x] **B-003: Implement mounted-device discovery using libgpod**
   - Spec reference: R-02, S-02, S-05
@@ -33,6 +34,7 @@ Tasks are listed in dependency order; IDs stay stable, so B-007 precedes discove
   - Plan reference: Phase 1, Data Models & Interfaces
   - Research gate before implementation: R3 resolved 2026-11-09 with owner review — the display name is the iTunesDB master-playlist name (type-1 `mhyp`; libgpod exposes it and reads no volume label anywhere). On the device snapshot the FAT32 label `IPOD USER` (uppercase-only format) is a derived lossy copy of the master playlist's `iPod user`; `Device/SysInfo` has no name key, and the real `SysInfo` is empty. No volume-name fallback (owner decision); a missing name stays explicit. Evidence in [deltas/b005_delta.md](deltas/b005_delta.md).
   - Verification: The name comes from the master playlist's name; model/generation from `SysInfo` `ModelNumStr` via libgpod's model table; optional firmware and applicable FireWire ID only from device metadata that actually contains them (`SysInfoExtended`). Capacity comes from filesystem statistics, not nominal `Itdb_IpodInfo.capacity`. Missing values are explicit; metadata retrieval does not reload SysInfo on a live parsed/artwork context. No initialization or helper writes are triggered.
+  - Debt (from the B-006 review, [b006 delta](deltas/b006_delta.md)): an empty `SysInfo` is the normal state of a freshly restored iPod — model identity needs an alternate source (firmware/USB descriptors floated, unverified). Until then the UI shows the unresolved model as limited (`model_supported == false`).
   - Depends on: B-003
 - [x] **B-004: Implement device readiness preflight (no Trust step)**
   - Spec reference: R-02, S-03, S-04, S-05
@@ -40,10 +42,12 @@ Tasks are listed in dependency order; IDs stay stable, so B-007 precedes discove
   - Research gate before implementation: revisit [R2](deltas/b001_research.md#r2-artwork-errors-and-apparent-success) for readiness and review the resulting test/design proposal with the owner.
   - Verification: Only successful non-mutating checks of backend, access, parseable databases, measured capacity, supported model/artwork capabilities, and model-specific checksum prerequisites allow Ready. libgpod owns checksum generation. Tests cover missing Classic FireWire ID, Video without that requirement, missing firmware, unsupported models, read-only mounts, corruption, unavailable backend, retries, and removal. Missing prerequisites stay non-Ready with actionable errors; no pairing prompt appears. Physical model write acceptance is B-017, not claimed here.
   - Depends on: B-005
-- [ ] **B-006: Expose connection status for UI binding**
+- [x] **B-006: Expose connection status for UI binding**
   - Spec reference: R-02, S-05
   - Plan reference: Phase 1, Connection FSM
   - Verification: Observers receive Disconnected, Connecting, BackendUnavailable ("Sync unavailable"), Ready, and Error plus diagnostics; retries/removal invalidate stale state and preserve interrupted-operation notices separately.
+  - Result: Observer snapshots (`ConnectionSnapshot { state, device, diagnostics, interrupted_operation }`) on per-subscription async-channel receivers, emitted by the FSM glue (`apply_scan` gained an `emit` callback with per-call dedup; `Connecting` is emitted at detection, before the retrieval parse — a plan deviation, owner-approved in review — so a fresh plug emits Connecting twice: placeholder, then facts). A cloneable `IpodConnection` service with a serialized worker thread (blocking libgpod parses never touch the GTK main loop), full-re-appearance `retry()`, and a service-owned interrupted-operation notice that removal/retry never clear. An event-driven `IpodMountMonitor` (gio VolumeMonitor → 300 ms debounce → scan; no periodic polling — owner decision). Review follow-ups (owner decisions 2026-11-10): the model policy — unsupported/unresolved models and Classic-without-FireWire reach Ready, the `model_supported`/`checksum_possible` verdicts ride in `DeviceFacts`/`DeviceInfo` for UI gating, preflight refuses only on ro mount/database/artwork ([b006 delta](deltas/b006_delta.md) decision 12, [b004 delta](deltas/b004_delta.md) addendum); a third env-gated gate proves Ready on a genuine rw mount with the no-write tree hash. 112 gtk-library unit tests + 3 gates; test-full and test-mounted-rw green. Debts carried below: worker liveness → B-013, notice FIFO latency → B-010, model-identity research → B-005, layouts_sha reconciliation → B-007.
+  - Commit: 3a1a367 (task-branch HEAD, fast-forwarded into feature/ipod-page)
   - Depends on: B-004
 
 ## Phase 2: Sync Core Logic (libgpod FFI)
@@ -64,6 +68,7 @@ Tasks are listed in dependency order; IDs stay stable, so B-007 precedes discove
   - Plan reference: Phase 2, Sync Data Mapping, Recovery and Statistics
   - Research gate before implementation: revisit [R1 and R2](deltas/b001_research.md#10-follow-up-research-required-before-implementation) for device-write side effects, artwork failure reporting, and recovery; obtain owner review of the resulting proposal.
   - Verification: Review the concrete backup/journal, write-ordering, writer-exclusion, stat-merge/deduplication, recovery, and flush/eject protocol before enabling destructive writes. Fixtures verify files, playlists, artwork, model-specific libgpod checksums, and host stats via sentinel-guarded itl-sync only. Failure injection covers disk full, removal, each multi-file write boundary, competing writers, zero sentinel, device success/host failure, host commit before acknowledgement, retrying twice, and reassigned numeric device track IDs. Recover the last consistent library and preserve pending changes without lost or duplicate imports. Partial success never advances last-success time. Test copies only; no start/stop-sync transaction assumption.
+  - Debt (from the B-006 review, [b006 delta](deltas/b006_delta.md)): the interrupted-operation notice is carried by the serialized connection worker, so it queues behind multi-second libgpod parses and can arrive with the delay of an in-flight scan; the recovery protocol must account for the FIFO latency.
   - Depends on: B-009
 - [ ] **B-011: Implement sync progress and completion reporting**
   - Spec reference: R-04, S-09, S-10, S-12, R-05, S-13
@@ -81,7 +86,7 @@ Tasks are listed in dependency order; IDs stay stable, so B-007 precedes discove
 - [ ] **B-013: Implement Connection State views**
   - Spec reference: R-02, S-05
   - Plan reference: Phase 3, Connection FSM
-  - Verification: UI shows No iPod, Connecting, Sync unavailable, Ready, or Error from the same five-state contract, with retry/error details and no authorization wait/prompt.
+  - Verification: UI shows No iPod, Connecting, Sync unavailable, Ready, or Error from the same five-state contract, with retry/error details and no authorization wait/prompt. Also owns the B-006 review debts ([b006 delta](deltas/b006_delta.md)): a crashed `IpodConnection` worker is currently silent (commands dropped with an error log, `snapshot()` keeps serving the last view) — surface worker liveness (`is_worker_alive()` or equivalent); the retry button calls `connection.retry()`, with the replug hint copy.
   - Depends on: B-012
 - [ ] **B-014: Implement Device Overview view**
   - Spec reference: R-03, S-06
