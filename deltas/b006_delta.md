@@ -171,7 +171,7 @@ and cancels the debounce. `Debounce` per decision 11.
 | Glue (unit, 13 new + 28 migrated) | stub closures, `Cell` counters | exact emission sequences: fresh, retrieval-failure, ABI-unverified, backend-unavailable, removal, idempotent rescans, recovery, handover, takeover, newer-cause refresh |
 | Service (unit, 12) | `Explicit(/nonexistent)` search, temp `iPod_Control` dirs, synthetic `MountSource`, FIFO-marker proofs | startup state, Connecting→BackendUnavailable, removal, retry (fresh + no-op), scan-error silence, notice survival across retry/removal, explicit clear, broadcast equality, late-subscriber no-replay, facade clones |
 | Monitor (unit, 2) | private `MainContext` + `trigger_on` seam | burst coalescing, cancel; headless construct/drop |
-| Gates (env-gated, 3) | `IPOD_TEST_TREE` snapshot, `IPOD_TEST_MOUNT` ro image, `IPOD_TEST_MOUNT_RW` rw image, `RUFIN_LIBGPOD_DIR` | Ready end-to-end through the channel + no-write tree hash (snapshot); ro-mount Error path end-to-end; rw-mount Ready with the limited model verdicts + no-write hash |
+| Gates (env-gated, 3) | `IPOD_TEST_TREE` snapshot, `IPOD_TEST_MOUNT` ro image, `IPOD_TEST_MOUNT_RW` rw image, `RUFIN_LIBGPOD_DIR` | Ready end-to-end through the channel + no-write tree hash (snapshot); ro-mount Error path end-to-end; rw-mount Ready with the limited model verdicts + comparison of selected files |
 
 ## Results
 
@@ -189,6 +189,41 @@ monitor) plus the 3 env-gated observer gates as a separate test target,
 fmt/clippy clean on both crates, `ipod-dev test-full` exit 0 with the gates
 wired into the snapshot and mounted scenarios, `ipod-dev test-mounted-rw`
 green on the real rw mount, mount state clean.
+
+## Real-device run (2026-11-10, owner's flashmod)
+
+The observer gate passed on the owner's actual device: udisks rw mount,
+empty `SysInfo`, Ready with `model_supported == false` and
+`checksum_possible == false`, and a nonempty master-playlist name. The
+gate supplied the mount explicitly through `SingleMount`; automatic
+`VolumeMonitor` detection was not tested. The selected files compared
+equal before and after the scan, not the entire device tree. Artwork
+proof-reading was skipped for this unresolved model.
+
+Two costs the first run exposed, both fixed on this branch:
+
+- **The rw gate's tree hash was unacceptable on real hardware.** The
+  initial full-tree run was stopped by the owner; a subsequent run
+  hashing the `iTunes`, `Artwork`, and `Device` subtrees took 76 s.
+  These subtrees included `iTunesControl` (about 250 MB) and ithmb banks
+  (about 322 MB). The gate now compares selected files byte-for-byte:
+  `iTunesDB`, `iTunesStats` when present, `ArtworkDB`, and regular files
+  directly under `Device/` (`db002b2`). This does not prove other files
+  were unchanged. The image test previously checked the full tree
+  (`09457e3`); the snapshot gate retains its full hash.
+- **The proof-read slurped whole ithmb banks** (`393289d`): `std::fs::read`
+  of a 268 MB bank to decode one ~10 KB block, on every scan of a
+  model-resolved device. Now a bounded open+seek+read of the declared
+  block, with existing unit tests green. The declared size is only bounded
+  by the bank's file length, so corrupt metadata could still trigger a
+  very large allocation; this needs a separately tested safety fix.
+
+After both fixes one repeat real-device gate took ~0.4 s wall, potentially
+with a warm OS cache; the owner later reported a 5 s manual run, with
+cache conditions unspecified. Neither is a cold-plug benchmark: the gate
+reads selected files before the scan, and its timing excludes automount and
+the future UI. Synthetic and wrapper suites exited 0. Only the rw gate ran
+on the device; the other environment-gated tests skipped.
 
 Implementation findings that shaped the code (recorded in decisions 9–11):
 the Connecting-before-retrieval gap (plan deviation, flagged for owner
