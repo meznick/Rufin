@@ -192,6 +192,100 @@ fn env_gated_snapshot_pair_maps_tracks_and_playlists() {
         with_thumbnail, 3356,
         "per-track thumbnail flags must agree with the artwork verdict"
     );
+
+    // Smart evaluation cross-check: the criteria are the truth and must
+    // reproduce the device's materialized member lists on in-sync data.
+    // The device facts (rating/playcount/mediatype) come from the parsed
+    // iTunesDB; the criteria come from the host .itl (byte-identical to
+    // the device rules for the flat playlists). «Хай рейт» (rating > 3.5★)
+    // and «Самые популярные» (plays > 2) are time-independent.
+    let host_playlists = host_playlists(&itl);
+    let by_name: std::collections::HashMap<&str, &ipod_sync::mapping::HostPlaylist> =
+        host_playlists
+            .iter()
+            .filter_map(|p| p.name.as_deref().map(|name| (name, p)))
+            .collect();
+    for (name, _) in [("Хай рейт", 0), ("Самые популярные", 0)] {
+        let Some(host_pl) = by_name.get(name).copied() else {
+            eprintln!("note: playlist {name} not in the corpus");
+            continue;
+        };
+        let Some(device_pl) = device_playlists
+            .iter()
+            .find(|d| d.name.as_deref() == Some(name))
+        else {
+            eprintln!("note: playlist {name} not on the device");
+            continue;
+        };
+        let Some(rules) = host_pl
+            .smart
+            .as_ref()
+            .and_then(|s| s.rules.as_ref())
+            .and_then(|r| r.as_ref().ok())
+        else {
+            panic!("{name} must carry parseable rules");
+        };
+        let member_set: std::collections::HashSet<u64> =
+            device_pl.member_dbids.iter().copied().collect();
+        let facts_by_dbid: std::collections::HashMap<u64, ipod_sync::mapping::TrackFacts> =
+            device_tracks
+                .iter()
+                .map(|t| {
+                    (
+                        t.dbid,
+                        ipod_sync::mapping::TrackFacts {
+                            rating: t.rating.min(100) as u8,
+                            play_count: t.playcount,
+                            skip_count: t.skipcount,
+                            date_added: t.time_added.max(0) as u32,
+                            last_played: t.time_played.max(0) as u32,
+                            media_kind_bits: Some(t.mediatype),
+                            purchase_status: None,
+                            now: 0,
+                        },
+                    )
+                })
+                .collect();
+        let evaluated: std::collections::HashSet<u64> = facts_by_dbid
+            .iter()
+            .filter(|(_, facts)| {
+                ipod_sync::mapping::eval_rules(rules, facts) == ipod_sync::mapping::RuleMatch::True
+            })
+            .map(|(dbid, _)| *dbid)
+            .collect();
+        assert!(
+            !member_set.is_empty(),
+            "{name}: the device playlist has no members"
+        );
+        assert!(
+            !evaluated.is_empty(),
+            "{name}: the evaluation matched nothing"
+        );
+        let only_members = member_set.difference(&evaluated).count();
+        let only_evaluated = evaluated.difference(&member_set).count();
+        // Directional, because materialization is a cache: the stored
+        // members are what the criteria matched when iTunes last computed
+        // them, and the same snapshot's facts are frozen at that write, so
+        // (almost) every stored member must satisfy the criteria — the
+        // small exception is iTunes' raw-rating fill-down writes. A wrong
+        // evaluator would flag whole categories here. The reverse gap
+        // (matching tracks missing from the list) is unbounded by design:
+        // it is exactly the staleness the B-021 backlog records — criteria
+        // edited after the last materialization, e.g. «Самые популярные»
+        // changed from plays>15 to plays>2 but the stored list still has
+        // the old 25; measured 1910 tracks missing on this snapshot.
+        assert!(
+            only_members <= 20,
+            "{name}: {only_members} stored members fail the criteria on their own \
+             snapshot's facts — expected near zero (raw-rating fill-down tolerance)",
+        );
+        eprintln!(
+            "note: {name} — members {members}, evaluated {evaluated}, members failing \
+             criteria {only_members}, criteria matches missing from the list {only_evaluated}",
+            members = member_set.len(),
+            evaluated = evaluated.len(),
+        );
+    }
     eprintln!(
         "note: {} playlist matches, {} device-only, {} host missing",
         playlist_map.matches.len(),

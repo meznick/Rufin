@@ -26,6 +26,6 @@ pub use map::{
     TrackMapping, TrackMatch, TrackOutcome, map_playlists, map_tracks,
 };
 pub use smart::{
-    SLST_MAGIC, SmartLeaf, SmartRule, SmartRules, SmartRulesError, parse_smart_rules,
-    smart_action_name, smart_field_name,
+    RuleMatch, SLST_MAGIC, SmartLeaf, SmartRule, SmartRules, SmartRulesError, TrackFacts,
+    eval_rules, parse_smart_rules, smart_action_name, smart_field_name,
 };

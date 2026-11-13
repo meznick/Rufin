@@ -199,6 +199,11 @@ pub struct TrackInfo {
     /// Sparse-artwork link into the ArtworkDB (`mhii_link`, since libgpod
     /// 0.7.0); `0` when unused.
     pub mhii_link: u32,
+    /// Raw `mhit` media type bits (libgpod `Itdb_Track.mediatype`, parsed
+    /// from `mhit` @0xD0) — the value smart-playlist `VideoKind` rules
+    /// test with binary-AND (libgpod `itdb_splr_eval`). Carried raw for
+    /// B-008's smart evaluation; the bit meanings are iTunes' own.
+    pub mediatype: u32,
 }
 
 /// Playback statistics of one track — the subset of [`TrackInfo`] that sync

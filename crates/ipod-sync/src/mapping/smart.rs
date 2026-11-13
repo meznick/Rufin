@@ -218,6 +218,159 @@ pub fn smart_action_name(action: u32) -> Option<&'static str> {
     })
 }
 
+/// The track facts smart rules evaluate against — the libgpod
+/// `itdb_splr_eval` field mapping (itdb_playlist.c), expressed as owned
+/// values. `None` fields are unknown on the evaluating side and make any
+/// rule that needs them `Undecided` instead of guessing.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TrackFacts {
+    /// **Effective** rating 0–100 — the caller applies the album
+    /// fill-down, because iTunes evaluates the effective value (the raw
+    /// `mith` byte is not what the criteria see).
+    pub rating: u8,
+    pub play_count: u32,
+    pub skip_count: u32,
+    /// Apple-epoch local wall-clock seconds; 0 = unset.
+    pub date_added: u32,
+    /// Apple-epoch local wall-clock seconds; 0 = never played.
+    pub last_played: u32,
+    /// `mhit` mediatype bits — the value `VideoKind` rules binary-AND
+    /// (libgpod maps `ITDB_SPLFIELD_VIDEO_KIND` to `track->mediatype`).
+    /// `None` where the evaluating side has no verified source (the host
+    /// `.itl` mediatype offset is not yet verified — b008 plan §7).
+    pub media_kind_bits: Option<u32>,
+    /// The 0x85 purchase/iCloud status bits (hypothesis: bit 0 =
+    /// downloaded). `None` = unknown.
+    pub purchase_status: Option<u32>,
+    /// "Now" in the same Apple-epoch local wall-clock space, for
+    /// in-the-last rules. Caller-supplied on purpose: the evaluator
+    /// never reads the clock, so tests and dry runs stay deterministic.
+    pub now: u32,
+}
+
+/// Three-valued rule match: an unknown fact or an unknown rule is
+/// `Undecided`, never silently `False`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RuleMatch {
+    True,
+    False,
+    Undecided,
+}
+
+/// Evaluate a rule set against one track's facts.
+///
+/// Group semantics mirror the corpus and libgpod: match operator 0 =
+/// AND, 1 = OR. Leaf semantics mirror `itdb_splr_eval` plus the corpus
+/// findings: `VideoKind` `Is` behaves as a bit test (the observed
+/// flattening `Is 1 OR Is 0x20` → `BinaryAnd 0x21` requires it), and
+/// rating/date values follow iTunes' boundary-minus-1 encoding.
+pub fn eval_rules(rules: &SmartRules, facts: &TrackFacts) -> RuleMatch {
+    let results: Vec<RuleMatch> = rules.rules.iter().map(|r| eval_rule(r, facts)).collect();
+    match rules.match_operator {
+        0 => {
+            if results.contains(&RuleMatch::False) {
+                RuleMatch::False
+            } else if results.contains(&RuleMatch::Undecided) {
+                RuleMatch::Undecided
+            } else {
+                RuleMatch::True
+            }
+        }
+        1 => {
+            if results.contains(&RuleMatch::True) {
+                RuleMatch::True
+            } else if results.contains(&RuleMatch::Undecided) {
+                RuleMatch::Undecided
+            } else {
+                RuleMatch::False
+            }
+        }
+        // Unknown operators are not guessed: agree only when every leaf
+        // agrees, otherwise stay undecided.
+        _ => {
+            let first = results.first().copied().unwrap_or(RuleMatch::Undecided);
+            if results.iter().all(|r| *r == first) {
+                first
+            } else {
+                RuleMatch::Undecided
+            }
+        }
+    }
+}
+
+fn eval_rule(rule: &SmartRule, facts: &TrackFacts) -> RuleMatch {
+    match rule {
+        SmartRule::Group(group) => eval_rules(group, facts),
+        SmartRule::Leaf(leaf) => eval_leaf(leaf, facts),
+    }
+}
+
+/// Leaf evaluation over the observed and libgpod-known fields. Everything
+/// else — string rules, playlist rules, unknown fields — is `Undecided`.
+fn eval_leaf(leaf: &SmartLeaf, facts: &TrackFacts) -> RuleMatch {
+    match leaf.field {
+        0x19 => int_cmp(i64::from(facts.rating), leaf),
+        0x16 => int_cmp(i64::from(facts.play_count), leaf),
+        0x44 => int_cmp(i64::from(facts.skip_count), leaf),
+        0x3C => match leaf.action {
+            // `Is` on VideoKind is a bit test, not equality — the
+            // flattening evidence (OR of single-bit `Is` rules becomes
+            // one `BinaryAnd` mask) requires it.
+            0x0000_0001 | 0x0000_0400 => bits(facts.media_kind_bits, leaf.from_value, false),
+            0x0200_0400 => bits(facts.media_kind_bits, leaf.from_value, true),
+            _ => RuleMatch::Undecided,
+        },
+        0x85 => match leaf.action {
+            0x0000_0400 => bits(facts.purchase_status, leaf.from_value, false),
+            _ => RuleMatch::Undecided,
+        },
+        0x10 => date_cmp(i64::from(facts.date_added), leaf, facts),
+        0x17 => date_cmp(i64::from(facts.last_played), leaf, facts),
+        _ => RuleMatch::Undecided,
+    }
+}
+
+fn int_cmp(value: i64, leaf: &SmartLeaf) -> RuleMatch {
+    match leaf.action {
+        0x0000_0001 => (value == leaf.from_value).into(),
+        0x0200_0001 => (value != leaf.from_value).into(),
+        0x0000_0010 => (value > leaf.from_value).into(),
+        0x0000_0040 => (value < leaf.from_value).into(),
+        _ => RuleMatch::Undecided,
+    }
+}
+
+fn date_cmp(value: i64, leaf: &SmartLeaf, facts: &TrackFacts) -> RuleMatch {
+    match leaf.action {
+        0x0000_0001 => (value == leaf.from_value).into(),
+        0x0200_0001 => (value != leaf.from_value).into(),
+        // libgpod: date > now + fromdate * fromunits (fromdate = -1,
+        // fromunits = seconds → "in the last N seconds").
+        0x0000_0200 => {
+            (value > i64::from(facts.now) + leaf.from_date.saturating_mul(leaf.from_units)).into()
+        }
+        _ => RuleMatch::Undecided,
+    }
+}
+
+fn bits(known: Option<u32>, mask: i64, negate: bool) -> RuleMatch {
+    let Some(bits) = known else {
+        return RuleMatch::Undecided;
+    };
+    let hit = i64::from(bits) & mask != 0;
+    (if negate { !hit } else { hit }).into()
+}
+
+impl From<bool> for RuleMatch {
+    fn from(value: bool) -> Self {
+        if value {
+            RuleMatch::True
+        } else {
+            RuleMatch::False
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -365,5 +518,129 @@ mod tests {
         assert_eq!(l.action, 0xBEEF);
         assert_eq!(smart_field_name(l.field), None);
         assert_eq!(smart_action_name(l.action), None);
+    }
+
+    // ------------------------------------------------------------------
+    // Evaluation
+    // ------------------------------------------------------------------
+
+    fn facts(rating: u8, play_count: u32, date_added: u32) -> TrackFacts {
+        TrackFacts {
+            rating,
+            play_count,
+            date_added,
+            media_kind_bits: Some(0x21),
+            purchase_status: Some(1),
+            now: 1_000_000,
+            ..Default::default()
+        }
+    }
+
+    fn flat(field: u32, action: u32, values: [i64; 6]) -> SmartRules {
+        parse_smart_rules(&build_slst(
+            0x0001_0001,
+            1,
+            0,
+            &[build_leaf(field, action, values)],
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn evaluates_rating_with_boundary_minus_one() {
+        let rules = flat(0x19, 0x10, [69, 0, 1, 69, 0, 1]);
+        assert_eq!(eval_rules(&rules, &facts(100, 0, 0)), RuleMatch::True);
+        assert_eq!(eval_rules(&rules, &facts(80, 0, 0)), RuleMatch::True);
+        assert_eq!(eval_rules(&rules, &facts(70, 0, 0)), RuleMatch::True);
+        assert_eq!(eval_rules(&rules, &facts(60, 0, 0)), RuleMatch::False);
+        assert_eq!(eval_rules(&rules, &facts(0, 0, 0)), RuleMatch::False);
+    }
+
+    #[test]
+    fn evaluates_playcount_greater_than() {
+        let rules = flat(0x16, 0x10, [2, 0, 1, 2, 0, 1]);
+        assert_eq!(eval_rules(&rules, &facts(0, 3, 0)), RuleMatch::True);
+        assert_eq!(eval_rules(&rules, &facts(0, 2, 0)), RuleMatch::False);
+    }
+
+    #[test]
+    fn evaluates_date_added_in_the_last() {
+        // fromdate = -1, fromunits = 604800 → in the last 7 days.
+        let rules = flat(0x10, 0x200, [0x2DAE2DAE2DAE2DAE, -1, 604800, 0, 0, 0]);
+        let inside = TrackFacts {
+            date_added: 1_000_000 - 3 * 86_400,
+            ..facts(0, 0, 0)
+        };
+        let outside = TrackFacts {
+            date_added: 1_000_000 - 8 * 86_400,
+            ..facts(0, 0, 0)
+        };
+        assert_eq!(eval_rules(&rules, &inside), RuleMatch::True);
+        assert_eq!(eval_rules(&rules, &outside), RuleMatch::False);
+    }
+
+    #[test]
+    fn evaluates_video_kind_bits_and_unknown_facts() {
+        let mask = flat(0x3C, 0x400, [0x21, 0, 1, 0x21, 0, 1]);
+        assert_eq!(eval_rules(&mask, &facts(0, 0, 0)), RuleMatch::True);
+        let without_bits = TrackFacts {
+            media_kind_bits: None,
+            ..facts(0, 0, 0)
+        };
+        assert_eq!(eval_rules(&mask, &without_bits), RuleMatch::Undecided);
+        let no_bits = TrackFacts {
+            media_kind_bits: Some(0x40),
+            ..facts(0, 0, 0)
+        };
+        assert_eq!(eval_rules(&mask, &no_bits), RuleMatch::False);
+    }
+
+    #[test]
+    fn evaluates_groups_with_and_or_and_undecided_propagation() {
+        // OR(group of two VideoKind Is rules) reproduces the corpus form.
+        let inner = build_slst(
+            0x0001_0001,
+            2,
+            1,
+            &[
+                build_leaf(0x3C, 0x1, [1, 0, 1, 1, 0, 1]),
+                build_leaf(0x3C, 0x1, [0x20, 0, 1, 0x20, 0, 1]),
+            ],
+        );
+        let outer = build_slst(
+            0x0001_0001,
+            2,
+            0,
+            &[
+                build_group(&inner),
+                build_leaf(0x19, 0x10, [69, 0, 1, 69, 0, 1]),
+            ],
+        );
+        let rules = parse_smart_rules(&outer).unwrap();
+        assert_eq!(eval_rules(&rules, &facts(100, 0, 0)), RuleMatch::True);
+        assert_eq!(eval_rules(&rules, &facts(60, 0, 0)), RuleMatch::False);
+        // Unknown media bits → the group is undecided, AND with a true
+        // rating rule stays undecided (never silently false).
+        let unknown_bits = TrackFacts {
+            media_kind_bits: None,
+            ..facts(100, 0, 0)
+        };
+        assert_eq!(eval_rules(&rules, &unknown_bits), RuleMatch::Undecided);
+    }
+
+    #[test]
+    fn purchase_status_and_unknown_fields_are_undecided_not_false() {
+        let purchase = flat(0x85, 0x400, [1, 0, 1, 1, 0, 1]);
+        assert_eq!(eval_rules(&purchase, &facts(0, 0, 0)), RuleMatch::True);
+        let unknown_status = TrackFacts {
+            purchase_status: None,
+            ..facts(0, 0, 0)
+        };
+        assert_eq!(eval_rules(&purchase, &unknown_status), RuleMatch::Undecided);
+        let unknown_field = flat(0xDEAD, 0x1, [0; 6]);
+        assert_eq!(
+            eval_rules(&unknown_field, &facts(0, 0, 0)),
+            RuleMatch::Undecided
+        );
     }
 }
