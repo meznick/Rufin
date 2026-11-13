@@ -19,7 +19,7 @@ pub mod smart;
 
 pub use host::{
     HostLibrary, HostLocation, HostPlaylist, HostSmartPlaylist, HostStats, HostTrack,
-    HostTrackMetadata, host_library, host_playlists, host_tracks,
+    HostTrackMetadata, host_library, host_playlists, host_tracks, resolve_playlist_members,
 };
 pub use map::{
     DeviceOnlyPlaylist, MappingDiagnostic, PlaylistMapping, PlaylistMatch, PlaylistOutcome,
