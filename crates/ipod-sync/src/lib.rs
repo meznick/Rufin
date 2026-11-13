@@ -56,6 +56,7 @@
 //! - `plan.md` Connection FSM (the consumer contract)
 
 pub mod discovery;
+pub mod mapping;
 pub mod mounts;
 pub mod preflight;
 pub mod retrieval;
