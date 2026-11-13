@@ -399,6 +399,30 @@ fn snapshot_reads_match_research_numbers() {
         "path must be a real database record: {path:?}"
     );
     assert_eq!(session.playlists().unwrap().len(), 9);
+    // B-009 wrapper extension: every surfaced smart playlist must carry a
+    // verbatim `SLst` blob read from the raw file, keyed by the same
+    // playlist id. Snapshot ground truth: libgpod surfaces the first mhlp
+    // list only (9 playlists, 3 smart); the walker covers all three mhlp
+    // lists and dedupes by pid (7 unique smart pids in the file).
+    let blobs = session.smart_blobs().unwrap();
+    assert_eq!(blobs.len(), 7, "7 unique smart-rule blobs in the snapshot");
+    let playlists = session.playlists().unwrap();
+    let smart: Vec<_> = playlists.iter().filter(|p| p.is_spl).collect();
+    assert_eq!(smart.len(), 3, "3 surfaced smart playlists in the snapshot");
+    for pl in &smart {
+        let blob = blobs.get(&pl.id).unwrap_or_else(|| {
+            panic!(
+                "playlist {} (id {}) has no smart blob",
+                pl.name.as_deref().unwrap_or("?"),
+                pl.id
+            )
+        });
+        assert!(
+            blob.starts_with(b"SLst"),
+            "playlist {}: blob must start with SLst magic",
+            pl.name.as_deref().unwrap_or("?")
+        );
+    }
     let status = session.artwork_status().unwrap();
     assert_eq!(status.declared_entries, Some(3356));
     if status.verdict == ipod::ArtworkVerdict::Ok {

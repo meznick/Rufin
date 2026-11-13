@@ -203,6 +203,10 @@ impl<'a> DeviceSession<'a> {
 
     /// All playlists, in database order (W-2). Membership is carried as
     /// device dbids in playlist order.
+    /// Playlists as parsed by libgpod (id, name, master/smart kind, the raw
+    /// `mhyp` flag bytes and member dbids). Smart-rule blobs are exposed
+    /// separately by [`DeviceSession::smart_blobs`], verbatim from the
+    /// file, keyed by the same playlist id.
     pub fn playlists(&self) -> Result<Vec<PlaylistInfo>, IpodError> {
         with_native(|| unsafe { Ok(self.playlists_inner()) })
     }
@@ -232,10 +236,27 @@ impl<'a> DeviceSession<'a> {
                 // type byte (no mutation — see db-playlist.c in the pin).
                 is_master: unsafe { (read.itdb_playlist_is_mpl)(raw.cast_mut()) != 0 },
                 is_spl: pl.is_spl != 0,
+                flag1: pl.flag1,
+                flag2: pl.flag2,
+                flag3: pl.flag3,
                 member_dbids,
             });
         }
         out
+    }
+
+    /// Verbatim smart-rule blobs (`mhod` type 51 payloads) keyed by
+    /// playlist id, read straight from the device `iTunesDB` (B-009).
+    /// Pure file read — no libgpod call, no writes. Blobs whose playlist id
+    /// libgpod does not surface stay inert map entries; consumers join by
+    /// the id from [`DeviceSession::playlists`].
+    pub fn smart_blobs(&self) -> Result<std::collections::HashMap<u64, Vec<u8>>, IpodError> {
+        let path = self
+            .mount_point
+            .join("iPod_Control")
+            .join("iTunes")
+            .join("iTunesDB");
+        crate::smart::read_smart_blobs(&path)
     }
 
     /// Playback statistics for every track — the subset of [`TrackInfo`]
