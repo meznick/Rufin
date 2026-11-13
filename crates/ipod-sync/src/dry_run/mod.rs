@@ -10,3 +10,11 @@
 pub mod compute;
 pub mod flatten;
 pub mod model;
+pub mod snapshot;
+
+pub use model::{
+    ArtworkAdd, ArtworkRemove, CapacitySummary, CopyMode, CoverEvidence, CriteriaState,
+    DeviceInputs, DeviceOnlyPolicy, DryRunReport, FileAdd, FileRemove, FileRepair, HostInputs,
+    PlaylistCreate, PlaylistKind, PlaylistRemove, PlaylistUpdate, ReportContext, SourceKey,
+    StatCounts, StatDiff, StatField, SyncOptions,
+};
