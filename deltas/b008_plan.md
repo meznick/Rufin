@@ -78,35 +78,44 @@ extra 4 are service/folder playlists that still carry smart-criteria fields).
 
 **Smart criteria are present and machine-readable.** The `.itl` `mhoh` 0x65
 payload is the same `SLst` blob as the device `mhod` type 51 (byte-identical
-for 3/3 compared playlists; iTunes re-serializes the others on device write) —
-big-endian rules, parsed by libgpod's own algorithm. `mhoh` 0x66 holds the
-112-byte Smart Info blob (byte-identical to the XML `Smart Info` data);
-the device-side `mhod` type 50 is a 72-byte SPLPREF with different layout, so
-writing playlist metadata needs a conversion (B-010 territory). The corpus'
-criteria decode to 23 rules: field 0x3C (video kind, binary-AND) fully known;
-**fields 0x00 (action IS, value `MUIS`-ish 64-bit marker — likely "Media Kind
-is Music") and 0x85 (action binary-AND, value 1 — likely purchase/download
-status) are unknown to libgpod 0.8.3** and must be either identified or
-surfaced as unsupported. `Playlist::is_smart()` (0x02BC) is false for all 11
-smart playlists in this corpus — do not use it.
+for the flat playlists; iTunes re-serializes/flattens on device write) —
+big-endian rules. `mhoh` 0x66 holds the 112-byte Smart Info blob
+(byte-identical to the XML `Smart Info` data); the device-side `mhod` type 50
+is a 72-byte SPLPREF with different layout, so writing playlist metadata needs
+a conversion (B-010 territory). The rule model is richer than libgpod's flat
+parser: rules can nest (`field 0x00` = group node whose value is a whole
+nested `SLst`), iTunes flattens groups when writing the device, and field 0x85
+(purchase/iCloud status, bit 0 = downloaded) exists only in the iTunes-side
+`Загружено` folders — full decode in §7. `Playlist::is_smart()` (0x02BC) is
+false for all 11 smart playlists in this corpus — do not use it.
 
 **Stats and dates.** Device raw `rating`/`playcount`/`skipcount`/`time_played`
 equal the host raw values for the large majority of unchanged tracks
 (3009/3179/2341/2663 of 3227 unambiguous pairs); differences are directional
 evidence (device can hold newer on-device plays; host holds later sync-time
-values). Device `size`/`bitrate` can be stale versus the host (the host moved
-to ALAC after the pod was last synced: device still says AAC for 2536 lossless
-tracks) — files must never be matched by these fields. Titles match
-device↔host 3373/3373. Both the host envelope and the device `Preferences`
-(offset 0xB22, raw code 660) resolve to UTC+3 in this snapshot; libgpod
-converts device times as `raw − 2082844800 − timezone_shift`. Merging stats in
-**raw Apple-epoch space** and converting only at the `itl-sync` host-write
-boundary avoids the timezone question entirely for comparisons; historical
-offset variance remains an `itl-sync`-side caveat, not a mapper bug.
+values). Titles match device↔host 3373/3373. Both the host envelope and the
+device `Preferences` (offset 0xB22, raw code 660) resolve to UTC+3 in this
+snapshot; libgpod converts device times as `raw − 2082844800 − timezone_shift`.
+Merging stats in **raw Apple-epoch space** and converting only at the
+`itl-sync` host-write boundary avoids the timezone question entirely for
+comparisons; historical offset variance remains an `itl-sync`-side caveat,
+not a mapper bug.
 
 **Files.** Device `mhit` `mhod` type 2 holds the on-pod path (4-char names on
 the restored store). The wrapper does not expose it yet — B-008's file mapping
 and B-009's delta need a safe read-only `ipod_path` in `TrackInfo`.
+
+**Transcoding (owner fact, 2026-11-12).** The device size/bitrate/filetype
+divergence from the host is **not staleness**: the owner's iTunes has
+"Convert higher bitrate songs to AAC 256 kbps" enabled, so the pod legitimately
+holds AAC transcodes of the host's lossless files (device says AAC for 2536
+host-ALAC tracks, with bitrates normalized to 256 and sizes differing).
+Consequences for the mapping: (a) files can only ever be matched by identity
+(PID/dbid), never by size, bitrate, or extension; (b) the mapper must carry
+the device's real filetype/bitrate as device facts, not as a sync error;
+(c) the conversion option itself is sync configuration owned by B-009/B-010
+(and later the sync UI), not by this mapping — the mapper just records the
+host source path and the device file record.
 
 ## 3. Proposed architecture
 
@@ -218,18 +227,51 @@ it is the `Master`-flagged playlist, not a name or empty-membership guess.
 Device-only playlists (`On-The-Go 1`) and service playlists are reported, not
 silently adopted or deleted.
 
-Smart criteria are verified present and machine-readable (§2a): `.itl` `mhoh`
-0x65 = device `mhod` 51 `SLst` blob, parsed with libgpod's rule layout; 0x66 =
-Smart Info. The remaining research is identification of fields 0x00 and 0x85
-(likely "Media Kind is Music" and purchase/download status) — either identify
-them against additional sources or surface them as explicit unsupported
-criteria; no implicit conversion to static, no silent loss of live behavior.
-Genius playlists carry no criteria in the `.itl` and are out of scope.
-Writing smart playlists to the device (Smart Info → SPLPREF conversion,
-rule re-serialization) is B-010 territory and not part of this mapping.
-The `itl-core` work to expose the 0x65/0x66 payloads lives in the itl-player
-repo with its own review; do not silently substitute a local fork or
-unverified raw offsets.
+Smart criteria are verified present and machine-readable (§2a, extended by
+the 2026-11-12 rule decode): `.itl` `mhoh` 0x65 = device `mhod` 51 `SLst`
+blob, parsed with libgpod's rule layout; 0x66 = Smart Info.
+
+**How the rules actually work in this corpus** (decoded from the snapshot):
+
+- An `SLst` blob is `SLst` + u32 unknown (0x00010001) + rule count + match
+  operator (0 = AND) + a 136-byte header, then rules. Each rule: field,
+  action, a 52-byte value header, length, and the 68-byte value block
+  (from/to value/date/units). Rule bodies can be **nested**: a rule with
+  field 0x00 and action `IS` whose value starts with the bytes `SLst` is a
+  **group node** — its payload is a complete nested ruleset, and the group's
+  operator combines the children (OR inside the observed groups). iTunes
+  encodes "Media Kind is (Music OR Movie …)" as a nested group.
+- **Leaf fields seen:** 0x3C video kind (bitmask, actions binary-AND /
+  not-binary-AND), 0x10 date added (action "in the last N" with the unit in
+  `fromunits`, e.g. 604800 s = 7 days), 0x19 rating (greater-than, iTunes
+  encodes the star boundary minus 1, e.g. `0x45` = 69 for "> 3.5 stars"),
+  0x16 playcount (greater-than), 0x85 purchase/iCloud status bitmask (bit 0 =
+  downloaded; appears only in the `Загружено` folders as `binary-AND 1`).
+- **iTunes flattens groups when writing the device**: every device-side
+  `mhod` 51 in the dump is a flat 384-byte payload, and the nested form
+  (0x00 group + leaves) exists only in the `.itl`. The observed flattening
+  is exact — the group `(video kind IS 1) OR (video kind IS 0x20)` became
+  `video kind binary-AND 0x21` on the device, and the companion leaf (date /
+  playcount / rating) is written as-is. libgpod 0.8.3 parses the flat form
+  correctly but would mis-evaluate nested blobs (group nodes read as unknown
+  field 0x00) — never let it rewrite playlists that came from nested `.itl`
+  criteria; the mapper's own flattening must reproduce iTunes' exact output.
+- The iTunes-side `Загружено` folders (with the 0x85 rule) are **not synced
+  to the device at all** in this dump — device-only iTunes folders.
+- `mhoh` 0x66 (Smart Info, 112 bytes) holds live-update/limit/sort settings;
+  the device's `mhod` 50 SPLPREF (72 bytes) is a different compiled form.
+  Reading carries both verbatim; translating Smart Info → SPLPREF and writing
+  playlists is B-010.
+
+Remaining identification debt: the exact bit semantics of 0x85 (hypothesis:
+iCloud status, bit 0 = downloaded — confirm against the iTunes playlist UI or
+a device-write experiment) and the group/match-operator corner cases (AND
+groups, negated groups) not exercised by this corpus. Unsupported constructs
+stay explicit unresolved diagnostics; no implicit conversion to static, no
+silent loss of live behavior. Genius playlists carry no criteria in the
+`.itl` and are out of scope. The `itl-core` work to expose the 0x65/0x66
+payloads lives in the itl-player repo with its own review; do not silently
+substitute a local fork or unverified raw offsets.
 
 For artwork, trace the existing embedded-cover extraction and supported
 encoded formats; carry a reproducible reference and distinguish no cover,
@@ -267,7 +309,14 @@ capabilities, never claim an in-memory mapping created an ArtworkDB.
    values; record before/after host bytes and full device tree hash. Check
    backend-disabled and gated-write configurations. Explicitly report skipped
    env-gated tests; no synthetic result is hardware acceptance.
-7. Run targeted `cargo test` for affected crates, the relevant existing source
+7. Backend build infrastructure (owner request 2026-11-12): a
+   `scripts/build-libgpod.sh` that rebuilds the pinned libgpod 0.8.3-20 from
+   the documented tarball + Arch patch set, verifies checksums, installs to a
+   prefix, writes the ABI marker from the crate's `LAYOUTS_SHA256` constant
+   (so the marker can never drift), and prints the `RUFIN_LIBGPOD_DIR` export.
+   Skip messages in the env-gated suites get an actionable pointer to the
+   script, so an unbuilt backend is never a silent skip.
+8. Run targeted `cargo test` for affected crates, the relevant existing source
    and wrapper suites, formatting and clippy, plus `git diff --check`. Verify
    no write-capable production path was enabled. Record actual results and
    outstanding blockers, then request review before merging; update
@@ -284,13 +333,15 @@ numbers above become the acceptance for that fix. A Rufin-owned persistent
 mapping table is not needed for iTunes-written devices; device dbids stay
 session-local handles.
 
-**Smart playlists: mostly resolved** (§2a): criteria live in the `.itl` as
-the same `SLst` blobs libgpod parses; `mhoh` 0x66 = Smart Info. Remaining
-unknowns are the two field ids (0x00, 0x85) and the Smart Info → SPLPREF
-conversion (writes only). Decision: identify 0x00/0x85 now (small follow-up
-research against the XML text or newer libgpod/gtkpod sources), or ship them
-as explicit "unsupported rule" diagnostics and revisit. Genius playlists have
-no criteria in the `.itl` — they are out of smart-mapping scope, like iTunes
+**Smart playlists: resolved, with a small confirmation debt** (§2a/§7): the
+`.itl` stores nested `SLst` rule trees (field 0x00 = group node, leaves 0x3C /
+0x10 / 0x16 / 0x19 / 0x85), `mhoh` 0x66 = Smart Info, and iTunes flattens
+groups to the exact flat rules seen on the device. 0x85 (purchase/iCloud
+status, bit 0 = downloaded) needs confirmation against the iTunes playlist UI
+or a device-write experiment; until then the mapper treats it as a known
+hypothesis with an explicit representation, never as an unsupported-rule
+refusal. The Smart Info → SPLPREF conversion stays B-010 (writes only).
+Genius playlists have no criteria in the `.itl` — out of scope, like iTunes
 itself does not sync Genius as criteria.
 
 **Timestamp ambiguity: resolved for comparisons** (§2a): merge in raw
@@ -298,12 +349,20 @@ Apple-epoch space; convert only at the `itl-sync` write boundary. Device
 `Preferences`-based conversion matches the host envelope in this snapshot;
 historical variance stays an `itl-sync` caveat. No guessed UTC conversion.
 
-**Source selection:** how is the iTunes source selected when more than one is
-configured, and how should unavailable/cloud tracks affect mapping? Until
-decided, the mapper receives an explicitly selected source and reports
-unavailable records without treating them as removals; selection UI is outside
-B-008.
+**Source selection: owner decision 2026-11-12** — the iTunes source is picked
+in the Rufin sync UI before the sync runs (future UI work, after B-011; the
+sync engine takes an explicitly selected source). Unavailable/cloud tracks are
+reported and never treated as removals. Spec gap to close with the UI task:
+the selection step is not covered by `spec.md` today — propose a delta adding
+a scenario under R-04 (e.g. "Given more than one configured library, When a
+sync is started, Then the operation targets the source selected in the sync
+UI") when the UI task lands; B-008's engine contract just requires an explicit
+`SourceKey`, never an implicit choice.
 
 **Wrapper extensions (small, read-only or gated):** `TrackInfo.ipod_path`
 (read-side, safe) for file mapping; possibly `dbid2`. Extending gated write
 APIs is not required for mapping itself.
+
+**Test/build infra (owner request 2026-11-12):** skip messages point at
+`scripts/build-libgpod.sh`; the script is part of this task's verification
+support (§8 item 7) and is exercised by the owner's next env-gated test run.
