@@ -109,6 +109,7 @@ mod artwork;
 mod backend;
 pub mod ffi;
 mod session;
+mod smart;
 #[cfg(feature = "sync-writes")]
 #[doc(hidden)]
 pub mod testkit;
