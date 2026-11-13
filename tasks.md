@@ -52,7 +52,7 @@ Tasks are listed in dependency order; IDs stay stable, so B-007 precedes discove
 
 ## Phase 2: Sync Core Logic (libgpod FFI)
 
-- [ ] **B-008: Map .itl library data to libgpod models**
+- [x] **B-008: Map .itl library data to libgpod models**
   - Spec reference: R-04, S-07, R-05, S-13
   - Plan reference: Phase 2, Sync Data Mapping; design and research in [deltas/b008_plan.md](deltas/b008_plan.md)
   - Verification: Fixture mappings cover files, master/static/smart playlists, track references, artwork databases/thumbnails, 0–100 ratings, stable host identity, and Unix timestamps with host conversion delegated to itl-sync. Comparisons/deltas are Rufin-owned; copying files alone does not count as sync.
