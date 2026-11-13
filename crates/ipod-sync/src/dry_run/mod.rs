@@ -7,4 +7,6 @@
 //! read-side wrapper surface. Isolation is enforced structurally and
 //! proven by before/after tree hashes in the env-gated gate.
 
+pub mod compute;
 pub mod flatten;
+pub mod model;

@@ -83,9 +83,7 @@ fn flatten_group(group: &SmartRules) -> Result<SmartRule, FlattenError> {
             .iter()
             .all(|leaf| leaf.action == ACTION_IS && leaf.from_value == leaf.to_value);
         if same_field && is_is {
-            let mask = leaves
-                .iter()
-                .fold(0i64, |acc, leaf| acc | leaf.from_value);
+            let mask = leaves.iter().fold(0i64, |acc, leaf| acc | leaf.from_value);
             return Ok(SmartRule::Leaf(SmartLeaf {
                 field: first.field,
                 action: ACTION_BINARY_AND,
@@ -139,10 +137,7 @@ mod tests {
                         SmartRule::Leaf(leaf(0x3C, ACTION_IS, 0x20)),
                     ],
                 )),
-                SmartRule::Group(group(
-                    0,
-                    vec![SmartRule::Leaf(leaf(0x19, 0x10, 69))],
-                )),
+                SmartRule::Group(group(0, vec![SmartRule::Leaf(leaf(0x19, 0x10, 69))])),
             ],
         );
         let flat = flatten(&host).unwrap();
@@ -151,7 +146,10 @@ mod tests {
         let SmartRule::Leaf(second) = &flat.rules[1] else {
             panic!("expected leaf");
         };
-        assert_eq!((second.field, second.action, second.from_value), (0x19, 0x10, 69));
+        assert_eq!(
+            (second.field, second.action, second.from_value),
+            (0x19, 0x10, 69)
+        );
     }
 
     #[test]
@@ -202,15 +200,13 @@ mod tests {
         // Multi-leaf AND group — no observed device form.
         let and_two = group(
             0,
-            vec![
-                SmartRule::Group(group(
-                    0,
-                    vec![
-                        SmartRule::Leaf(leaf(0x19, 0x10, 69)),
-                        SmartRule::Leaf(leaf(0x16, 0x10, 2)),
-                    ],
-                )),
-            ],
+            vec![SmartRule::Group(group(
+                0,
+                vec![
+                    SmartRule::Leaf(leaf(0x19, 0x10, 69)),
+                    SmartRule::Leaf(leaf(0x16, 0x10, 2)),
+                ],
+            ))],
         );
         assert_eq!(flatten(&and_two), Err(FlattenError::Unflattenable));
 
