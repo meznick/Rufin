@@ -26,7 +26,8 @@ fn backend_or_skip() -> Option<ipod::IpodBackend> {
         Ok(backend) => Some(backend),
         Err(e) => {
             eprintln!(
-                "skipping: backend unavailable ({e}); set RUFIN_LIBGPOD_DIR to a pinned install"
+                "skipping: backend unavailable ({e}); build it with scripts/build-libgpod.sh \
+                 and set RUFIN_LIBGPOD_DIR to the install (e.g. /tmp/opencode/libgpod-install/lib)"
             );
             None
         }

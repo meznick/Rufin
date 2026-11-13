@@ -30,7 +30,10 @@ use ipod_sync::{MountEntry, MountError, MountSource};
 /// `BackendUnavailable` snapshot mid-gate.
 fn connection_or_skip() -> Option<IpodConnection> {
     let Some(dir) = std::env::var_os("RUFIN_LIBGPOD_DIR") else {
-        eprintln!("skipping: RUFIN_LIBGPOD_DIR unset (the pinned libgpod install)");
+        eprintln!(
+            "skipping: RUFIN_LIBGPOD_DIR unset — the pinned libgpod install is missing; \
+             build it with scripts/build-libgpod.sh"
+        );
         return None;
     };
     let dir = PathBuf::from(dir);
