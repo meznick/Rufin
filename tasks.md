@@ -60,7 +60,7 @@ Tasks are listed in dependency order; IDs stay stable, so B-007 precedes discove
   - Blocker (cross-repo): the host track PID lives at `mith` @0x80 (= XML track Persistent ID = device dbid, verified on the 2026-11-10 snapshot pair); `itl-core` 0.1.0 reads `persistent_id()` from the wrong offset and does not expose the smart-rule payloads (mhoh 0x65/0x66). The host adapter needs the itl-core fix released and the Rufin dependency bumped ([b008 plan](deltas/b008_plan.md) §2a/§9).
   - Debt (owner 2026-11-12): smart-rule field 0x85 — purchase/iCloud status bitmask, bit 0 = downloaded, per snapshot evidence; confirmation is backlog (iTunes UI check or a device-write experiment). The mapper represents it explicitly and never rejects on it; device-side rewrite of 0x85 rules stays B-010.
   - Debt: sync-source selection is a UI step (future work) and is not covered by spec.md — close with the sync-UI task via a delta under R-04 ([b008 plan](deltas/b008_plan.md) §9).
-- [ ] **B-009: Implement Dry Run delta calculation**
+- [x] **B-009: Implement Dry Run delta calculation**
   - Spec reference: R-04, S-08
   - Plan reference: Phase 2, Sync Data Mapping, Recovery and Statistics
   - Research gate before implementation: revisit [R1](deltas/b001_research.md#r1-itdb_write_file-side-effects) for dry-run isolation and review the resulting test/design proposal with the owner.
