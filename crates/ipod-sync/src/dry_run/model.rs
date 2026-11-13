@@ -246,8 +246,11 @@ pub struct ReportContext {
     /// The device master playlist (`is_mpl`) — device-owned, never a
     /// removal candidate in any policy.
     pub device_master: Option<PlaylistRemove>,
-    /// Device-local playlists (On-The-Go and friends) — device-owned,
-    /// informational in every policy.
+    /// The active On-The-Go queue — libgpod-injected from the device's
+    /// `OTGPlaylistInfo` file as `OTG Playlist N` — device-owned and
+    /// informational in every policy; never a removal candidate. Saved
+    /// OTG playlists (`On-The-Go N` `mhyp` records) are regular playlists
+    /// and are not listed here.
     pub device_local_playlists: Vec<PlaylistRemove>,
 }
 

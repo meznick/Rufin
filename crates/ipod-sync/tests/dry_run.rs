@@ -199,14 +199,16 @@ fn dry_run_pair_gate() {
     );
 
     // Device-owned playlists: the master is exempt in every policy. The
-    // host library mirrors `On-The-Go 1` as a regular playlist (iTunes
-    // imports it), so it matches by name+kind and nothing device-only
-    // remains — zero removals, zero device-local entries.
+    // active OTG queue would be too (libgpod-injected `OTG Playlist N`),
+    // but this dump carries no `OTGPlaylistInfo` file. `On-The-Go 1` is a
+    // *saved* OTG playlist — a regular playlist iTunes treats like any
+    // other — so the host mirrors it and it matches by name+kind; nothing
+    // device-only remains, zero removals, zero device-local entries.
     assert!(report.context.device_master.is_some(), "master present");
     assert_eq!(
         report.context.device_local_playlists.len(),
         0,
-        "On-The-Go is host-mirrored on this pair: {:?}",
+        "no active OTG queue on this pair: {:?}",
         report.context.device_local_playlists
     );
     assert_eq!(

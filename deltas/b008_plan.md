@@ -70,7 +70,13 @@ no mapping may rely on the registry accessor.
 
 **Playlist identity.** Device `mhyp` records carry no value that matches the
 `.itl` playlist PID (u64 scan of the whole header); device playlists are
-matched by name+kind, as iTunes itself syncs them. Device playlist names match
+matched by name+kind, as iTunes itself syncs them. **Superseded 2026-11-13**
+(B-009 re-measurement, recorded in `docs/itunes-ipod.md` §6): `mhyp` id @+28
+*is* the host playlist persistent id (`miph` @+432, LE) for every
+iTunes-written playlist — 12/12 on the snapshot pair, 6/6 against the real
+library's XML `Playlist Persistent ID`; only the device master carries a
+device-authored id. pid-first matching (a true rename instead of
+remove+create) is a candidate follow-up task; B-009 kept name+kind. Device playlist names match
 host names (`iPod user` master, `Плейлист`, `Покупки`, `On-The-Go 1`, smart:
 `Последние добавленные`, `Самые популярные`, `Хай рейт`, `Аудиокниги`,
 `Музыка`, `Телешоу`, `Фильмы`). The `.itl` has 24 `miph` (20 in XML; the
@@ -220,8 +226,9 @@ silently assumed UTC instant.
 For playlists, preserve host playlist PID, name, kind, ordered member IDs and
 duplicates; resolve numeric members to host persistent keys only when unique.
 Missing members and duplicate/zero PIDs become explicit diagnostics. Device
-playlists are matched by **(name, kind)** — the snapshot proves device `mhyp`
-records carry no host playlist PID (§2a). The master playlist is the device
+playlists are matched by **(name, kind)** — §2a's original claim that `mhyp`
+records carry no host playlist PID was superseded 2026-11-13 (the id @+28 is
+the host playlist persistent id; pid-first matching is a follow-up task). The master playlist is the device
 `is_mpl` record (named after the device, `iPod user` here); on the host side
 it is the `Master`-flagged playlist, not a name or empty-membership guess.
 Device-only playlists (`On-The-Go 1`) and service playlists are reported, not

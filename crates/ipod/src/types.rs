@@ -241,10 +241,12 @@ pub struct PlaylistInfo {
     /// Smart playlist flag (`Itdb_Playlist.is_spl`).
     pub is_spl: bool,
     /// Raw `Itdb_Playlist.flag1..3` (the `mhyp` header bytes @ +21..23).
-    /// libgpod documents them as unknown/always zero; carried read-only so
-    /// the device-local playlist classification (B-009 §8 step 2a) sees the
-    /// full header picture. Snapshot evidence: zero even for `On-The-Go 1` —
-    /// the classification therefore also uses the name convention.
+    /// libgpod documents them as unknown/always zero; carried read-only as
+    /// the full header picture. Snapshot evidence: zero even for the saved
+    /// `On-The-Go 1` `mhyp` — the device-authored vs. iTunes-written
+    /// classification is therefore structural (the active OTG queue comes
+    /// from `OTGPlaylistInfo`, saved OTG records carry the host playlist
+    /// persistent id in `mhyp` @+28), not flag-based.
     pub flag1: u8,
     pub flag2: u8,
     pub flag3: u8,
