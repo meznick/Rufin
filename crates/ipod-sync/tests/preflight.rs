@@ -23,7 +23,10 @@ use ipod_sync::{ReadinessCheck, ReadinessError, collect, preflight};
 /// panics rather than silently skipping (the discovery-suite convention).
 fn backend_or_skip() -> Option<ipod::IpodBackend> {
     let Some(dir) = std::env::var_os("RUFIN_LIBGPOD_DIR") else {
-        eprintln!("skipping: RUFIN_LIBGPOD_DIR unset (the pinned libgpod install)");
+        eprintln!(
+            "skipping: RUFIN_LIBGPOD_DIR unset — the pinned libgpod install is missing; \
+             build it with scripts/build-libgpod.sh"
+        );
         return None;
     };
     let backend = ipod::IpodBackend::load_with(BackendSearch::Explicit(PathBuf::from(dir)))

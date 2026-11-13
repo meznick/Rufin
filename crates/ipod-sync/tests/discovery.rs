@@ -269,6 +269,10 @@ fn fixture_scan_never_writes_to_candidate_tree() {
 #[test]
 fn env_gated_backend_loaded_reports_abi_status() {
     let Some(dir) = std::env::var_os("RUFIN_LIBGPOD_DIR") else {
+        eprintln!(
+            "skipping: RUFIN_LIBGPOD_DIR unset — the pinned libgpod install is missing; \
+             build it with scripts/build-libgpod.sh"
+        );
         return;
     };
     let lib_dir = PathBuf::from(dir);
