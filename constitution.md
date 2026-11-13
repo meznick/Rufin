@@ -27,7 +27,8 @@
 
 ## 5. Docs
 - Format research stays in the companion `itl-player` repository's `NOTES.md`; this fork has no local `NOTES.md`. SDD artifacts live in the repo root; feature research and decisions live with their delta documents and must use repository-relative links, not session-local plan paths.
-- Language: English.
+- The living overview of the iTunes source and iPod sync subsystem lives in [`docs/itunes-ipod.md`](docs/itunes-ipod.md) — architecture, safety rules, test corpora, and implementation status; it references deep format knowledge instead of duplicating it.
+- Language: SDD artifacts are English; `docs/itunes-ipod.md` is Russian (owner decision 2026-11-13).
 
 ## 6. Ownership
 - Architecture and format decisions are owner calls, recorded in the owning repository's documentation (format decisions in `itl-player/NOTES.md` §11; Rufin feature decisions with the feature artifacts).
