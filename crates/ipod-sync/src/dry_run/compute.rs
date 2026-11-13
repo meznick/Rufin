@@ -503,14 +503,25 @@ fn multiset_difference(a: &[u64], b: &[u64]) -> Vec<u64> {
     out
 }
 
-/// Device-local playlists (owner decision §9-3, evidence in
-/// `deltas/b009_plan.md` §8 step 2a): iTunes writes `On-The-Go 1` as an
-/// ordinary `mhyp` with all-zero header flags, so the name convention is
-/// the only available signal; libgpod additionally injects `OTG Playlist N`
-/// from the device `OTGPlaylistInfo` file at parse time. The master is
-/// excluded upstream of this check.
+/// Device-owned playlists (owner decision §9-3, corrected 2026-11-13 with
+/// the OTG semantics in `docs/itunes-ipod.md` §6): the exemption covers
+/// only the **active On-The-Go queue** — the playlist a user builds
+/// directly on the device, which lives in the device's own
+/// `OTGPlaylistInfo` file and which libgpod injects at parse time as
+/// `OTG Playlist N`. It can never exist on the host until a sync
+/// transfers it there, so it is never a removal candidate in any policy
+/// (the transfer itself is a later task).
+///
+/// Saved OTG playlists — `On-The-Go N` records in the device `iTunesDB`
+/// that iTunes wrote at the importing sync — are **regular playlists**:
+/// iTunes treats them as such (they sync both ways and are renamed/removed
+/// like any other playlist), and their `mhyp` id @+28 carries the host
+/// playlist persistent id (verified 12/12 against `miph` pids on the
+/// snapshot pair, 6/6 against the XML `Playlist Persistent ID`). A
+/// device-only `On-The-Go N` therefore follows the device-only policy
+/// like any other playlist. The master is excluded upstream of this check.
 pub fn is_device_local(name: Option<&str>) -> bool {
-    name.is_some_and(|name| name.starts_with("On-The-Go") || name.starts_with("OTG Playlist"))
+    name.is_some_and(|name| name.starts_with("OTG Playlist"))
 }
 
 /// The criteria a planned playlist create would write: host rules
@@ -996,28 +1007,34 @@ mod tests {
     }
 
     #[test]
-    fn master_and_device_local_playlists_are_never_removed() {
+    fn master_and_active_otg_are_never_removed() {
         let host = host_inputs(vec![]);
         let device = DeviceInputs {
             playlists: vec![
                 device_playlist(1, Some("iPod user"), false, true, vec![]),
-                device_playlist(2, Some("On-The-Go 1"), false, false, vec![]),
-                device_playlist(3, Some("Старое"), false, false, vec![]),
+                device_playlist(2, Some("OTG Playlist 1"), false, false, vec![]),
+                device_playlist(3, Some("On-The-Go 1"), false, false, vec![]),
+                device_playlist(4, Some("Старое"), false, false, vec![]),
             ],
             ..device_inputs(vec![])
         };
         let report = compute(&host, &device, &opts());
         assert_eq!(report.context.device_master.as_ref().unwrap().device_id, 1);
+        // Only the active queue (libgpod-injected from OTGPlaylistInfo) is
+        // device-owned; a saved `On-The-Go 1` mhyp is a regular playlist.
         assert_eq!(report.context.device_local_playlists.len(), 1);
         assert_eq!(report.context.device_local_playlists[0].device_id, 2);
-        assert_eq!(report.playlist_removes.len(), 1);
+        assert_eq!(report.playlist_removes.len(), 2);
         assert_eq!(report.playlist_removes[0].device_id, 3);
+        assert_eq!(report.playlist_removes[1].device_id, 4);
 
         let mut keep = opts();
         keep.device_only = DeviceOnlyPolicy::Keep;
         let report = compute(&host, &device, &keep);
         assert!(report.playlist_removes.is_empty());
-        assert_eq!(report.device_only_playlists.len(), 1);
+        assert_eq!(report.device_only_playlists.len(), 2);
+        assert_eq!(report.device_only_playlists[0].device_id, 3);
+        assert_eq!(report.device_only_playlists[1].device_id, 4);
     }
 
     #[test]

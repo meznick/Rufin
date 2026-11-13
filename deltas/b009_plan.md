@@ -163,13 +163,17 @@ actionable for the UI: counts and itemized values are all a policy needs.
   (informational: Smart Info → SPLPREF translation is B-010).
 - The device master (`device_master`) is device-owned and informational in
   every policy — never a removal candidate. Other device-only playlists are
-  classified first: **device-local** playlists (what iTunes itself preserves
-  on the pod — `On-The-Go 1` and any playlist the device marks as
-  device-managed; identified from the `mhyp` header flags, owner decision
-  §9-3) are informational in every policy. Non-local device-only playlists
-  become `PlaylistRemove` action entries under the default `Remove` policy
-  and informational entries under `Keep`. Classification evidence is a
-  research item of this task (§8 step 2a), never a name guess.
+  classified first: the **active On-The-Go queue** (libgpod-injected
+  `OTG Playlist N` from the device's `OTGPlaylistInfo` file — the playlist
+  a user builds on the device itself, which cannot exist on the host until
+  a sync transfers it) is device-owned and informational in every policy,
+  never a removal candidate. Saved OTG playlists (`On-The-Go N` `mhyp`
+  records, iTunes-written at the importing sync) are **regular playlists**
+  (owner correction 2026-11-13, `docs/itunes-ipod.md` §6): a device-only
+  one follows the device-only policy like any other playlist. Non-local
+  device-only playlists become `PlaylistRemove` action entries under the
+  default `Remove` policy and informational entries under `Keep`.
+  Classification evidence is §8 step 2a, never a name guess.
 
 **Smart criteria comparison.** Host rules (nested `SLst`, parsed) vs. device
 blob (flattened, parsed). Because iTunes flattens nested groups on device
@@ -233,8 +237,8 @@ extension in `crates/ipod`. Module layout:
 - `crates/ipod` — `PlaylistInfo.smart_blob: Option<Vec<u8>>` (read-only,
   verbatim `mhod`-51 payload; extraction alongside the existing playlist
   parse; owned bytes, no pointer escapes) and the `mhyp` header flag bytes
-  (`flag1`/`flag2`/`flag3`, read-only) for the device-local playlist
-  classification (§4).
+  (`flag1`/`flag2`/`flag3`, read-only) for the device-owned playlist
+  classification (§4, §8 step 2a).
 
 `HostInputs`/`DeviceInputs` are the owned snapshot records the engine needs:
 the B-008 records plus B-009's additions (artwork evidence, smart blobs,
@@ -305,13 +309,19 @@ the full dry run. Pair findings, all pinned in the gate:
   (Музыка/Телешоу/Фильмы/Аудиокниги) that libgpod never surfaces. The
   playlist-selection policy (what iTunes itself would and would not sync) is
   B-010/UI's question — the report is the honest full diff.
-- **Device-local evidence (step 2a):** `On-The-Go 1` carries all-zero `mhyp`
-  flags — identical to a normal playlist — and the host mirrors it as a
-  regular playlist, so on this pair it matches by name+kind and the
-  device-local classification applies only to device-only OTG records
-  (libgpod additionally injects `OTG Playlist N` from `OTGPlaylistInfo`).
-  Classification = master (`is_mpl`) + the `On-The-Go`/`OTG Playlist` name
-  convention, never a name-free header guess.
+- **Device-owned evidence (step 2a, corrected 2026-11-13):** `On-The-Go 1`
+  carries all-zero `mhyp` flags — identical to a normal playlist — and is a
+  *saved* OTG record: the host mirrors it (iTunes treats saved OTG as a
+  regular playlist), so on this pair it matches by name+kind and nothing
+  device-only remains. The device-owned exemption covers only the active
+  queue, which libgpod injects from `OTGPlaylistInfo` as `OTG Playlist N`;
+  this dump carries no `OTGPlaylistInfo` file, so the pair proves the
+  classification only vacuously and the unit fixtures cover it. Related
+  format finding: `mhyp` id @+28 = host playlist persistent id (`miph`
+  @+432) for every iTunes-written playlist — 12/12 on the pair, 6/6 against
+  the real library's XML `Playlist Persistent ID`; only the device master
+  carries a device-authored id. pid-based matching (a true rename instead
+  of remove+create) is a candidate follow-up task.
 
 ## 7. Traceability and non-goals recap
 
@@ -330,13 +340,16 @@ policy.
 2. Wrapper extension: `smart_blob` + `mhyp` flag bytes with ownership/layout
    tests and a tree-hash read proof on the device snapshot; verify
    `itdb_parse` behavior on the fixture tree is unchanged.
-2a. Device-local playlist classification (owner decision §9-3): inspect the
-    `mhyp` headers in the snapshot pair and the pinned libgpod source to
-    determine how device-managed playlists (`On-The-Go 1`, master, possibly
-    others) are marked; record the evidence in this delta; implement the
-    classification as a pure function over the wrapper's flag bytes — never
-    a name guess. The pair gate then proves zero `PlaylistRemove` on the
-    in-sync dump.
+2a. Device-owned playlist classification (owner decision §9-3, corrected
+    2026-11-13): the exemption covers only the active On-The-Go queue —
+    libgpod injects it from the device's `OTGPlaylistInfo` file as
+    `OTG Playlist N`. Saved OTG playlists (`On-The-Go N` `mhyp` records)
+    are regular playlists. The `mhyp` header flags are all-zero even for
+    them (snapshot evidence), so the classification is structural (file
+    provenance: `OTGPlaylistInfo` vs. iTunesDB `mhyp`), not flag-based and
+    not a name guess about device-owned status. Record the evidence in this
+    delta; the pair gate then proves zero `PlaylistRemove` on the in-sync
+    dump.
 3. `flatten.rs`: implement the normalization from B-008 §7's observed
    mapping; unit tests from the snapshot's own blobs (host nested → device
    flat byte-exact); plus fixtures for leaves-only, multi-group and unknown
@@ -346,7 +359,8 @@ policy.
    default), `NoIdentity`/`NoLocation`/`OutsideMediaFolder`/`HostFileMissing`
    handling, the transcode capacity formula (Copy exact size vs AAC-256
    estimate with cover term), `WouldNotFit`, artwork gating by verdict,
-   device-local playlist exemption, deterministic ordering (shuffled inputs →
+   device-owned (active OTG) playlist exemption with saved-OTG following
+   the policy, deterministic ordering (shuffled inputs →
    identical report).
 5. `snapshot.rs`: collectors; unit tests with temp-tree fixtures for
    path-colon conversion and existence probes.
@@ -369,11 +383,16 @@ policy.
    (it is B-010's translation prerequisite anyway); the pair gate then
    requires zero `CriteriaDiffer` and zero `CriteriaUnknown`.
 3. **Device-only policy default.** Resolved: delete tracks and playlists
-   that are not present in the host library, except the cases the device
-   owns locally — the on-the-go playlist (and possibly some others) — alike
-   original iTunes. Default policy `Remove`; device-local playlists are
-   classified from the `mhyp` flags (§8 step 2a) and never removed; the
-   master is never removed.
+   that are not present in the host library, alike original iTunes. The
+   device-owned exemption covers only the active On-The-Go queue
+   (libgpod-injected `OTG Playlist N` from `OTGPlaylistInfo`) — created on
+   the device, it cannot exist on the host until a sync transfers it, so it
+   is never removed in any policy. Saved OTG playlists (`On-The-Go N` `mhyp`
+   records) are regular playlists: iTunes treats them as such, and a
+   device-only one follows the device-only policy (owner correction
+   2026-11-13 — after the importing sync, rename/delete in the host behaves
+   like any other playlist, so the rename scenario nets to "only the renamed
+   playlist"). The master is never removed.
 4. **Transcode size estimate.** Resolved: the capacity estimate is
    `duration × 32000 + measured cover bytes + small overhead for the moov
    atoms` (owner formula); `Copy` mode uses the exact source size; the
