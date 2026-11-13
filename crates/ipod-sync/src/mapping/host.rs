@@ -220,3 +220,20 @@ pub fn host_playlists(itl: &ItlFile) -> Vec<HostPlaylist> {
         })
         .collect()
 }
+
+/// Resolve a playlist's ordered member references (`.itl` numeric track
+/// ids) to host persistent keys. `None` marks a member whose numeric id
+/// has no record or no usable PID — an explicit gap, never a guess.
+/// Duplicates in the member list stay duplicated (order is significant).
+pub fn resolve_playlist_members(playlist: &HostPlaylist, tracks: &[HostTrack]) -> Vec<Option<u64>> {
+    let by_id: std::collections::HashMap<u32, u64> = tracks
+        .iter()
+        .filter(|t| t.track_pid != 0)
+        .map(|t| (t.itl_id, t.track_pid))
+        .collect();
+    playlist
+        .member_itl_ids
+        .iter()
+        .map(|id| by_id.get(id).copied())
+        .collect()
+}

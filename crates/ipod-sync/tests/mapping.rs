@@ -172,6 +172,26 @@ fn env_gated_snapshot_pair_maps_tracks_and_playlists() {
         playlist_map.device_master.is_some(),
         "the snapshot must report its device master playlist"
     );
+
+    // Artwork evidence on the device side: the seeded snapshot declares
+    // 3356 ArtworkDB entries and the wrapper parses exactly that many
+    // thumbnails (verdict Ok). The host-side artwork reference is the
+    // mapped media file itself (embedded covers — the sources layer's
+    // extraction); this asserts the device half of the artwork mapping.
+    let artwork = session.artwork_status().unwrap();
+    assert_eq!(
+        artwork.verdict,
+        ipod::ArtworkVerdict::Ok,
+        "diagnostic: {:?}",
+        artwork.diagnostic
+    );
+    assert_eq!(artwork.declared_entries, Some(3356));
+    assert_eq!(artwork.tracks_with_thumbnails, 3356);
+    let with_thumbnail = device_tracks.iter().filter(|t| t.has_thumbnail).count();
+    assert_eq!(
+        with_thumbnail, 3356,
+        "per-track thumbnail flags must agree with the artwork verdict"
+    );
     eprintln!(
         "note: {} playlist matches, {} device-only, {} host missing",
         playlist_map.matches.len(),

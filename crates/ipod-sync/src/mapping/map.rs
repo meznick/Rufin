@@ -375,4 +375,23 @@ mod tests {
                 .any(|d| d.message.contains("2 playlists named"))
         );
     }
+
+    #[test]
+    fn playlist_members_resolve_to_pids_or_explicit_none() {
+        use crate::mapping::resolve_playlist_members;
+        let tracks = vec![host_track(1, 0xA1), host_track(2, 0xA2), host_track(3, 0)];
+        let playlist = HostPlaylist {
+            persistent_id: 9,
+            name: None,
+            smart: None,
+            member_itl_ids: vec![1, 2, 1, 42],
+            is_master_candidate: false,
+        };
+        let resolved = resolve_playlist_members(&playlist, &tracks);
+        assert_eq!(
+            resolved,
+            vec![Some(0xA1), Some(0xA2), Some(0xA1), None],
+            "order and duplicates preserved; unknown members explicit"
+        );
+    }
 }
