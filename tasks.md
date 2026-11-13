@@ -54,9 +54,12 @@ Tasks are listed in dependency order; IDs stay stable, so B-007 precedes discove
 
 - [ ] **B-008: Map .itl library data to libgpod models**
   - Spec reference: R-04, S-07, R-05, S-13
-  - Plan reference: Phase 2, Sync Data Mapping
+  - Plan reference: Phase 2, Sync Data Mapping; design and research in [deltas/b008_plan.md](deltas/b008_plan.md)
   - Verification: Fixture mappings cover files, master/static/smart playlists, track references, artwork databases/thumbnails, 0–100 ratings, stable host identity, and Unix timestamps with host conversion delegated to itl-sync. Comparisons/deltas are Rufin-owned; copying files alone does not count as sync.
   - Depends on: B-006
+  - Blocker (cross-repo): the host track PID lives at `mith` @0x80 (= XML track Persistent ID = device dbid, verified on the 2026-11-10 snapshot pair); `itl-core` 0.1.0 reads `persistent_id()` from the wrong offset and does not expose the smart-rule payloads (mhoh 0x65/0x66). The host adapter needs the itl-core fix released and the Rufin dependency bumped ([b008 plan](deltas/b008_plan.md) §2a/§9).
+  - Debt (owner 2026-11-12): smart-rule field 0x85 — purchase/iCloud status bitmask, bit 0 = downloaded, per snapshot evidence; confirmation is backlog (iTunes UI check or a device-write experiment). The mapper represents it explicitly and never rejects on it; device-side rewrite of 0x85 rules stays B-010.
+  - Debt: sync-source selection is a UI step (future work) and is not covered by spec.md — close with the sync-UI task via a delta under R-04 ([b008 plan](deltas/b008_plan.md) §9).
 - [ ] **B-009: Implement Dry Run delta calculation**
   - Spec reference: R-04, S-08
   - Plan reference: Phase 2, Sync Data Mapping, Recovery and Statistics
