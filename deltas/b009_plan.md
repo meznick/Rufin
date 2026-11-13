@@ -1,9 +1,8 @@
 # B-009: Dry Run delta calculation — implementation plan
 
-Status: proposed, awaiting owner review. No implementation is authorized by
-this document until the open decisions in §9 are resolved and the plan is
-approved. Task branch: `feature/ipod-page-task-B-009`, based on
-`feature/ipod-page` at `35db42f`.
+Status: **approved by the owner (2026-11-13)**; the §9 decisions are resolved
+and folded into the body below. Task branch: `feature/ipod-page-task-B-009`,
+based on `feature/ipod-page` at `35db42f`.
 
 ## 1. Goal and boundaries
 
@@ -86,16 +85,17 @@ Gaps B-009 must close, all read-only:
 - **B — host artwork evidence.** `HostTrack` carries none (B-008 left the
   extraction trace open, §7 of its plan). The production embedded-cover
   scanner lives in `crates/sources` (`file/local/artwork::inspect_embedded`,
-  already used by the iTunes source in 64-file batches). Options and
-  recommendation in §9-1.
+  already used by the iTunes source in 64-file batches). Evidence carries
+  **presence plus the cover's byte size** — the capacity formula (§4) needs
+  the size term, not just a boolean. Options and recommendation in §9-1.
 - **C — on-pod `Play Counts` presence.** Reported as informational metadata
   only (`fs::metadata` on the mount path); no content parse.
 - **D — sync options.** `SourceKey` (owner decision, B-008 §9: the sync
   engine takes an explicitly selected source, never an implicit choice),
   the transcode flag (owner fact: "Convert higher bitrate songs to AAC
   256 kbps" — B-008 §2a(c) assigns the option to B-009/B-010), and the
-  device-only policy (§4). All caller-supplied; no UI, no config discovery
-  in this task.
+  device-only policy (§4, default `Remove` per owner decision §9-3). All
+  caller-supplied; no UI, no config discovery in this task.
 
 ## 4. Delta model
 
@@ -109,10 +109,16 @@ playlists), counts derived from the lists. It contains:
 other than `Ok` gates the artwork section with a diagnostic instead of a
 delta.
 
-**Capacity.** Free bytes vs. the sum of host source sizes for `FileAdd`
-entries; a `would_fit` verdict. Transcode caveat: with the AAC-256 option the
-real encoded size is unknown until encode, so the estimate is source bytes —
-reported as an estimate, never as a promise (§9-4).
+**Capacity.** Free bytes vs. the sum of the per-entry estimates for `FileAdd`
+and `FileRepair` entries; a `would_fit` verdict. Estimate per entry (owner
+decision §9-4): `Copy` mode = the exact host file size; `TranscodeToAac`
+mode = `duration_ms / 1000 × 32000 + embedded-cover bytes + small moov
+overhead` (32000 = nominal 256 kbps in bytes/s; a small fixed overhead, e.g.
+8 KiB, covers the moov atoms). The transcode formula is a conservative upper
+bound (real AAC 256 VBR lands at or below the nominal rate), so the verdict
+wording distinguishes the two failure directions: fits = "fits even by the
+conservative estimate"; not fits = "estimate exceeds free space" — never a
+promise of encode success or failure.
 
 **Tracks (files).**
 
@@ -122,10 +128,13 @@ reported as an estimate, never as a promise (§9-4).
 - `FileRepair { dbid, device_path, host_path }` for matched tracks whose
   `ipod_path` (colon-form converted to a filesystem path under the mount) does
   not exist on the pod — the database lists the track but the file is gone.
-- Device-only dbids: with policy `Keep` (default) they are a reported
-  informational list (`DeviceOnlyTracks`); with policy `Remove` each becomes a
-  `FileRemove { dbid, device_path }` action entry. Write behavior stays B-010;
-  B-009 only renders the intended action.
+- Device-only dbids: with policy `Remove` (the default, owner decision
+  §9-3 — delete what the host library does not contain, like iTunes) each
+  becomes a `FileRemove { dbid, device_path }` action entry; with policy
+  `Keep` they are a reported informational list (`DeviceOnlyTracks`). Write
+  behavior stays B-010; B-009 only renders the intended action. Removal
+  entries are destructive by construction — the report's type system keeps
+  them in separate lists so the UI (B-015) can render them distinctly.
 - Host tracks with `NoLocation` (cloud/purchased) or `OutsideMediaFolder` are
   **never** candidates and are never reported as removals (B-008 §9); a
   `Mapped` track whose host file is missing on disk is a diagnostic
@@ -152,10 +161,15 @@ actionable for the UI: counts and itemized values are all a policy needs.
   (order-only change, no adds/removes), or `members_equal`. Smart playlists
   additionally get a criteria comparison (§ below) and `smart_info_present`
   (informational: Smart Info → SPLPREF translation is B-010).
-- The device master (`device_master`) and other device-only playlists
-  (`On-The-Go 1`, service folders) are device-owned and informational under
-  policy `Keep`; under `Remove` they become `PlaylistRemove` action entries.
-  The master is never a removal candidate in any policy.
+- The device master (`device_master`) is device-owned and informational in
+  every policy — never a removal candidate. Other device-only playlists are
+  classified first: **device-local** playlists (what iTunes itself preserves
+  on the pod — `On-The-Go 1` and any playlist the device marks as
+  device-managed; identified from the `mhyp` header flags, owner decision
+  §9-3) are informational in every policy. Non-local device-only playlists
+  become `PlaylistRemove` action entries under the default `Remove` policy
+  and informational entries under `Keep`. Classification evidence is a
+  research item of this task (§8 step 2a), never a name guess.
 
 **Smart criteria comparison.** Host rules (nested `SLst`, parsed) vs. device
 blob (flattened, parsed). Because iTunes flattens nested groups on device
@@ -171,12 +185,16 @@ output. Comparison is then flattened-host vs. device: `CriteriaEqual`,
 (unparseable device blob or `Undecided` constructs — diagnostic, never a
 silent conversion to static; B-008 §7).
 
-**Artwork.** Per matched track, host evidence (cover present/absent, §3-B)
-vs. device `has_thumbnail`:
+**Artwork.** Per matched track, host evidence (cover present/absent with byte
+size, §3-B) vs. device `has_thumbnail`:
 
 - Host has cover, device lacks thumbnail → `ArtworkAdd { pid }`.
-- Device has thumbnail, host evidence absent → informational under `Keep`,
-  `ArtworkRemove { pid }` under `Remove`.
+- Device has thumbnail, host evidence absent → `ArtworkRemove { pid }` under
+  the default `Remove` policy, informational under `Keep`. Honest caveat:
+  iTunes can write device thumbnails from its own art cache even for tracks
+  with no embedded cover, so an in-sync pair legitimately shows such
+  removals — the pair gate asserts the count equals the computed set, and
+  the finding is surfaced for B-010's write-policy review.
 - Evidence unknown (provider returned `Unknown`) → informational count, no
   action.
 
@@ -194,7 +212,9 @@ All new code in `crates/ipod-sync` (pure) plus one read-only wrapper
 extension in `crates/ipod`. Module layout:
 
 - `ipod-sync/src/dry_run/model.rs` — `SyncOptions { source_key, transcode_aac,
-  device_only: Keep | Remove }`, `DryRunReport` and every entry type from §4.
+  device_only: DeviceOnlyPolicy }` with `DeviceOnlyPolicy::Remove` the
+  default (owner decision §9-3), `CoverEvidence { Present { bytes }, Absent,
+  Unknown }`, `DryRunReport` and every entry type from §4.
 - `ipod-sync/src/dry_run/compute.rs` — the pure engine:
   `compute(host: &HostInputs, device: &DeviceInputs, opts: &SyncOptions) ->
   DryRunReport`. No I/O, no session, no `PathBuf` writes, no clock. All
@@ -205,13 +225,16 @@ extension in `crates/ipod`. Module layout:
   (§4), pure, tested against the snapshot pair's device blobs.
 - `ipod-sync/src/dry_run/snapshot.rs` — the only I/O: `collect_host`
   (disposable `.itl` copy via the B-008 host adapters + the caller-provided
-  artwork evidence) and `collect_device` (read-side session calls +
-  `DeviceFacts` + `Play Counts` presence + per-track file-existence probes
-  under the mount). Host and device collection are separate functions so the
-  engine and the fixtures can compose them independently.
+  artwork evidence with cover sizes + host-file existence probes) and
+  `collect_device` (read-side session calls + `DeviceFacts` + `Play Counts`
+  presence + per-track file-existence probes under the mount). Host and
+  device collection are separate functions so the engine and the fixtures
+  can compose them independently.
 - `crates/ipod` — `PlaylistInfo.smart_blob: Option<Vec<u8>>` (read-only,
   verbatim `mhod`-51 payload; extraction alongside the existing playlist
-  parse; owned bytes, no pointer escapes).
+  parse; owned bytes, no pointer escapes) and the `mhyp` header flag bytes
+  (`flag1`/`flag2`/`flag3`, read-only) for the device-local playlist
+  classification (§4).
 
 `HostInputs`/`DeviceInputs` are the owned snapshot records the engine needs:
 the B-008 records plus B-009's additions (artwork evidence, smart blobs,
@@ -241,13 +264,18 @@ dep, no cycle: `sources` does not depend on `ipod-sync`) — see §9-1.
    deleted, or mutated on the device side; host `.itl` bytes unchanged.
 4. **Pair expectation (accuracy smoke):** the snapshot pair is an in-sync
    iTunes dump, so the gate asserts the report is a (nearly) no-op: zero
-   `FileAdd`/`FileRepair`/`PlaylistCreate`, zero playlist member diffs for the
-   flat playlists, zero `CriteriaDiffer` after flattening (this is also the
-   flattening function's ground-truth test), and only the known benign
-   divergences — «Самые популярные»'s stale materialized list is *equal* on
-   both sides (both hold the old 25), so it correctly produces no action;
-   stat diffs are permitted only in the count ranges B-008 measured. A wrong
-   report (e.g. 3373 re-copies) fails the gate.
+   `FileAdd`/`FileRepair`/`PlaylistCreate`/`FileRemove` (the pair has no
+   orphan dbids), zero playlist member diffs for the flat playlists, zero
+   `CriteriaDiffer` and zero `CriteriaUnknown` after flattening (this is also
+   the flattening function's ground-truth test), and zero `PlaylistRemove`
+   after the device-local classification (an in-sync iTunes dump must have
+   none). The known benign divergences: «Самые популярные»'s stale
+   materialized list is *equal* on both sides (both hold the old 25), so it
+   correctly produces no action; stat diffs are permitted only in the count
+   ranges B-008 measured; `ArtworkRemove` entries are permitted only where
+   host evidence is `Absent` and the device carries a thumbnail, and their
+   count must equal the computed set (the iTunes art-cache caveat, §4).
+   A wrong report (e.g. 3373 re-copies) fails the gate.
 5. **Backend-disabled:** with no backend the collector reports unavailable
    (same contract as B-003/B-006); never a silent empty report.
 
@@ -265,18 +293,27 @@ policy.
 1. Append the R1 resolution note to `deltas/b001_research.md` (precedent:
    R3's "Resolved" note): dry run resolved structurally for B-009; the full
    `itdb_write_file` side-effect inventory remains a B-010 gate.
-2. Wrapper extension `smart_blob` with ownership/layout tests and a tree-hash
-   read proof on the device snapshot; verify `itdb_parse` behavior on the
-   fixture tree is unchanged.
+2. Wrapper extension: `smart_blob` + `mhyp` flag bytes with ownership/layout
+   tests and a tree-hash read proof on the device snapshot; verify
+   `itdb_parse` behavior on the fixture tree is unchanged.
+2a. Device-local playlist classification (owner decision §9-3): inspect the
+    `mhyp` headers in the snapshot pair and the pinned libgpod source to
+    determine how device-managed playlists (`On-The-Go 1`, master, possibly
+    others) are marked; record the evidence in this delta; implement the
+    classification as a pure function over the wrapper's flag bytes — never
+    a name guess. The pair gate then proves zero `PlaylistRemove` on the
+    in-sync dump.
 3. `flatten.rs`: implement the normalization from B-008 §7's observed
    mapping; unit tests from the snapshot's own blobs (host nested → device
    flat byte-exact); plus fixtures for leaves-only, multi-group and unknown
    constructs (unknowns stay explicit).
 4. `model.rs` + `compute.rs`: implement §4; pure unit fixtures covering every
-   entry type, every outcome variant, policy `Keep` vs `Remove`, `NoIdentity`/
-   `NoLocation`/`OutsideMediaFolder`/`HostFileMissing` handling, capacity
-   `WouldNotFit`, artwork gating by verdict, deterministic ordering
-   (shuffled inputs → identical report).
+   entry type, every outcome variant, policy `Remove` vs `Keep` (Remove the
+   default), `NoIdentity`/`NoLocation`/`OutsideMediaFolder`/`HostFileMissing`
+   handling, the transcode capacity formula (Copy exact size vs AAC-256
+   estimate with cover term), `WouldNotFit`, artwork gating by verdict,
+   device-local playlist exemption, deterministic ordering (shuffled inputs →
+   identical report).
 5. `snapshot.rs`: collectors; unit tests with temp-tree fixtures for
    path-colon conversion and existence probes.
 6. Env-gated gate per §6 (pair expectation + tree hash + `.itl` hash), with
@@ -286,31 +323,33 @@ policy.
    `./scripts/ipod-dev test-synthetic`, `test-wrapper`, `lint`, `git diff
    --check`. Record actual results; request review before merging.
 
-## 9. Decisions required before implementation
+## 9. Decisions (resolved by the owner, 2026-11-13)
 
-1. **Artwork evidence provider (gap B).** Options: (a) engine takes a
-   caller-provided `ArtworkEvidence` map; the env-gated test builds it with
-   `crates/sources`' `inspect_embedded` via a dev-dependency (production
-   wiring at the sync boundary, B-010+). (b) A minimal embedded-cover probe
-   inside `ipod-sync` (duplicates sources' parser). (c) Lift the scanner into
-   a shared crate (out of scope). Recommendation: (a).
-2. **Criteria comparison via flattening normalization.** Recommendation:
+1. **Artwork evidence provider (gap B).** Resolved: the engine takes a
+   caller-provided `ArtworkEvidence` map carrying presence and cover byte
+   size; the env-gated test builds it with `crates/sources`'
+   `inspect_embedded` via a dev-dependency (production wiring at the sync
+   boundary, B-010+).
+2. **Criteria comparison via flattening normalization.** Resolved:
    implement `flatten.rs` in B-009 with the snapshot pair as ground truth
    (it is B-010's translation prerequisite anyway); the pair gate then
-   requires zero `CriteriaDiffer`. Alternative (defer criteria diff entirely
-   to B-010) weakens the pair gate.
-3. **Device-only policy default.** Recommendation: `Keep` by default
-   (device-only tracks/playlists reported informationally), `Remove` as an
-   explicit option rendering removal entries; writes remain B-010. The master
-   playlist is never a removal candidate.
-4. **Transcode size estimate.** Recommendation: report source bytes as an
-   explicit estimate with the caveat that AAC-256 output size is unknown
-   until encode; the would-fit verdict uses the estimate and says so.
-5. **Statistics directionality.** Recommendation: directional-neutral raw
-   diffs now (merge policy is B-010's, per B-008 §5); the report carries all
+   requires zero `CriteriaDiffer` and zero `CriteriaUnknown`.
+3. **Device-only policy default.** Resolved: delete tracks and playlists
+   that are not present in the host library, except the cases the device
+   owns locally — the on-the-go playlist (and possibly some others) — alike
+   original iTunes. Default policy `Remove`; device-local playlists are
+   classified from the `mhyp` flags (§8 step 2a) and never removed; the
+   master is never removed.
+4. **Transcode size estimate.** Resolved: the capacity estimate is
+   `duration × 32000 + measured cover bytes + small overhead for the moov
+   atoms` (owner formula); `Copy` mode uses the exact source size; the
+   formula is a conservative upper bound and the verdict wording reflects
+   that (§4).
+5. **Statistics directionality.** Resolved: directional-neutral raw diffs
+   now (merge policy is B-010's, per B-008 §5); the report carries all
    values a later policy needs.
-6. **`Play Counts`.** Recommendation: presence-only informational in B-009;
-   no parse, no import, no libgpod stat API.
-7. **R1 note placement.** Recommendation: append the dry-run resolution to
+6. **`Play Counts`.** Resolved: presence-only informational in B-009; no
+   parse, no import, no libgpod stat API.
+7. **R1 note placement.** Resolved: the dry-run resolution is appended to
    `b001_research.md` R1 on this task branch (R3 precedent), keeping the
    write-path inventory open for B-010.
