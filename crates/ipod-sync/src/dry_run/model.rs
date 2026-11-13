@@ -1,13 +1,13 @@
 //! B-009: the owned dry-run model — input contracts and the report
 //! (`deltas/b009_plan.md` §4/§5).
 //!
-//! Everything here is plain data: the engine ([`super::compute`]) consumes
-//! [`HostInputs`]/[`DeviceInputs`] and returns [`DryRunReport`] with no
-//! I/O, no session, no clock. All itemized lists are sorted by stable keys
-//! (track `itl_id`/`dbid`/`pid`, playlist id/pid) so the report is
-//! deterministic for any input order. Removal entries are inherently
-//! destructive and live in their own lists so the UI (B-015) can render
-//! them distinctly.
+//! Everything here is plain data: the engine ([`super::compute::compute`])
+//! consumes [`HostInputs`]/[`DeviceInputs`] and returns [`DryRunReport`]
+//! with no I/O, no session, no clock. All itemized lists are sorted by
+//! stable keys (track `itl_id`/`dbid`/`pid`, playlist id/pid) so the
+//! report is deterministic for any input order. Removal entries are
+//! inherently destructive and live in their own lists so the UI (B-015)
+//! can render them distinctly.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -163,6 +163,9 @@ pub struct PlaylistCreate {
 pub struct PlaylistUpdate {
     pub device_id: u64,
     pub name: Option<String>,
+    /// The device record's smart flag — the gate and the UI need it to
+    /// distinguish truth (static membership) from cache (smart lists).
+    pub is_spl: bool,
     pub members_add: Vec<u64>,
     pub members_remove: Vec<u64>,
     /// Membership sets equal, order differs.

@@ -147,7 +147,10 @@ mod tests {
         let present = probe_device_files(dir.path(), &tracks);
         assert_eq!(present.get(&1), Some(&true));
         assert_eq!(present.get(&2), Some(&false));
-        assert!(!present.contains_key(&3), "no path record → counts as present");
+        assert!(
+            !present.contains_key(&3),
+            "no path record → counts as present"
+        );
     }
 
     #[test]

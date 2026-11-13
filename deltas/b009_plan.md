@@ -262,22 +262,56 @@ dep, no cycle: `sources` does not depend on `ipod-sync`) — see §9-1.
    `.itl` copy before and after — both must be identical, including
    `Play Counts` and every auxiliary file. Explicitly assert: no file created,
    deleted, or mutated on the device side; host `.itl` bytes unchanged.
-4. **Pair expectation (accuracy smoke):** the snapshot pair is an in-sync
-   iTunes dump, so the gate asserts the report is a (nearly) no-op: zero
-   `FileAdd`/`FileRepair`/`PlaylistCreate`/`FileRemove` (the pair has no
-   orphan dbids), zero playlist member diffs for the flat playlists, zero
-   `CriteriaDiffer` and zero `CriteriaUnknown` after flattening (this is also
-   the flattening function's ground-truth test), and zero `PlaylistRemove`
-   after the device-local classification (an in-sync iTunes dump must have
-   none). The known benign divergences: «Самые популярные»'s stale
-   materialized list is *equal* on both sides (both hold the old 25), so it
-   correctly produces no action; stat diffs are permitted only in the count
-   ranges B-008 measured; `ArtworkRemove` entries are permitted only where
-   host evidence is `Absent` and the device carries a thumbnail, and their
-   count must equal the computed set (the iTunes art-cache caveat, §4).
-   A wrong report (e.g. 3373 re-copies) fails the gate.
+4. **Pair expectation (accuracy smoke):** the snapshot pair is in sync on
+   *identity* (B-008: 3373/3373 resolve, 0 orphan dbids) but not perfectly
+   on files or materialized lists — the gate pins the measured reality in
+   the results block below: the 11 known absent host tracks, zero
+   criteria differences after flattening, zero drift on static playlists,
+   bounded drift on smart ones, the pinned stat-diff ranges, and artwork
+   removals only where host evidence is `Absent` and the device carries a
+   thumbnail (the iTunes art-cache caveat). A wrong report (e.g. 3373
+   re-copies) fails the gate.
 5. **Backend-disabled:** with no backend the collector reports unavailable
    (same contract as B-003/B-006); never a silent empty report.
+
+**Gate results (2026-11-13, snapshot pair, disposable copies).** Zero
+mutation proven: device tree hash and `.itl` byte hash identical before/after
+the full dry run. Pair findings, all pinned in the gate:
+
+- **Files:** exactly 11 `FileAdd` (pinned ids), 0 repairs, 0 removals. The
+  11 are legitimately absent from the device dump: 8 added 2026-11-10 08:59
+  (after the dump was written), 2 Digital Booklets — PDFs iTunes never copies
+  to the pod (a sync-policy exception for B-010, like playlist selection) —
+  and 2 local Die Antwoord tracks with plays.
+- **Criteria:** the three surfaced smart playlists compare `Equal` after
+  flattening — the flattening normalization reproduces iTunes' device form
+  byte-exact on the real pair (ground-truth proof).
+- **Members:** static playlists exactly equal. Smart-list drift at the
+  expected cache-staleness scale: «Последние добавленные» +7, «Хай рейт»
+  +22/−2, «Самые популярные» reorder-only with zero drift (both sides hold
+  the same stale 25). The gate bounds smart drift at 50 and requires zero
+  drift for static playlists.
+- **Stats:** 1329 diffs — rating 235, play_count 77, skip_count 934,
+  play_date 83, volume 0 — pinned with ~5% headroom (the engine compares the
+  full matched set, a few pairs more than B-008's 3227 "unambiguous" subset).
+- **Artwork:** 0 adds (every host-cover track has a device thumbnail), 99
+  `ArtworkRemove` — the predicted iTunes art-cache set (host-artless tracks
+  with cache-written thumbnails), surfaced for B-010's write-policy review.
+- **Playlists:** 15 `PlaylistCreate` — every one a host playlist the device
+  dump genuinely lacks: the iTunes folder playlists (Загружено×3, Видеоклипы,
+  ТВ и фильмы, Прокат, Домашние видео, Genius), «Подкасты», «01 Do You
+  Remember Me_» (a renamed variant of the device's «01 Birthday Song…»),
+  «On-The-Go 2», and the four second-`mhlp`-list smart playlists
+  (Музыка/Телешоу/Фильмы/Аудиокниги) that libgpod never surfaces. The
+  playlist-selection policy (what iTunes itself would and would not sync) is
+  B-010/UI's question — the report is the honest full diff.
+- **Device-local evidence (step 2a):** `On-The-Go 1` carries all-zero `mhyp`
+  flags — identical to a normal playlist — and the host mirrors it as a
+  regular playlist, so on this pair it matches by name+kind and the
+  device-local classification applies only to device-only OTG records
+  (libgpod additionally injects `OTG Playlist N` from `OTGPlaylistInfo`).
+  Classification = master (`is_mpl`) + the `On-The-Go`/`OTG Playlist` name
+  convention, never a name-free header guess.
 
 ## 7. Traceability and non-goals recap
 
