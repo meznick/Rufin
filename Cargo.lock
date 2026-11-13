@@ -4276,6 +4276,7 @@ dependencies = [
  "itl-core",
  "itl-sync",
  "libc",
+ "lofty",
  "tempfile",
  "thiserror 2.0.21",
  "tracing",

@@ -25,3 +25,8 @@ tempfile.workspace = true
 # gated by the wrapper's sync-writes feature. Dev-only: the published crate
 # keeps its normal dependency read-side.
 ipod = { workspace = true, features = ["sync-writes"] }
+# The dry-run gate's host artwork probe uses the same parser the sources
+# crate's production scanner is built on (its `inspect_embedded` is
+# crate-private) — owner decision b009_plan §9-1 (dev-dependency for the
+# artwork evidence).
+lofty.workspace = true

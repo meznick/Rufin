@@ -238,6 +238,7 @@ pub fn compute(host: &HostInputs, device: &DeviceInputs, opts: &SyncOptions) -> 
                     report.playlist_updates.push(PlaylistUpdate {
                         device_id: *device_id,
                         name: host_pl.name.clone(),
+                        is_spl: device_pl.is_spl,
                         members_add,
                         members_remove,
                         members_reorder,
