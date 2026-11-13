@@ -446,6 +446,7 @@ unsafe fn track_to_owned(t: *const Itdb_Track) -> TrackInfo {
             explicit_flag: track.explicit_flag,
             has_thumbnail,
             mhii_link: track.mhii_link,
+            mediatype: track.mediatype,
         }
     }
 }

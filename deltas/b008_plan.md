@@ -273,6 +273,29 @@ silent loss of live behavior. Genius playlists carry no criteria in the
 payloads lives in the itl-player repo with its own review; do not silently
 substitute a local fork or unverified raw offsets.
 
+**Criteria evaluation is implemented and corpus-verified (2026-11-12).**
+`smart::eval_rules` is a pure, three-valued evaluator (`True`/`False`/
+`Undecided`) mirroring libgpod's `itdb_splr_eval` plus the corpus findings:
+`TrackFacts` carries the effective rating (fill-down applied by the caller),
+counts, raw dates, mediatype bits and the 0x85 bits; leaves cover rating/
+play-count/skip-count (Is/GreaterThan/LessThan), date added/last played
+(InTheLast = `date > now + fromdate·fromunits` with fromdate −1), video-kind
+and 0x85 bit tests (`BinaryAnd`/`NotBinaryAnd`; `Is` on video-kind is a bit
+test per the flattening evidence); groups are AND (0) / OR (1); unknown
+fields/actions and unknown facts are `Undecided`, never silent false. The
+env-gated pair test evaluates the host criteria against the device snapshot's
+own facts and requires (almost) every stored member to satisfy the criteria —
+on this snapshot «Хай рейт»: 1820 stored members, 2 fail (raw-rating
+fill-down writes), 12 criteria matches absent; «Самые популярные»: 0 fail,
+1910 absent — the playlist's rule was edited from plays>15 to plays>2 after
+the last materialization and **both the host and the device member lists
+still hold the old 25** (the device rules blob already says >2, its list does
+not match its own rules). This is the staleness the B-021 backlog owns:
+criteria are the truth, stored lists are a cache, and the device firmware
+re-evaluates live-updating playlists itself. Host-side media-kind evaluation
+stays `Undecided` until the `mith` mediatype offset is verified (the device
+side carries `mhit` @0xD0 via the wrapper's `TrackInfo.mediatype`).
+
 For artwork, trace the existing embedded-cover extraction and supported
 encoded formats; carry a reproducible reference and distinguish no cover,
 unreadable cover and unsupported encoding. Verify any conversion before
