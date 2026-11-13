@@ -413,6 +413,7 @@ unsafe fn track_to_owned(t: *const Itdb_Track) -> TrackInfo {
         let has_thumbnail = !artwork.is_null() && !(*artwork).thumbnail.is_null();
         TrackInfo {
             dbid: track.dbid,
+            ipod_path: cstr_copy(track.ipod_path),
             title: cstr_copy(track.title),
             artist: cstr_copy(track.artist),
             album: cstr_copy(track.album),

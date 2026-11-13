@@ -147,6 +147,12 @@ pub struct TrackInfo {
     /// Device-side database id. **Not a stable cross-sync identity** — may be
     /// reassigned across restores (B-001/plan.md); sync must key on content.
     pub dbid: u64,
+    /// On-pod file path as stored in the database (`mhit` mhod type 2),
+    /// e.g. `:iPod_Control:Music:F00:ABCD.mp3` for iTunes-written tracks or
+    /// libgpod's own form after `copy_track`. `None` when the track has no
+    /// path record (e.g. a freshly created track before its copy). The
+    /// mapping and delta layers consume this; it is never a sync identity.
+    pub ipod_path: Option<String>,
     pub title: Option<String>,
     pub artist: Option<String>,
     pub album: Option<String>,
