@@ -190,6 +190,14 @@ fn fixture_track_artwork_round_trip() {
     assert_eq!(track.rating, 80);
     assert_eq!(track.size, 16);
     assert!(track.has_thumbnail, "artwork must attach on reparse");
+    let path = track
+        .ipod_path
+        .as_deref()
+        .expect("copy_track must record the on-pod path");
+    assert!(
+        path.contains("Music") && path.ends_with(".mp3"),
+        "the recorded path must point into the music dir with the file type: {path:?}"
+    );
 
     let stats = session.playback_stats().unwrap();
     assert_eq!(stats.len(), 1);
@@ -378,7 +386,18 @@ fn snapshot_reads_match_research_numbers() {
     };
 
     let session = ipod::DeviceSession::open(&backend, &root).unwrap();
-    assert_eq!(session.tracks().unwrap().len(), 3373);
+    let tracks = session.tracks().unwrap();
+    assert_eq!(tracks.len(), 3373);
+    let with_path = tracks.iter().filter(|t| t.ipod_path.is_some()).count();
+    assert_eq!(
+        with_path, 3373,
+        "the restored snapshot has an on-pod path for every track"
+    );
+    let path = tracks[0].ipod_path.as_deref().unwrap();
+    assert!(
+        !path.is_empty() && !path.trim_matches(':').is_empty(),
+        "path must be a real database record: {path:?}"
+    );
     assert_eq!(session.playlists().unwrap().len(), 9);
     let status = session.artwork_status().unwrap();
     assert_eq!(status.declared_entries, Some(3356));
