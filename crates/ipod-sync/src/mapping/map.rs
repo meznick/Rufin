@@ -321,6 +321,9 @@ mod tests {
             type_byte: if is_master { 1 } else { 0 },
             is_master,
             is_spl,
+            flag1: 0,
+            flag2: 0,
+            flag3: 0,
             member_dbids: Vec::new(),
         }
     }
