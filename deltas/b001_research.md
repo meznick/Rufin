@@ -376,6 +376,21 @@ test isolation, dry run, backups, and the wrapper will avoid unwanted live-devic
 do not assume an isolated output filename is sufficient. No particular mitigation is
 selected yet.
 
+**Dry-run resolution (2026-11-13, B-009 — owner-approved):** B-009 never calls
+`itdb_write_file` or any libgpod write/init/stat-import API, so the write-path
+side-effect inventory does not gate it; the inventory itself remains open for
+B-010's backups/write-ordering work. Dry-run isolation is structural: the delta
+engine consumes owned inputs only (no session, no write destinations, no clock)
+and the collectors use the read-side `DeviceSession` surface B-007 already
+proved non-mutating on well-formed trees (R-06/S-18). The wrapper's
+`playback_stats()` re-reads `tracks()` and never touches `Play Counts`; the
+file is reported by presence only. The known read-side residual — libgpod
+parse paths can `g_mkdir` a missing `Artwork/` on some trees (B-007 §1.1) — is
+inherited from the existing read path, not added by B-009. Zero mutation is
+proven by measurement: before/after tree hash of a disposable device-tree copy
+and before/after byte hash of a disposable `.itl` copy, end to end through the
+dry run (design and test plan: `deltas/b009_plan.md` §2/§6).
+
 ### R2: Artwork errors and apparent success
 
 **Before B-007/B-004 and revisit before B-010:** Investigate how to detect and report
