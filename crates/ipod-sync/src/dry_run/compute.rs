@@ -169,6 +169,13 @@ pub fn compute(host: &HostInputs, device: &DeviceInputs, opts: &SyncOptions) -> 
     // Playlists: `playlist_mapping.matches` is in host order — zip with the
     // host records.
     for (host_pl, m) in host.playlists.iter().zip(playlist_mapping.matches.iter()) {
+        // The host master (first `miph`, Master-flagged) is represented on
+        // the device by the device master (`is_mpl`) — its name is the
+        // device's own, so a name match never fires (B-008 §7). It is
+        // never a create candidate.
+        if host_pl.is_master_candidate {
+            continue;
+        }
         match &m.outcome {
             PlaylistOutcome::MissingOnDevice => {
                 let members = resolve_playlist_members(host_pl, &host.tracks);
@@ -1084,6 +1091,23 @@ mod tests {
         // add for #1 (10 MB) + repair for #2 (10 MB) = 20 MB <= 50 MB.
         assert_eq!(report.capacity.estimate_bytes, 20_000_000);
         assert!(report.capacity.would_fit);
+    }
+
+    #[test]
+    fn host_master_candidate_is_never_a_create() {
+        let mut host = host_inputs(vec![]);
+        host.playlists = vec![{
+            let mut pl = host_playlist(1, "Library", None);
+            pl.is_master_candidate = true;
+            pl
+        }];
+        let device = DeviceInputs {
+            playlists: vec![device_playlist(1, Some("iPod user"), false, true, vec![])],
+            ..device_inputs(vec![])
+        };
+        let report = compute(&host, &device, &opts());
+        assert!(report.playlist_creates.is_empty());
+        assert_eq!(report.context.device_master.as_ref().unwrap().device_id, 1);
     }
 
     #[test]
