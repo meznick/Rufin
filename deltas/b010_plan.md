@@ -1,10 +1,11 @@
 # B-010: Full bidirectional sync and recoverable coordination — implementation plan
 
-Status: **draft for owner review** (2026-11-16). Task branch:
+Status: **approved by the owner (2026-11-16)**; the §11 decisions are
+resolved and folded into the body below. Task branch:
 `feature/ipod-page-task-B-010`, based on `feature/ipod-page` at `52b7b28`
-(B-009 merged and checked off). Decisions required before implementation are
-collected in §11; the research-gate findings below are source-level evidence,
-not yet the measured inventory (§2 closes that gap).
+(B-009 merged and checked off). The research-gate findings in §2 are
+source-level evidence; the measured inventory (§10 step 1) closes R1 before
+code lands.
 
 ## 1. Goal and boundaries
 
@@ -508,7 +509,8 @@ No physical-device or Windows-iTunes claim is made here — those are B-017.
 
 ## 11. Decisions required before implementation
 
-1. **Write strategy.** staged `itdb_write_file` + own rename +
+1. **Write strategy.** Resolved (owner 2026-11-16): staged
+   `itdb_write_file` + own rename +
    OTG exclusion (§4), accepting the second-`mhlp` category-list loss until
    iTunes regenerates them.
 2. **Transcoding.** Resolved (owner 2026-11-16): the sync transcodes
@@ -531,7 +533,8 @@ No physical-device or Windows-iTunes claim is made here — those are B-017.
    (resurrects downgrades).
 4. **Volume adjustment and skip date.** both out of scope (0
    volume diffs on the real pair; itl-sync has patch fields for neither).
-5. **Playlist selection.** sync every host playlist iTunes would
+5. **Playlist selection.** Resolved (owner 2026-11-16): sync every host
+   playlist iTunes would
    (all static and smart `miph`, including folder playlists), exclude PDF
    Digital Booklets from file copies (iTunes never copies them — B-009 gate
    evidence) and criteria-less Genius playlists; selection UI later.
