@@ -23,7 +23,9 @@ mod waveform;
 pub use loudness::{
     AnalyzedLoudness, LoudnessAnalysis, album_loudness, analyze_loudness_cancellable,
 };
-pub use transcode::{TranscodeOptions, TranscodedAudioReader, VisualizerFrame, transcode_audio};
+pub use transcode::{
+    TranscodeOptions, TranscodedAudioReader, VisualizerFrame, transcode_audio, transcode_to_m4a,
+};
 pub use waveform::generate_waveform_peaks_cancellable;
 
 pub use visualizer::{
