@@ -357,6 +357,104 @@ impl Drop for TranscodePipeline {
     }
 }
 
+/// Map a GStreamer pipeline error to the `io::Error` shape the
+/// `transcode_*` entry points expose: remote-source resource failures
+/// become the connection kinds, local-input failures stay generic.
+fn map_pipeline_error(error: &gst::message::Error, stream: &ResolvedStream) -> io::Error {
+    let http_source = error
+        .src()
+        .and_then(|source| source.downcast_ref::<gst::Element>())
+        .and_then(|source| source.factory())
+        .is_some_and(|factory| factory.name() == "souphttpsrc");
+    let error = error.error();
+    let kind = match error.kind::<gst::ResourceError>() {
+        Some(gst::ResourceError::NotAuthorized) => io::ErrorKind::PermissionDenied,
+        Some(gst::ResourceError::NotFound) => io::ErrorKind::NotFound,
+        Some(gst::ResourceError::OpenRead | gst::ResourceError::Read) if !stream.local_input => {
+            io::ErrorKind::ConnectionAborted
+        }
+        None if http_source
+            && !stream.local_input
+            && error.kind::<gst::StreamError>() == Some(gst::StreamError::Failed) =>
+        {
+            io::ErrorKind::ConnectionAborted
+        }
+        _ => io::ErrorKind::Other,
+    };
+    io::Error::new(kind, error)
+}
+
+/// Encode `stream` into an AAC-LC m4a file for the iPod device sync
+/// (B-010a, `deltas/b010a_plan.md` §3.2). The pod firmware needs an MP4
+/// container with the moov atom up front — the crate's regular AAC arm
+/// produces ADTS and must not be used for this path. Fixed bitrate,
+/// 48 kHz resample per the crate's lossy-path convention, channels
+/// preserved, no tags: the device database is the metadata carrier on the
+/// pod, the firmware reads nothing from the file.
+pub fn transcode_to_m4a(
+    stream: &ResolvedStream,
+    bitrate_kbps: u32,
+    output: &Path,
+    cancelled: impl Fn() -> bool,
+) -> io::Result<()> {
+    ensure_gstreamer_initialized().map_err(io::Error::other)?;
+    let bitrate = bitrate_kbps.saturating_mul(1000);
+    let pipeline = gst::parse::launch(&format!(
+        "uridecodebin name=decoder ! audioconvert ! audioresample ! \
+         audio/x-raw,rate=48000 ! avenc_aac bitrate={bitrate} ! aacparse ! \
+         mp4mux faststart=true ! filesink name=sink sync=false"
+    ))
+    .map_err(|error| io::Error::other(error.to_string()))?;
+    let bin = pipeline
+        .downcast_ref::<gst::Bin>()
+        .ok_or_else(|| io::Error::other("AAC encoder is not a bin"))?;
+    let decoder = bin
+        .by_name("decoder")
+        .ok_or_else(|| io::Error::other("AAC encoder has no decoder"))?;
+    let trust = stream.trust_invalid_certificate();
+    configure_sources(&decoder, move || trust);
+    decoder.set_property("uri", stream.uri());
+    let uri = gst::glib::filename_to_uri(output, None)
+        .map_err(|error| io::Error::other(error.to_string()))?;
+    bin.by_name("sink")
+        .ok_or_else(|| io::Error::other("AAC encoder has no output"))?
+        .dynamic_cast::<gst::URIHandler>()
+        .map_err(|_| io::Error::other("AAC output cannot open a file"))?
+        .set_uri(uri.as_str())
+        .map_err(|error| io::Error::other(error.to_string()))?;
+    let bus = pipeline
+        .bus()
+        .ok_or_else(|| io::Error::other("AAC encoder has no bus"))?;
+    pipeline
+        .set_state(gst::State::Playing)
+        .map_err(|error| io::Error::other(error.to_string()))?;
+    loop {
+        if cancelled() {
+            let _ = pipeline.set_state(gst::State::Null);
+            // Best-effort partial cleanup: on Linux the unlink succeeds
+            // even while the sink still holds the file open; elsewhere the
+            // B-010a staging sweep removes it instead.
+            let _ = std::fs::remove_file(output);
+            return Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "Transcoding cancelled",
+            ));
+        }
+        let Some(message) = bus.timed_pop(POLL) else {
+            continue;
+        };
+        match message.view() {
+            gst::MessageView::Eos(..) => return Ok(()),
+            gst::MessageView::Error(error) => {
+                let _ = pipeline.set_state(gst::State::Null);
+                let _ = std::fs::remove_file(output);
+                return Err(map_pipeline_error(error, stream));
+            }
+            _ => {}
+        }
+    }
+}
+
 pub fn transcode_audio(
     stream: &ResolvedStream,
     options: TranscodeOptions,
@@ -384,31 +482,7 @@ pub fn transcode_audio(
         };
         match message.view() {
             gst::MessageView::Eos(..) => return Ok(()),
-            gst::MessageView::Error(error) => {
-                let http_source = error
-                    .src()
-                    .and_then(|source| source.downcast_ref::<gst::Element>())
-                    .and_then(|source| source.factory())
-                    .is_some_and(|factory| factory.name() == "souphttpsrc");
-                let error = error.error();
-                let kind = match error.kind::<gst::ResourceError>() {
-                    Some(gst::ResourceError::NotAuthorized) => io::ErrorKind::PermissionDenied,
-                    Some(gst::ResourceError::NotFound) => io::ErrorKind::NotFound,
-                    Some(gst::ResourceError::OpenRead | gst::ResourceError::Read)
-                        if !stream.local_input =>
-                    {
-                        io::ErrorKind::ConnectionAborted
-                    }
-                    None if http_source
-                        && !stream.local_input
-                        && error.kind::<gst::StreamError>() == Some(gst::StreamError::Failed) =>
-                    {
-                        io::ErrorKind::ConnectionAborted
-                    }
-                    _ => io::ErrorKind::Other,
-                };
-                return Err(io::Error::new(kind, error));
-            }
+            gst::MessageView::Error(error) => return Err(map_pipeline_error(error, stream)),
             _ => {}
         }
     }
@@ -664,6 +738,129 @@ mod tests {
                 assert_eq!(packed & 0xfffffffff, 400);
             }
         }
+    }
+
+    #[test]
+    fn m4a_encoder_produces_ipod_container() {
+        let directory = tempfile::tempdir().expect("transcode directory");
+        let path = directory.path().join("tone.wav");
+        write_wide_wave(&path);
+        let uri = gst::glib::filename_to_uri(&path, None).expect("wave URI");
+        let output = directory.path().join("encoded.m4a");
+        transcode_to_m4a(&ResolvedStream::new(uri.as_str()), 256, &output, || false)
+            .expect("encode m4a");
+        let encoded = std::fs::read(&output).expect("read m4a");
+        assert!(encoded.len() > 100, "non-trivial encoded size");
+        assert_eq!(&encoded[4..8], b"ftyp", "MP4 container");
+        // faststart: the pod needs the moov atom before the media data.
+        let moov = encoded
+            .windows(4)
+            .position(|window| window == b"moov")
+            .expect("moov atom");
+        let mdat = encoded
+            .windows(4)
+            .position(|window| window == b"mdat")
+            .expect("mdat atom");
+        assert!(moov < mdat, "moov must be up front for the pod");
+        // The B-009 capacity formula's conservative upper bound
+        // (32000 bytes/s, 1 s of audio) must hold for the output.
+        assert!(
+            encoded.len() <= 32000 + 16 * 1024,
+            "encoded size {} exceeds the conservative bound",
+            encoded.len()
+        );
+        // And the file must decode back as audio.
+        let decoder =
+            gst::parse::launch("uridecodebin name=input ! audioconvert ! fakesink sync=false")
+                .unwrap();
+        decoder
+            .downcast_ref::<gst::Bin>()
+            .unwrap()
+            .by_name("input")
+            .unwrap()
+            .set_property(
+                "uri",
+                gst::glib::filename_to_uri(&output, None).unwrap().as_str(),
+            );
+        decoder.set_state(gst::State::Playing).unwrap();
+        let result = decoder.bus().unwrap().timed_pop_filtered(
+            gst::ClockTime::from_seconds(5),
+            &[gst::MessageType::Error, gst::MessageType::Eos],
+        );
+        decoder.set_state(gst::State::Null).unwrap();
+        assert!(
+            result.is_some_and(|message| matches!(message.view(), gst::MessageView::Eos(_))),
+            "encoded m4a must decode"
+        );
+    }
+
+    /// A 1-second 44.1 kHz stereo 16-bit silence WAV — nominal 1411 kbps,
+    /// the record shape that triggers the sync's transcode rule.
+    fn write_wide_wave(path: &std::path::Path) {
+        let sample_rate = 44_100_u32;
+        let channels = 2_u32;
+        let bits = 16_u32;
+        let block_align = channels * bits / 8;
+        let byte_rate = sample_rate * block_align;
+        let data_size = byte_rate; // exactly 1 second
+        let mut file = File::create(path).expect("create wave");
+        file.write_all(b"RIFF").expect("RIFF");
+        file.write_all(&(36 + data_size).to_le_bytes())
+            .expect("wave size");
+        file.write_all(b"WAVEfmt ").expect("wave format");
+        file.write_all(&16_u32.to_le_bytes()).expect("PCM size");
+        file.write_all(&1_u16.to_le_bytes()).expect("PCM format");
+        file.write_all(&(channels as u16).to_le_bytes())
+            .expect("channels");
+        file.write_all(&sample_rate.to_le_bytes())
+            .expect("sample rate");
+        file.write_all(&byte_rate.to_le_bytes()).expect("byte rate");
+        file.write_all(&(block_align as u16).to_le_bytes())
+            .expect("block align");
+        file.write_all(&(bits as u16).to_le_bytes())
+            .expect("sample bits");
+        file.write_all(b"data").expect("data marker");
+        file.write_all(&data_size.to_le_bytes()).expect("data size");
+        file.write_all(&vec![0_u8; data_size as usize])
+            .expect("wave samples");
+    }
+
+    #[test]
+    fn m4a_encoder_honours_cancellation() {
+        let directory = tempfile::tempdir().expect("transcode directory");
+        let path = directory.path().join("tone.wav");
+        write_wide_wave(&path);
+        let uri = gst::glib::filename_to_uri(&path, None).expect("wave URI");
+        let output = directory.path().join("cancelled.m4a");
+        let result = transcode_to_m4a(&ResolvedStream::new(uri.as_str()), 256, &output, || true);
+        assert_eq!(
+            result.err().map(|error| error.kind()),
+            Some(io::ErrorKind::Interrupted),
+            "a pre-cancelled encode must fail with Interrupted"
+        );
+        assert!(!output.exists(), "a cancelled encode must not leave a file");
+    }
+
+    #[test]
+    fn m4a_encoder_reports_unencodable_sources() {
+        let directory = tempfile::tempdir().expect("transcode directory");
+        let path = directory.path().join("not-audio.bin");
+        std::fs::write(&path, b"definitely not an audio file").unwrap();
+        let uri = gst::glib::filename_to_uri(&path, None).expect("file URI");
+        let output = directory.path().join("out.m4a");
+        // The cancellation deadline only exists so a pathological pipeline
+        // failure turns the test into a bounded assertion instead of a hang;
+        // the real expectation is the source error below.
+        let started = std::time::Instant::now();
+        let result = transcode_to_m4a(&ResolvedStream::new(uri.as_str()), 256, &output, || {
+            started.elapsed() > Duration::from_secs(10)
+        });
+        let error = result.expect_err("garbage input must fail the encode");
+        assert_ne!(
+            error.kind(),
+            io::ErrorKind::Interrupted,
+            "the failure must be the source error, not the test deadline: {error}"
+        );
     }
 
     fn write_silence_wave(path: &std::path::Path) {
