@@ -481,9 +481,9 @@ No physical-device or Windows-iTunes claim is made here — those are B-017.
 
 1. **R1/R2 measurement run** (§2/§3) on disposable trees; record the full
    inventory; append the R1/R2 resolutions to `b001_research.md`; resolve
-   §11-1 with the measured evidence. Verify the AAC encoder is available in
-   the pinned GStreamer stack (avenc_aac or equivalent) — the transcode
-   path's prerequisite.
+   §11-1 with the measured evidence. The AAC-encoder availability check is
+   already done: B-010a verified the encoder and the decide→encode→copy
+   chain on fixtures.
 2. Owner decisions (§11) folded into this plan (B-009 precedent).
 3. **pid-first playlist matching** in `map_playlists` (device `mhyp` id
    @+28 ↔ host persistent id, name+kind fallback; owner decision §11-9);
@@ -519,6 +519,10 @@ No physical-device or Windows-iTunes claim is made here — those are B-017.
    through the F-name layout); MP3 files are **never** transcoded, and
    non-MP3 at or below 256 kbps are copied verbatim. PDF booklets are
    excluded (§11-5). Encoder availability is verified in step 1 (§10).
+   **Delivered by B-010a (merged 2026-11-16):** the decision + staging
+   lifecycle in `ipod-sync/src/sync/transcode.rs` and
+   `audio_processing::transcode_to_m4a` (`deltas/b010a_plan.md`); B-010
+   consumes the provider.
 3. **Stat merge policy.** Resolved in draft (corrected 2026-11-16, owner
    review): additive deltas for play and skip counts — the `Play Counts`
    file is the pending-delta store, the host sums the per-dbid deltas, and
