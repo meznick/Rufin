@@ -579,6 +579,15 @@ fn apply_device_ops(
     for create in &ctx.plan.playlist_creates {
         match create.kind {
             PlaylistKind::Static => {
+                // §11-5: criteria-less Genius playlists are never synced
+                // (iTunes itself does not sync them as criteria).
+                if create.name.as_deref() == Some("Genius") {
+                    outcome.diagnostics.push(format!(
+                        "Genius playlist ({}) not synced (owner decision §11-5)",
+                        create.host_pid
+                    ));
+                    continue;
+                }
                 let members: Vec<u64> = create
                     .member_pids
                     .iter()
