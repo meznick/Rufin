@@ -137,3 +137,11 @@ Tasks are listed in dependency order; IDs stay stable, so B-007 precedes discove
   - Goal: after host stat writes (or as a sync step), re-evaluate the smart criteria with iTunes semantics — effective rating with album fill-down, boundary-minus-1 encoding, media-kind bits, Smart Info limits/sort, unknown fields (e.g. 0x85) handled conservatively — and write back only the member lists of the playlists whose evaluation changed.
   - Hazards to remember: playlist-block mutation walks into the `reindex()` second-`mlth` merge (itl-player AGENTS.md) — never add/remove `mith` records while refreshing lists; rewrite only the `mtph` entries and preserve every `miph` raw byte; the evaluator must first be byte-verified against materialized lists on synchronized data (the B-008 evaluator cross-check).
   - Verification: fixtures with known criteria and stats; member lists refresh to match the evaluation; the result opens in iTunes; playlists whose evaluation did not change stay byte-identical.
+- [ ] **B-022 (backlog): Import saved On-The-Go playlists into the host library**
+  - Spec reference: R-05, S-13 — spec delta to review at implementation time
+  - Plan reference: [b010_plan.md](deltas/b010_plan.md) §11-10
+  - Depends on: B-010
+  - Why it exists: a playlist the user builds and saves on the device (the saved `On-The-Go N` `mhyp` records) has no host counterpart until a sync imports it. B-010 deliberately never removes a device-only saved OTG (owner decision 2026-11-16), so these playlists sit untouched on the device until this task transfers them.
+  - Goal: during sync, a device-only saved `On-The-Go N` becomes a static playlist in the host library (members resolve via dbid = host PID), after which it syncs both ways like any other playlist.
+  - Hazards to remember: adding a playlist to the `.itl` is exactly what itl-core's writer cannot do today — "never add/remove tracks/albums/playlists" (itl-player AGENTS.md): `reindex()` would merge the second `mlth` (purchased items) into the main list. The host-side capability needs its own itl-core spike + iTunes acceptance, or a decision that the import lands in Rufin's own playlist layer instead.
+  - Verification: fixture sync imports a device-only saved OTG as a static host playlist; the result opens in iTunes; the device copy stays in sync both ways afterwards.
