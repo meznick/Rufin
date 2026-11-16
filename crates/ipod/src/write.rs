@@ -14,7 +14,7 @@
 //! devices for the tests — the methodology of the §1.1 experiments, now
 //! inside the test suite.
 
-use std::ffi::{CString, c_char};
+use std::ffi::{CStr, CString, c_char};
 use std::path::Path;
 
 use crate::DeviceSession;
@@ -84,6 +84,12 @@ impl DeviceSession<'_> {
             return Err(OperationFailure::InvalidState(
                 "itdb_track_new returned NULL".to_string(),
             ));
+        }
+        // The host persistent id is the device dbid (B-010): set it before
+        // the add so `itdb_track_add` never falls back to a random one.
+        if let Some(dbid) = metadata.dbid {
+            // SAFETY: `track` is a valid detached track we own.
+            unsafe { (*track).dbid = dbid };
         }
         // If any metadata application fails, the detached track must be
         // freed by us (the database does not own it yet).
@@ -221,6 +227,205 @@ impl DeviceSession<'_> {
             }
         }
         Ok(())
+    }
+
+    /// Create a static playlist with ordered members (W-7, gated; B-010).
+    ///
+    /// `playlist_id` is the host playlist persistent id — it becomes the
+    /// `mhyp` id @+28 (VERIFIED: the device id *is* the host pid,
+    /// b009_plan §6). `podcast` sets `podcastflag`, which takes the
+    /// playlist out of the Playlists menu into the Music→Podcasts entry.
+    /// Unknown member dbids are reported, not skipped. Returns the new
+    /// playlist id.
+    pub fn create_playlist(
+        &mut self,
+        name: &str,
+        playlist_id: u64,
+        member_dbids: &[u64],
+        podcast: bool,
+    ) -> Result<u64, OperationFailure> {
+        gate()?;
+        with_native(|| unsafe {
+            self.create_playlist_inner(name, playlist_id, member_dbids, podcast)
+        })
+    }
+
+    unsafe fn create_playlist_inner(
+        &mut self,
+        name: &str,
+        playlist_id: u64,
+        member_dbids: &[u64],
+        podcast: bool,
+    ) -> Result<u64, OperationFailure> {
+        let write = write_symbols(self.backend_ref())?;
+        let cname = CString::new(name).map_err(|_| {
+            OperationFailure::InvalidState("playlist name contains a NUL byte".to_string())
+        })?;
+        // SAFETY: allocates a detached playlist; owned by us until the add.
+        let pl = unsafe { (write.itdb_playlist_new)(cname.as_ptr(), 0) };
+        if pl.is_null() {
+            return Err(OperationFailure::InvalidState(
+                "itdb_playlist_new returned NULL".to_string(),
+            ));
+        }
+        // SAFETY: `pl` is a valid detached playlist we own; plain data fields.
+        unsafe {
+            (*pl).id = playlist_id;
+            (*pl).podcastflag = u32::from(podcast);
+        }
+        // SAFETY: appends to the database playlist list; ownership transfers
+        // to the db (freed by `itdb_free`).
+        unsafe { (write.itdb_playlist_add)(self.db_ptr(), pl, -1) };
+        for dbid in member_dbids {
+            let track = unsafe { find_track(self.db_ptr(), *dbid) }.ok_or_else(|| {
+                OperationFailure::NotFound(format!("track {dbid} not in database"))
+            })?;
+            // SAFETY: playlist and track valid for the session; position -1
+            // appends, preserving the caller's order.
+            unsafe { (write.itdb_playlist_add_track)(pl, track, -1) };
+        }
+        // SAFETY: `id` is plain data.
+        Ok(unsafe { (*pl).id })
+    }
+
+    /// Remove a playlist from the database (W-7, gated; B-010). The master
+    /// is not special-cased here — callers must never target it (the sync
+    /// keeps the device master device-owned).
+    pub fn remove_playlist(&mut self, playlist_id: u64) -> Result<(), OperationFailure> {
+        gate()?;
+        with_native(|| unsafe { self.remove_playlist_inner(playlist_id) })
+    }
+
+    unsafe fn remove_playlist_inner(&mut self, playlist_id: u64) -> Result<(), OperationFailure> {
+        let write = write_symbols(self.backend_ref())?;
+        let pl = unsafe { find_playlist(self.db_ptr(), playlist_id) }.ok_or_else(|| {
+            OperationFailure::NotFound(format!("playlist {playlist_id} not in database"))
+        })?;
+        // SAFETY: unlink removes it from the database list, transferring
+        // ownership back to us; we free it immediately.
+        unsafe { (write.itdb_playlist_unlink)(pl) };
+        unsafe { (write.itdb_playlist_free)(pl) };
+        Ok(())
+    }
+
+    /// Rebuild a playlist's membership to exactly `member_dbids` in order
+    /// (W-7, gated; B-010 reorder/add/remove in one write). Duplicates in
+    /// the input are preserved like iTunes does. Unknown dbids are
+    /// reported, not skipped.
+    pub fn update_playlist_members(
+        &mut self,
+        playlist_id: u64,
+        member_dbids: &[u64],
+    ) -> Result<(), OperationFailure> {
+        gate()?;
+        with_native(|| unsafe { self.update_playlist_members_inner(playlist_id, member_dbids) })
+    }
+
+    unsafe fn update_playlist_members_inner(
+        &mut self,
+        playlist_id: u64,
+        member_dbids: &[u64],
+    ) -> Result<(), OperationFailure> {
+        let write = write_symbols(self.backend_ref())?;
+        let pl = unsafe { find_playlist(self.db_ptr(), playlist_id) }.ok_or_else(|| {
+            OperationFailure::NotFound(format!("playlist {playlist_id} not in database"))
+        })?;
+        // Snapshot the current membership first — removal mutates the list
+        // the iterator walks.
+        let current: Vec<u64> = unsafe { GListIter::<Itdb_Track>::new((*pl).members) }
+            .map(|track| {
+                // SAFETY: `track` valid for the session; `dbid` is plain data.
+                unsafe { (*track).dbid }
+            })
+            .collect();
+        for dbid in &current {
+            let track = unsafe { find_track(self.db_ptr(), *dbid) }.ok_or_else(|| {
+                OperationFailure::NotFound(format!("track {dbid} not in database"))
+            })?;
+            unsafe { (write.itdb_playlist_remove_track)(pl, track) };
+        }
+        for dbid in member_dbids {
+            let track = unsafe { find_track(self.db_ptr(), *dbid) }.ok_or_else(|| {
+                OperationFailure::NotFound(format!("track {dbid} not in database"))
+            })?;
+            unsafe { (write.itdb_playlist_add_track)(pl, track, -1) };
+        }
+        Ok(())
+    }
+
+    /// Write `iTunesDB` + `ArtworkDB` to a staging path with the OTG
+    /// exclusion (W-7, gated; the B-010 staged-write surface, b010_plan §4).
+    ///
+    /// This is the only device-DB write the sync executor uses — never
+    /// [`DeviceSession::write_library`]: `itdb_write` would remove
+    /// `OTGPlaylistInfo`, which the owner rule forbids. The staged write
+    /// still writes artwork to the device and consumes `Play Counts` on
+    /// success (R1 measured) — the B-010 ordering imports the stats first.
+    /// The libgpod-injected `OTG Playlist N` playlists are detached for the
+    /// write and re-attached afterwards, so they are never serialized as
+    /// `mhyp` records.
+    pub fn write_library_to(&mut self, path: &Path) -> Result<(), OperationFailure> {
+        gate()?;
+        with_native(|| unsafe { self.write_library_to_inner(path) })
+    }
+
+    unsafe fn write_library_to_inner(&mut self, path: &Path) -> Result<(), OperationFailure> {
+        let write = write_symbols(self.backend_ref())?;
+        let filename = CString::new(path.as_os_str().as_encoded_bytes()).map_err(|_| {
+            OperationFailure::NotFound("output path contains a NUL byte".to_string())
+        })?;
+        // OTG exclusion: collect the injected playlists (libgpod's own
+        // naming — "OTG Playlist N" per parsed OTGPlaylistInfo file), then
+        // unlink them all at once. Collecting first is load-bearing: unlink
+        // mutates the database list the iteration walks.
+        let mut detached: Vec<*const Itdb_Playlist> = Vec::new();
+        for raw in unsafe { GListIter::<Itdb_Playlist>::new((*self.db_ptr()).playlists) } {
+            // SAFETY: the name pointer is database-owned and valid for the
+            // session; CStr reads it without owning.
+            let name = unsafe { (*raw).name };
+            let injected = !name.is_null()
+                && unsafe { CStr::from_ptr(name.cast_const()) }
+                    .to_bytes()
+                    .starts_with(b"OTG Playlist ");
+            if injected {
+                detached.push(raw);
+            }
+        }
+        for pl in &detached {
+            // SAFETY: unlink transfers ownership back to the caller; the
+            // pointers stay valid and are re-added (or freed on error)
+            // below.
+            unsafe { (write.itdb_playlist_unlink)(pl.cast_mut()) };
+        }
+        let mut error = std::ptr::null_mut();
+        // SAFETY: db valid for the session, `filename` valid for the call,
+        // `error` a valid GError** out-param.
+        let ok = unsafe { (write.itdb_write_file)(self.db_ptr(), filename.as_ptr(), &mut error) };
+        let result = if ok == 0 {
+            Err(
+                match unsafe { take_gerror(&mut error, self.backend_ref().glib()) } {
+                    Some((domain, code, message)) => OperationFailure::GError {
+                        domain,
+                        code,
+                        message,
+                    },
+                    None => OperationFailure::InvalidState(
+                        "itdb_write_file failed without a GError".to_string(),
+                    ),
+                },
+            )
+        } else {
+            Ok(())
+        };
+        // Restore the session regardless of the write outcome: the detached
+        // playlists return to the database list (append, so their position
+        // may move to the end — reads order by stable keys, not list order).
+        for pl in detached {
+            // SAFETY: `pl` is the valid playlist we unlinked above; the add
+            // transfers ownership back to the database.
+            unsafe { (write.itdb_playlist_add)(self.db_ptr(), pl.cast_mut(), -1) };
+        }
+        result
     }
 
     /// Attach artwork to a track (W-7, gated). `encoded` must be PNG/JPEG;
@@ -397,6 +602,25 @@ unsafe fn apply_metadata(
         (*track).bitrate = metadata.bitrate;
         (*track).samplerate = metadata.samplerate;
         (*track).rating = metadata.rating;
+        // B-010 stats: `None` leaves the parsed value alone (update_track
+        // semantics); `time_played` is unix-local seconds, converted by
+        // libgpod at the file boundary. The playcount2 baseline rule
+        // (b010_plan §6) is the caller's: the sync sets it explicitly.
+        if let Some(value) = metadata.playcount {
+            (*track).playcount = value;
+        }
+        if let Some(value) = metadata.playcount2 {
+            (*track).playcount2 = value;
+        }
+        if let Some(value) = metadata.skipcount {
+            (*track).skipcount = value;
+        }
+        if let Some(value) = metadata.time_played {
+            (*track).time_played = value;
+        }
+        if let Some(value) = metadata.volume {
+            (*track).volume = value;
+        }
     }
     Ok(())
 }

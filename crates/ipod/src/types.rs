@@ -337,6 +337,20 @@ pub struct TrackMetadata {
     pub samplerate: u16,
     /// 0–100, iTunes scale.
     pub rating: u32,
+    /// The device dbid the created track must carry — the host track
+    /// persistent id for B-010 (`mith` @0x80 = `mhit` @+0x70), never
+    /// libgpod's random assignment. `None` = let `itdb_track_add` assign
+    /// (test fixtures).
+    pub dbid: Option<u64>,
+    /// Playback stats (the B-010 merge writes these on `update_track`;
+    /// `None` = leave the parsed value alone). `time_played` is unix-local
+    /// wall-clock seconds — the same space [`TrackInfo::time_played`]
+    /// reports; libgpod converts at the file boundary.
+    pub playcount: Option<u32>,
+    pub playcount2: Option<u32>,
+    pub skipcount: Option<u32>,
+    pub time_played: Option<i64>,
+    pub volume: Option<i32>,
 }
 
 /// Encoded artwork input for `set_artwork` (W-7).
