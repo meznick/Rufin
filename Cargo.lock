@@ -4279,6 +4279,8 @@ dependencies = [
  "itl-sync",
  "libc",
  "lofty",
+ "serde",
+ "serde_json",
  "tempfile",
  "thiserror 2.0.21",
  "tracing",
