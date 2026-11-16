@@ -598,13 +598,12 @@ No physical-device or Windows-iTunes claim is made here — those are B-017.
     playlist that exists only on the device is **never removed** in any
     policy — it is informational with an import-deferred diagnostic until
     B-022 lands.
-11. **Unknown-mhod metadata loss — proposed: accept.** The measured
-    inventory (§2) shows a no-op libgpod write drops 632 text mhods of six
-    types libgpod doesn't model (copyright, ISRC-style tag, purchase
-    account email/name, a plist, a `2:256`-shaped field) and rewrites the
-    mhbd version to 0x30. Proposed: accept and document — the data lives in
-    the host library, the pod firmware displays none of it, iTunes
-    regenerates it at its next sync (B-017 validates the claim on
-    hardware). Alternative: a vendored patched libgpod that round-trips
-    unknown mhods (constitution §3 precedent) — much larger scope for
-    metadata the device never shows.
+11. **Unknown-mhod metadata loss — accept.** Resolved (owner 2026-11-16):
+    the measured inventory (§2) shows a no-op libgpod write drops 632 text
+    mhods of six types libgpod doesn't model (copyright, ISRC-style tag,
+    purchase account email/name, a plist, a `2:256`-shaped field) and
+    rewrites the mhbd version to 0x30. Accepted and documented — the data
+    lives in the host library, the pod firmware displays none of it,
+    iTunes regenerates it at its next sync (B-017 validates the claim on
+    hardware). The vendored-patched-libgpod alternative is recorded and
+    rejected as out of proportion.
