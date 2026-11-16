@@ -183,33 +183,41 @@ pub fn map_playlists(
     let mut mapping = PlaylistMapping::default();
     let mut claimed_device_ids = std::collections::HashSet::new();
     for playlist in host {
-        let by_name: Vec<&ipod::PlaylistInfo> = device_playlists
+        // Candidates: non-master device playlists no earlier host playlist
+        // claimed (first-claims, so a duplicated host record can never
+        // double-match).
+        let candidates: Vec<&ipod::PlaylistInfo> = device_playlists
             .iter()
-            .filter(|device| {
-                !device.is_master
-                    && device.name.as_deref() == playlist.name.as_deref()
-                    && device.name.is_some()
-            })
+            .filter(|device| !device.is_master && !claimed_device_ids.contains(&device.id))
             .collect();
-        let outcome = match by_name.as_slice() {
-            [device] => {
-                claimed_device_ids.insert(device.id);
-                PlaylistOutcome::Matched {
-                    device_id: device.id,
-                    kind_agrees: device.is_spl == playlist.smart.is_some(),
-                }
-            }
-            [] => PlaylistOutcome::MissingOnDevice,
+        // pid-first (owner decision §11-9): the device `mhyp` id @+28 is
+        // the host playlist persistent id (`miph` @+432) for every
+        // iTunes-written playlist — a rename in iTunes then survives as a
+        // true rename. Name+kind is the fallback (device-authored records,
+        // zero host pids, ambiguous ids).
+        let by_pid: Vec<&&ipod::PlaylistInfo> = candidates
+            .iter()
+            .filter(|device| playlist.persistent_id != 0 && device.id == playlist.persistent_id)
+            .collect();
+        let outcome = match by_pid.as_slice() {
+            [device] => PlaylistOutcome::Matched {
+                device_id: device.id,
+                kind_agrees: device.is_spl == playlist.smart.is_some(),
+            },
             several => {
                 mapping.diagnostics.push(MappingDiagnostic::new(format!(
-                    "device carries {} playlists named {:?}; host playlist #{} matched to none",
+                    "device carries {} playlists with id {}; host playlist #{} falls back to name matching",
                     several.len(),
-                    playlist.name,
+                    playlist.persistent_id,
                     playlist.persistent_id
                 )));
-                PlaylistOutcome::MissingOnDevice
+                name_outcome(&candidates, playlist, &mut mapping)
             }
+            [] => name_outcome(&candidates, playlist, &mut mapping),
         };
+        if let PlaylistOutcome::Matched { device_id, .. } = outcome {
+            claimed_device_ids.insert(device_id);
+        }
         mapping.matches.push(PlaylistMatch {
             host_pid: playlist.persistent_id,
             name: playlist.name.clone(),
@@ -233,6 +241,37 @@ pub fn map_playlists(
         }
     }
     mapping
+}
+
+/// The name+kind fallback: a unique unclaimed device playlist with the
+/// host's name matches; duplicates are diagnosed, never guessed.
+fn name_outcome(
+    candidates: &[&ipod::PlaylistInfo],
+    playlist: &HostPlaylist,
+    mapping: &mut PlaylistMapping,
+) -> PlaylistOutcome {
+    let by_name: Vec<&&ipod::PlaylistInfo> = candidates
+        .iter()
+        .filter(|device| {
+            device.name.is_some() && device.name.as_deref() == playlist.name.as_deref()
+        })
+        .collect();
+    match by_name.as_slice() {
+        [device] => PlaylistOutcome::Matched {
+            device_id: device.id,
+            kind_agrees: device.is_spl == playlist.smart.is_some(),
+        },
+        [] => PlaylistOutcome::MissingOnDevice,
+        several => {
+            mapping.diagnostics.push(MappingDiagnostic::new(format!(
+                "device carries {} playlists named {:?}; host playlist #{} matched to none",
+                several.len(),
+                playlist.name,
+                playlist.persistent_id
+            )));
+            PlaylistOutcome::MissingOnDevice
+        }
+    }
 }
 
 #[cfg(test)]
@@ -377,6 +416,79 @@ mod tests {
                 .iter()
                 .any(|d| d.message.contains("2 playlists named"))
         );
+    }
+
+    #[test]
+    fn playlist_rename_survives_as_a_true_match_by_pid() {
+        // Owner decision §11-9: the device id is the host persistent id —
+        // a rename on the host must match the renamed device playlist
+        // instead of producing a remove+create pair.
+        let host = vec![host_playlist(42, Some("Новое имя"), false)];
+        let device = vec![device_playlist(42, Some("Старое имя"), false, false)];
+        let mapping = map_playlists(&host, &device);
+        assert_eq!(
+            mapping.matches[0].outcome,
+            PlaylistOutcome::Matched {
+                device_id: 42,
+                kind_agrees: true
+            }
+        );
+        assert!(mapping.device_only.is_empty());
+        assert!(mapping.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn pid_match_takes_precedence_over_name() {
+        // Host pid=10, but a *different* device playlist carries the same
+        // name — the pid must win and the name-twins must stay unclaimed.
+        let host = vec![host_playlist(10, Some("Общее имя"), false)];
+        let device = vec![
+            device_playlist(10, Some("Другое имя"), false, false),
+            device_playlist(11, Some("Общее имя"), false, false),
+        ];
+        let mapping = map_playlists(&host, &device);
+        assert_eq!(
+            mapping.matches[0].outcome,
+            PlaylistOutcome::Matched {
+                device_id: 10,
+                kind_agrees: true
+            }
+        );
+        assert_eq!(mapping.device_only.len(), 1);
+        assert_eq!(mapping.device_only[0].device_id, 11);
+    }
+
+    #[test]
+    fn zero_host_pid_never_pid_matches() {
+        let host = vec![host_playlist(0, Some("Без pid"), false)];
+        let device = vec![device_playlist(0, Some("Без pid"), false, false)];
+        let mapping = map_playlists(&host, &device);
+        // Matched by the name fallback, not by the zero-pid coincidence.
+        assert_eq!(
+            mapping.matches[0].outcome,
+            PlaylistOutcome::Matched {
+                device_id: 0,
+                kind_agrees: true
+            }
+        );
+    }
+
+    #[test]
+    fn duplicate_host_playlist_names_claim_once() {
+        let host = vec![
+            host_playlist(20, Some("Дубль хоста"), false),
+            host_playlist(21, Some("Дубль хоста"), false),
+        ];
+        let device = vec![device_playlist(20, Some("Дубль хоста"), false, false)];
+        let mapping = map_playlists(&host, &device);
+        assert_eq!(
+            mapping.matches[0].outcome,
+            PlaylistOutcome::Matched {
+                device_id: 20,
+                kind_agrees: true
+            }
+        );
+        assert_eq!(mapping.matches[1].outcome, PlaylistOutcome::MissingOnDevice);
     }
 
     #[test]
