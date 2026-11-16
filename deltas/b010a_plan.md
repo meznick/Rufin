@@ -1,6 +1,7 @@
 # B-010a: AAC-256 transcoding for device sync — implementation plan
 
-Status: **draft for owner review** (2026-11-16). Task branch:
+Status: **approved by the owner (2026-11-16); implemented** — results in
+§6. Task branch:
 `feature/ipod-page-task-B-010a`, based on `feature/ipod-page` at `52b7b28`.
 B-010a is the transcode sub-task the owner split out of B-010 ("first of all
 implement transcoding to lower bitrate, after this one is ready and tested
@@ -193,3 +194,24 @@ delivered by B-010a and consumed by B-010.
 
 Non-goals restated: executor integration, live-pod writes, capacity
 re-check math, UI — all B-010/B-011+.
+
+## 6. Implementation results (2026-11-16)
+
+- Decision + staging module landed in `crates/ipod-sync/src/sync/transcode.rs`
+  (3 unit tests: the full decision matrix, deterministic scoped staging
+  paths, lifecycle + device-scoped orphan sweep).
+- `transcode_to_m4a` landed in `crates/audio-processing` with the shared
+  `map_pipeline_error` refactor (the same error mapping now serves both
+  entry points). Crate-local test pins `ftyp`, moov-before-mdat (the
+  faststart layout the pod needs), the 32000 B/s capacity bound and
+  decode-back verification.
+- Env-gated acceptance `crates/ipod-sync/tests/b010a_transcode.rs` passes
+  against the pinned libgpod (fresh MA446 tree): decide → encode → gated
+  create/copy/write → re-parse pins filetype `m4a`, bitrate 256, on-pod
+  path ending `.m4a`, and a byte-identical on-disk copy.
+- Battery: ipod-sync 74 unit + the full env-gated suite (pair gate,
+  mapping, transcode gate) green; audio-processing 13/13; test-synthetic;
+  test-wrapper; lint exit 0; `git diff --check` clean.
+- §5 decisions as implemented: `mp4mux faststart=true` (no fallback needed
+  on the fixtures); the unknown-bitrate arm transcodes with a diagnostic;
+  48 kHz resample kept; encoded files carry no tags.
