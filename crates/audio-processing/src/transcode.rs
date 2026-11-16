@@ -444,7 +444,12 @@ pub fn transcode_to_m4a(
             continue;
         };
         match message.view() {
-            gst::MessageView::Eos(..) => return Ok(()),
+            gst::MessageView::Eos(..) => {
+                // Explicit teardown before returning — the crate convention
+                // (dropping a PLAYING element logs GStreamer criticals).
+                let _ = pipeline.set_state(gst::State::Null);
+                return Ok(());
+            }
             gst::MessageView::Error(error) => {
                 let _ = pipeline.set_state(gst::State::Null);
                 let _ = std::fs::remove_file(output);

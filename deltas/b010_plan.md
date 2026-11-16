@@ -77,11 +77,15 @@ when the device supports artwork: ArtworkDB + ithmb banks are written to the
 DB output filename is somewhere else. Its return value is not checked (R2).
 It also mutates `track->artwork_count`/`artwork_size` before serializing.
 
-**Stat consumption on success.** `playcounts_reset(itdb_get_mountpoint(itdb))`
-runs after a successful `wcontents_write` — it renames `Play Counts` and
-`iTunesStats` to `.bak` **on the device mountpoint**, again regardless of the
-output filename. A successful write therefore always consumes the pending
-stats; the import must be durably on the host first.
+**Stat consumption: the executor's, not the write path's.** Measured: the
+`itdb_write_file` path calls `playcounts_reset` on success, but it
+resolves the pending names against the **mount root** (wrong directory —
+the files live in `iPod_Control/iTunes/`) and is a **no-op**. The only
+real upstream consumer is `itdb_write`'s `itdb_rename_files` (`Play
+Counts` → `Play Counts.bak`) — the function B-010 never calls. The
+executor therefore removes the pending files itself at completion (§5
+step 8), after the journal marks the operation done; the import must be
+durably on the host first either way.
 
 **`itdb_write()` (the direct device write) additionally:** `itdb_start_sync`
 (no-op on regular iPods), a `.ithmb` pre-write attempt whose errors are
@@ -169,8 +173,8 @@ Recommended and proposed as the base design (owner decision §11-1):
   `iPod_Control/iTunes/` directory** (same filesystem → the final rename is
   atomic), then rename into place ourselves. This gives: DB crash-safety via
   staging, no `OTGPlaylistInfo` removal, artwork still written to the device
-  (wanted), `Play Counts` still consumed on success (wanted — import first,
-  §6).
+  (wanted), and the pending store untouched by the write (measured R1 —
+  consumption is the executor's completion step, import first, §6).
 - **OTG exclusion is a wrapper write-prep step:** before the staged write,
   the wrapper removes the libgpod-injected `OTG Playlist N` playlists from
   `itdb->playlists` (they are identifiable structurally: libgpod itself
@@ -264,13 +268,14 @@ journal (the fault-injection gate asserts the invariant, §9).
    files — orphans and missing files are exactly the states the next sync's
    delta engine repairs (device-only entries and `FileRepair`), so the pair
    returns to consistency by construction.
-8. **Completion**: `Play Counts` was renamed by the write itself;
-   `Play Counts.bak` is removed only after the journal marks completion (its
-   entries were imported at step 4 and the merged values are in host +
-   device — leaving it would let a later Windows iTunes import the
-   already-merged delta twice, §6; B-017 validates). Last-success advances
-   only here (S-10); every earlier exit is a partial result with the journal
-   retained.
+8. **Completion**: the pending store is removed by the executor only
+   after the journal marks completion (measured R1: the staged write does
+   not consume it — `playcounts_reset` resolves the wrong directory
+   upstream; the entries were imported at step 4 and the merged values are
+   in host + device — leaving the file would let a later Windows iTunes
+   import the already-merged delta twice, §6; B-017 validates).
+   Last-success advances only here (S-10); every earlier exit is a partial
+   result with the journal retained.
 
 **Retry and dedup.** The journal records the applied delta set before the
 host write: per-dbid watermarks (applied play and skip deltas) plus the
@@ -363,8 +368,10 @@ plus the consumed file identity. The import reads **both** `Play Counts` and
 already applied are skipped, only newer ones are applied. Crash after host
 write but before device write: the pending file is still live on the pod —
 the retry applies only entries newer than the watermarks (no double import).
-Crash after device write but before completion: only the `.bak` remains,
-and the watermarks skip every entry already merged into host and device. A
+Crash after device write but before completion: the pending file **remains**
+(the staged write does not consume it — R1-measured) and the watermarks
+skip every entry already merged into host and device; the completion step
+removes the file. A
 `.bak` left behind by a crashed **iTunes** sync (renamed but never imported
 by iTunes) carries entries no watermark covers — those get imported, which
 is exactly right: the plays were never merged by anyone. All keys are
