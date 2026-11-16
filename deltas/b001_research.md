@@ -425,9 +425,13 @@ mhlp; harness `/tmp/opencode/r1-harness`):
   artwork changed. A read-only `Artwork/` dir produces stderr
   `Error opening ... Permission denied` but `write_file` returns **OK** —
   failures are silently non-fatal (R2 below).
-- **Stat consumption:** on success `playcounts_reset` renames `Play Counts`
-  → `Play Counts.bak` on the device mountpoint, even via `itdb_write_file`
-  to a staged path. `itdb_write` additionally removes `OTGPlaylistInfo` and
+- **Stat consumption:** measured — the `itdb_write_file` path's
+  `playcounts_reset` resolves the pending names against the mount root
+  (wrong directory; the files live in `iPod_Control/iTunes/`) and is a
+  **no-op**. The only real consumer is `itdb_write`'s `itdb_rename_files`
+  (`Play Counts` → `Play Counts.bak`), which B-010 never calls — the
+  executor removes the pending files itself at completion (b010_plan §5
+  step 8). `itdb_write` additionally removes `OTGPlaylistInfo` and
   serializes the injected `OTG Playlist N` playlists into the DB as mhyp
   records (playlists 9→10 on the fixture) — the owner-rule violation the
   B-010 staged-write design exists to prevent.

@@ -37,6 +37,16 @@ pub const STEP_FILE_OPS: &str = "FileOps";
 pub const STEP_DB_WRITE: &str = "DbWrite";
 pub const STEP_VERIFY: &str = "Verify";
 
+/// Every step, in execution order (the failure battery iterates this).
+pub const STEPS: [&str; 6] = [
+    STEP_INTENT,
+    STEP_BACKUP,
+    STEP_HOST_WRITE,
+    STEP_FILE_OPS,
+    STEP_DB_WRITE,
+    STEP_VERIFY,
+];
+
 /// What the run reported.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SyncStatus {
@@ -148,6 +158,9 @@ pub fn run_sync(ctx: &SyncContext<'_>) -> Result<SyncOutcome, SyncError> {
         }
         RecoveryPlan::VerifyAndAdvance(_record) => {
             verify_device(ctx)?;
+            // The DB write already consumed the pending store — the
+            // completion housekeeping belongs to this path too.
+            remove_consumed_pending(ctx.mount)?;
             journal
                 .complete(now_unix())
                 .map_err(|error| sync_err(STEP_VERIFY, error.to_string()))?;
@@ -164,6 +177,9 @@ pub fn run_sync(ctx: &SyncContext<'_>) -> Result<SyncOutcome, SyncError> {
                 .ok_or_else(|| sync_err(STEP_INTENT, "journal records no backup to restore"))?;
             restore_consistency_set(ctx.mount, &journal.root().join(backup))
                 .map_err(|error| sync_err(STEP_INTENT, format!("restore failed: {error}")))?;
+            // The backup restores the pre-write pending store; a stray
+            // `.bak` from the interrupted write is its consumed duplicate.
+            remove_consumed_pending(ctx.mount)?;
             journal.mark_failed().map_err(|error| {
                 sync_err(STEP_INTENT, format!("journal update failed: {error}"))
             })?;
@@ -230,16 +246,21 @@ pub fn run_sync(ctx: &SyncContext<'_>) -> Result<SyncOutcome, SyncError> {
             .extend(merge.diagnostics.iter().cloned());
         step_done(record, &journal, STEP_HOST_WRITE)?;
     }
-    // 4. Device file ops + in-memory model updates (one write session).
-    if !done.contains(STEP_FILE_OPS) {
-        apply_device_ops(ctx, record, &mut outcome)?;
+    // 4-5. Device mutations and the staged DB write share ONE session —
+    // the in-memory model mutated by the ops is exactly what gets
+    // serialized (a fresh session would re-parse the unmodified DB).
+    // FileOps re-runs on every resume until the DB write commits: a
+    // crashed session loses its in-memory mutations, while the DB write
+    // itself is an idempotent re-serialization of the parsed state.
+    let mut write_session = ipod::DeviceSession::open(ctx.backend, ctx.mount)
+        .map_err(|error| sync_err(STEP_FILE_OPS, format!("write session failed: {error}")))?;
+    if !done.contains(STEP_DB_WRITE) {
+        apply_device_ops(ctx, &mut write_session, record, &mut outcome)?;
         step_done(record, &journal, STEP_FILE_OPS)?;
     }
-    // 5. Staged DB write.
-    if !done.contains(STEP_DB_WRITE) {
-        write_db_staged(ctx)?;
-        step_done(record, &journal, STEP_DB_WRITE)?;
-    }
+    write_db_staged(ctx, &mut write_session)?;
+    step_done(record, &journal, STEP_DB_WRITE)?;
+    drop(write_session);
     // 6. Post-write verification.
     if !done.contains(STEP_VERIFY) {
         verify_device(ctx)?;
@@ -413,11 +434,10 @@ fn compute_merge(
 /// copy adds, repair, remove, playlists, artwork, stat patches.
 fn apply_device_ops(
     ctx: &SyncContext<'_>,
+    session: &mut ipod::DeviceSession<'_>,
     record: &mut OperationRecord,
     outcome: &mut SyncOutcome,
 ) -> Result<(), SyncError> {
-    let mut session = ipod::DeviceSession::open(ctx.backend, ctx.mount)
-        .map_err(|error| sync_err(STEP_FILE_OPS, format!("write session failed: {error}")))?;
     let host_by_pid: HashMap<u64, &crate::mapping::HostTrack> = ctx
         .host
         .tracks
@@ -643,17 +663,18 @@ fn apply_device_ops(
     Ok(())
 }
 
-/// Step 5: the staged DB write (never `itdb_write`), verification of the
-/// staged file on a disposable copy, atomic rename, flush.
-fn write_db_staged(ctx: &SyncContext<'_>) -> Result<(), SyncError> {
+/// Step 5: the staged DB write (never `itdb_write`) from the mutation
+/// session, verification of the staged file on a disposable copy, atomic
+/// rename, flush.
+fn write_db_staged(
+    ctx: &SyncContext<'_>,
+    session: &mut ipod::DeviceSession<'_>,
+) -> Result<(), SyncError> {
     let itunes = ctx.mount.join("iPod_Control/iTunes");
     let staged = itunes.join("iTunesDB.staged");
-    let mut session = ipod::DeviceSession::open(ctx.backend, ctx.mount)
-        .map_err(|error| sync_err(STEP_DB_WRITE, format!("write session failed: {error}")))?;
     session
         .write_library_to(&staged)
         .map_err(|error| sync_err(STEP_DB_WRITE, error.to_string()))?;
-    drop(session);
 
     // Verify the staged file parses on a disposable copy of the DB's own
     // dependencies (iTunes/, Artwork/, Device/ — never the media folder).
@@ -742,19 +763,33 @@ fn verify_device(ctx: &SyncContext<'_>) -> Result<(), SyncError> {
     Ok(())
 }
 
-/// Completion housekeeping: the pending store was renamed to `.bak` by
-/// the write itself; remove it so a later Windows iTunes does not re-add
+/// Completion housekeeping: the pending store is consumed **by us**, not
+/// by the staged write — measured (R1): `itdb_write_file`'s
+/// `playcounts_reset` resolves the pending names against the mount root
+/// instead of the iTunes dir and is a no-op, while `itdb_write`'s
+/// `rename_files` (which we never call) is the only upstream consumer.
+/// Removing the files here keeps a later Windows iTunes from re-adding
 /// the already-merged delta (b010_plan §5 step 8; B-017 validates).
 fn remove_consumed_pending(mount: &Path) -> Result<(), SyncError> {
-    let path = mount.join("iPod_Control/iTunes/Play Counts.bak");
-    match std::fs::remove_file(&path) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(sync_err(
-            STEP_VERIFY,
-            format!("Play Counts.bak removal failed: {error}"),
-        )),
+    for name in [
+        "Play Counts",
+        "Play Counts.bak",
+        "iTunesStats",
+        "PlayCounts.plist",
+    ] {
+        let path = mount.join("iPod_Control/iTunes").join(name);
+        match std::fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(sync_err(
+                    STEP_VERIFY,
+                    format!("{name} removal failed: {error}"),
+                ));
+            }
+        }
     }
+    Ok(())
 }
 
 fn copy_tree(from: &Path, to: &Path) -> io::Result<()> {
