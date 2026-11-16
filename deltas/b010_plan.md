@@ -90,21 +90,27 @@ deliberately non-fatal, then on success `itdb_rename_files()` — `Play Counts`
 `iTunesStats` handling — plus a `SysInfo` rewrite if `sysinfo_changed` is
 set, then `itdb_stop_sync` and a global `itdb_fsync()` (which calls `sync(2)`).
 
-**Playlist topology is not preserved.** Parsing reads exactly one playlist
-list (the first mhsd type 3 if present, else the first type 2 — a single
-`mhlp` inside it); writing emits **all** `itdb->playlists` into both the
-type-3 and type-2 lists. The device snapshot's second type-2 `mhlp` — the
-iTunes-written media-library category lists («Музыка», «Фильмы»,
-«Телешоу», «Аудиокниги» plus the duplicated nine) — is never parsed and is
-dropped by a libgpod write; iTunes regenerates those lists at its next sync.
-`mhyp` id @+28 (`pl->id`) round-trips — it is the host playlist persistent id
+**Playlist topology survives; the category lists lose members.** Parsing
+reads the user playlists from the first type-3 mhsd (fallback type 2);
+writing emits them into both the type-3 and type-2 lists. The media-library
+category lists («Музыка», «Фильмы», «Телешоу», «Аудиокниги») live in the
+**type-5** mhsd — an earlier draft claimed a "second type-2 `mhlp`" that
+libgpod drops; the measurement (step 1, below) disproved that: libgpod
+parses type 5 into `priv->mhsd5_playlists` and re-writes it, so the lists
+survive. What does not survive is their stored member mhips (libgpod writes
+type-5 lists with zero members) — the B-021 cache-staleness class: the
+criteria are live-updating, the firmware re-evaluates them, iTunes
+re-materializes the members at its next sync. `mhyp` id @+28 (`pl->id`)
+round-trips — it is the host playlist persistent id
 (VERIFIED 12/12 on the pair, 6/6 vs XML, 2026-11-13; B-009 §6).
 
-**Smart playlists round-trip through libgpod's own rule model.** The writer
-serializes `pl->splpref` (mhod 50) and `pl->splrules` (mhod 51) from the
-parsed structs; whether that reproduces iTunes' bytes exactly for flat rules,
-and how unknown fields survive, is unmeasured — it is one of the two
-measurements of step 1 below.
+**Smart playlists round-trip through libgpod's own rule model — measured.**
+The writer serializes `pl->splpref` (mhod 50) and `pl->splrules` (mhod 51)
+from the parsed structs. Measured on the pair (step 1): mhod 51 (the SLst
+rules) is **byte-exact** after a no-op parse→write (3/3); mhod 50 (SPLPREF)
+is not — libgpod parses only a 14-byte window and zeroes bytes 14..71,
+dropping one constant byte iTunes writes at +0x10 (0x05 on all three).
+§8's verbatim-blob fallback covers created/updated SPLPREFs.
 
 **OTG injection on parse.** `read_OTG_playlists()` appends a playlist per
 `OTGPlaylistInfo[_N]` file, named `OTG Playlist N` by libgpod itself. A plain
@@ -118,16 +124,25 @@ exclude them (§4).
 symbols) — an own-format writer would have to reimplement or patch libgpod
 for the Classic-mandatory checksum.
 
-**The measured inventory (step 1 of §10)** closes R1: on disposable copies of
-the device tree, (a) parse→`itdb_write_file` to a staging path on the same
-copy, then diff the whole tree and the DB bytes — cataloging every changed
-section of a *no-op* write (expected: everything, including track order and
-`track->id`, `mhla`/`mhli` ids, mhsd topology, the dropped second `mhlp`);
-(b) the same with `itdb_write` on a copy seeded with `Play Counts` and
-`OTGPlaylistInfo` fixtures — verifying the consumption/removal claims; (c) a
-failed-write run (read-only Artwork dir) to pin the partial-write behavior;
-(d) mhod 50/51 byte-exactness after parse→write with no rule changes. The
-results are recorded in the delta and appended to `b001_research.md` R1.
+**The measured inventory (step 1, done 2026-11-16; full record in
+`b001_research.md` R1/R2).** On disposable copies of the snapshot tree with
+the pinned libgpod (harness `/tmp/opencode/r1-harness`): (a) a no-op
+parse→`itdb_write_file` to a staging path — topology preserved (type-5
+category lists survive, members zeroed), dbid multiset identical (3373/3373),
+numeric track ids reassigned, mhit header 624→584 with the dropped tail all
+zeros (non-loss), **632 mhods of six unknown-to-libgpod types dropped**
+(26 plist / 37 ISRC-tag / 39 copyright / 42 `2:256` / 43 purchase email /
+44 purchase name — all UTF-16 text metadata, §11-11), mhbd version hardcoded
+to 0x30 (parsed 0x73 lost), ArtworkDB rewritten on the device, ithmb banks
+untouched; (b) a full `itdb_write` on a copy seeded with `Play Counts` and
+`OTGPlaylistInfo`: `Play Counts` → `.bak` on success, `OTGPlaylistInfo`
+removed, and the injected `OTG Playlist N` serialized into the DB as an
+mhyp — the violation the OTG-exclusion design prevents; pending-store
+formats confirmed (`Play Counts` entries carry no dbid and align to the
+mhlt order; `OTGPlaylistInfo` = mhpo + big-endian u32 track indices);
+(c) a read-only `Artwork/` run: the artwork failure is silently non-fatal,
+`write_file` still returns OK — R2's post-write verification is the only
+detector; (d) mhod 50/51 byte-exactness as above.
 
 ## 3. Research gate R2: artwork write failures
 
@@ -164,12 +179,13 @@ Recommended and proposed as the base design (owner decision §11-1):
   stay in). After the write the links are restored so the session remains
   usable. `OTGPlaylistInfo*` files are never touched by any Rufin path.
 - **The topology limitation is accepted and documented:** the four category
-  lists live in the second `mhlp` libgpod never parses, so a libgpod write
-  drops them until the next iTunes sync regenerates them (iTunes accepts
+  lists (mhsd type 5) survive a libgpod write with their stored member
+  lists zeroed — the live-updating criteria re-fill them (measured, §2),
+  and iTunes re-materializes the members at its next sync (iTunes accepts
   libgpod-written DBs — long-standing gtkpod behavior; B-017 validates on
-  hardware). An own-format iTunesDB serializer would preserve them but must
-  reimplement the Classic checksum (§2) — recorded as the rejected
-  alternative, not silently forgotten.
+  hardware). An own-format iTunesDB serializer would preserve everything
+  but must reimplement the Classic checksum (§2) — recorded as the
+  rejected alternative, not silently forgotten.
 - The wrapper write surface stays gated behind `sync-writes`; the B-010
   engine is the first (and until B-015 the only) consumer that enables it.
 
@@ -479,11 +495,11 @@ No physical-device or Windows-iTunes claim is made here — those are B-017.
 
 ## 10. Work sequence
 
-1. **R1/R2 measurement run** (§2/§3) on disposable trees; record the full
-   inventory; append the R1/R2 resolutions to `b001_research.md`; resolve
-   §11-1 with the measured evidence. The AAC-encoder availability check is
-   already done: B-010a verified the encoder and the decide→encode→copy
-   chain on fixtures.
+1. **R1/R2 measurement run** — done 2026-11-16: the full inventory is
+   recorded in §2 and `b001_research.md` R1/R2; §11-1's strategy is
+   confirmed by the measurement (topology survives, category-list members
+   zeroed); the AAC-encoder availability check was closed by B-010a. The
+   one open item is the §11-11 decision.
 2. Owner decisions (§11) folded into this plan (B-009 precedent).
 3. **pid-first playlist matching** in `map_playlists` (device `mhyp` id
    @+28 ↔ host persistent id, name+kind fallback; owner decision §11-9);
@@ -582,3 +598,13 @@ No physical-device or Windows-iTunes claim is made here — those are B-017.
     playlist that exists only on the device is **never removed** in any
     policy — it is informational with an import-deferred diagnostic until
     B-022 lands.
+11. **Unknown-mhod metadata loss — proposed: accept.** The measured
+    inventory (§2) shows a no-op libgpod write drops 632 text mhods of six
+    types libgpod doesn't model (copyright, ISRC-style tag, purchase
+    account email/name, a plist, a `2:256`-shaped field) and rewrites the
+    mhbd version to 0x30. Proposed: accept and document — the data lives in
+    the host library, the pod firmware displays none of it, iTunes
+    regenerates it at its next sync (B-017 validates the claim on
+    hardware). Alternative: a vendored patched libgpod that round-trips
+    unknown mhods (constitution §3 precedent) — much larger scope for
+    metadata the device never shows.
