@@ -391,6 +391,55 @@ proven by measurement: before/after tree hash of a disposable device-tree copy
 and before/after byte hash of a disposable `.itl` copy, end to end through the
 dry run (design and test plan: `deltas/b009_plan.md` §2/§6).
 
+**Measured resolution (2026-11-16, B-010 step 1 — owner-reviewed):** the full
+inventory was measured on disposable copies of the restored-device snapshot
+(pinned libgpod 0.8.3-20, MA446 tree, 3373 tracks / 9 playlists in the first
+mhlp; harness `/tmp/opencode/r1-harness`):
+
+- **Topology survives.** A parse→`itdb_write_file` no-op writes all mhsd
+  lists (types 1, 3, 2, 4, 8, 6, 10, 5) — the earlier "second mhlp is
+  dropped" assumption was wrong: the media-library category lists live in
+  the **type-5** mhsd and are parsed into `priv->mhsd5_playlists` and
+  re-written, so they survive. What does not survive: their stored member
+  mhips (libgpod writes type-5 lists with zero members; 1728 bytes lost on
+  this pair) — same cache-staleness class as B-021, the firmware re-evaluates
+  the live-updating criteria.
+- **Identity safe.** dbid multiset identical before/after (3373/3373);
+  the numeric track index (`mhit` @+0x10) is reassigned, as documented.
+- **mhit header 624→584 is a non-loss:** the original's trailing 40 bytes
+  (0x248..0x270) are all zero on every sampled track — padding, not data.
+- **Real per-track loss: 632 mhods of 6 types libgpod doesn't model**, all
+  UTF-16 text metadata, dropped by the no-op write: type 26 (XML plist,
+  20 tracks), 37 (ISRC-style tag, 46), 39 (copyright string, 349), 42
+  (`2:256`-shaped, 4), 43 (purchase account email, 44), 44 (purchase
+  account name, 169). iTunes regenerates these from the host library at its
+  next sync — B-017 validates that claim; accepted per owner decision
+  (`deltas/b010_plan.md` §11-11).
+- **Smart blobs:** `mhod` 51 (SLst rules) round-trips **byte-exact** (3/3).
+  `mhod` 50 (SPLPREF) does not: libgpod parses only a 14-byte window and
+  zeroes bytes 14..71; iTunes writes 0x05 at +0x10 on all three playlists —
+  one constant byte lost per smart playlist (b010_plan §8 handles the
+  verbatim write for created playlists).
+- **Artwork:** `ArtworkDB` is rewritten on the device even when the DB
+  output goes to a staged filename; the ithmb banks are untouched when no
+  artwork changed. A read-only `Artwork/` dir produces stderr
+  `Error opening ... Permission denied` but `write_file` returns **OK** —
+  failures are silently non-fatal (R2 below).
+- **Stat consumption:** on success `playcounts_reset` renames `Play Counts`
+  → `Play Counts.bak` on the device mountpoint, even via `itdb_write_file`
+  to a staged path. `itdb_write` additionally removes `OTGPlaylistInfo` and
+  serializes the injected `OTG Playlist N` playlists into the DB as mhyp
+  records (playlists 9→10 on the fixture) — the owner-rule violation the
+  B-010 staged-write design exists to prevent.
+- **mhbd version is hardcoded to 0x30** (iTunes 9.2) on every write — the
+  parsed 0x73 is overwritten. Long-standing gtkpod behavior; iTunes re-writes
+  its own version at the next sync (B-017 validates).
+- **Pending-store formats confirmed:** `Play Counts` entries carry **no
+  dbid** — they align to the mhlt track order (entry 0x1c: playcount,
+  time_played in Mac epoch, bookmark, rating with 0xFFFFFFFF = none, unk16,
+  skipcount, last_skipped). `OTGPlaylistInfo` = `mhpo` header (0x14) with
+  big-endian u32 track **indices** into the mhlt order.
+
 ### R2: Artwork errors and apparent success
 
 **Before B-007/B-004 and revisit before B-010:** Investigate how to detect and report
@@ -404,6 +453,17 @@ or other approaches. On disposable fixtures, inject missing/corrupt artwork and 
 failures and verify how they surface. Bring the resulting readiness, recovery, partial
 success, and test-contract proposal for owner review before implementing the affected
 wrapper, preflight, or sync behavior. No validation strategy is chosen here.
+
+**Measured resolution (2026-11-16, B-010 step 1):** on the disposable snapshot
+copy, a read-only `Artwork/` dir makes the writer print
+`Error opening …ithmb: Permission denied` to stderr while
+`itdb_write_file` still returns OK — the artwork failure is **silently
+non-fatal**, exactly the R2 hypothesis. The B-010 design therefore keeps the
+independent post-write verification as the detector (`artwork_status()`
+verdict against independently counted ArtworkDB entries plus the expected
+thumbnail set, b010_plan §3): a verdict other than `Ok` or a count shortfall
+is a partial success with retained recovery state. The failure-injection gate
+pins exactly this scenario (§9-4).
 
 ### R3: Device-name provenance discrepancy
 
