@@ -223,6 +223,41 @@ pub type FnItdbArtworkSetThumbnailFromData = unsafe extern "C" fn(
 pub type FnItdbWrite =
     unsafe extern "C" fn(db: *mut Itdb_iTunesDB, error: *mut *mut GError) -> GBoolean;
 
+/// `gboolean itdb_write_file (Itdb_iTunesDB *itdb, const gchar *filename, GError **error);`
+///
+/// Writes the database to an arbitrary filename. **Not confined to the
+/// output file**: the artwork writer targets the parsed device mountpoint
+/// and a successful write renames `Play Counts` on it (R1 measured,
+/// `deltas/b001_research.md`). The B-010 staged-write surface uses this with
+/// the output inside the device's iTunes dir; never call `itdb_write`.
+pub type FnItdbWriteFile = unsafe extern "C" fn(
+    db: *mut Itdb_iTunesDB,
+    filename: *const c_char,
+    error: *mut *mut GError,
+) -> GBoolean;
+
+/// `Itdb_Playlist *itdb_playlist_new (const gchar *title, gboolean spl);`
+pub type FnItdbPlaylistNew =
+    unsafe extern "C" fn(title: *const c_char, spl: GBoolean) -> *mut Itdb_Playlist;
+
+/// `void itdb_playlist_free (Itdb_Playlist *pl);`
+pub type FnItdbPlaylistFree = unsafe extern "C" fn(pl: *mut Itdb_Playlist);
+
+/// `void itdb_playlist_add (Itdb_iTunesDB *itdb, Itdb_Playlist *pl, gint32 pos);`
+///
+/// Appends to the database playlist list (pos −1 = end); ownership of `pl`
+/// transfers to the database.
+pub type FnItdbPlaylistAdd =
+    unsafe extern "C" fn(db: *mut Itdb_iTunesDB, pl: *mut Itdb_Playlist, pos: c_int);
+
+/// `void itdb_playlist_unlink (Itdb_Playlist *pl);`
+///
+/// Removes `pl` from its database's playlist list; ownership transfers back
+/// to the caller (pair with [`FnItdbPlaylistFree`] or re-add). The B-010
+/// OTG-exclusion write-prep uses this to keep libgpod-injected playlists
+/// out of the serialized output.
+pub type FnItdbPlaylistUnlink = unsafe extern "C" fn(pl: *mut Itdb_Playlist);
+
 /// The write-side symbol table. `None` when any write symbol is missing —
 /// in that case reads keep working and every write call fails with
 /// [`OperationFailure::BackendSymbolMissing`](crate::write::OperationFailure).
@@ -238,6 +273,11 @@ pub struct WriteSymbols {
     pub itdb_artwork_new: FnItdbArtworkNew,
     pub itdb_artwork_set_thumbnail_from_data: FnItdbArtworkSetThumbnailFromData,
     pub itdb_write: FnItdbWrite,
+    pub itdb_write_file: FnItdbWriteFile,
+    pub itdb_playlist_new: FnItdbPlaylistNew,
+    pub itdb_playlist_free: FnItdbPlaylistFree,
+    pub itdb_playlist_add: FnItdbPlaylistAdd,
+    pub itdb_playlist_unlink: FnItdbPlaylistUnlink,
 }
 
 /// Resolves the write set eagerly so a broken write surface is known at load
@@ -256,6 +296,11 @@ pub fn resolve_write(library: &Library) -> Option<WriteSymbols> {
     let itdb_artwork_set_thumbnail_from_data =
         super::resolve_fn(library, "itdb_artwork_set_thumbnail_from_data").ok()?;
     let itdb_write = super::resolve_fn(library, "itdb_write").ok()?;
+    let itdb_write_file = super::resolve_fn(library, "itdb_write_file").ok()?;
+    let itdb_playlist_new = super::resolve_fn(library, "itdb_playlist_new").ok()?;
+    let itdb_playlist_free = super::resolve_fn(library, "itdb_playlist_free").ok()?;
+    let itdb_playlist_add = super::resolve_fn(library, "itdb_playlist_add").ok()?;
+    let itdb_playlist_unlink = super::resolve_fn(library, "itdb_playlist_unlink").ok()?;
     Some(WriteSymbols {
         itdb_init_ipod,
         itdb_track_new,
@@ -268,6 +313,11 @@ pub fn resolve_write(library: &Library) -> Option<WriteSymbols> {
         itdb_artwork_new,
         itdb_artwork_set_thumbnail_from_data,
         itdb_write,
+        itdb_write_file,
+        itdb_playlist_new,
+        itdb_playlist_free,
+        itdb_playlist_add,
+        itdb_playlist_unlink,
     })
 }
 

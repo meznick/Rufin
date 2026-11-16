@@ -622,3 +622,164 @@ fn concurrent_sessions_are_serialized() {
         worker.join().expect("worker thread panicked");
     }
 }
+
+/// B-010 step 4: the staged write surface round-trips stats, the explicit
+/// dbid and a created playlist through `write_library_to` — the executor's
+/// one device-DB write (never `itdb_write`).
+#[cfg(feature = "sync-writes")]
+#[test]
+fn staged_write_round_trips_stats_playlist_and_dbid() {
+    let Some(backend) = backend_or_skip() else {
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    ipod::testkit::init_device(&backend, dir.path(), "MA446", "fixture-pod").unwrap();
+    ipod::testkit::seed_sysinfo(dir.path(), "MA446").unwrap();
+
+    let source = dir.path().join("song.m4a");
+    std::fs::write(&source, b"fake m4a bytes").unwrap();
+
+    let host_pid: u64 = 0xDEAD_BEEF_0000_0001;
+    let playlist_pid: u64 = 0x1BAD_B002_0000_0001;
+    let mut session = ipod::DeviceSession::open(&backend, dir.path()).unwrap();
+    let dbid = session
+        .create_track(&ipod::TrackMetadata {
+            title: Some("Стат-трек".to_string()),
+            filetype: Some("m4a".to_string()),
+            size: 14,
+            tracklen: 1000,
+            dbid: Some(host_pid),
+            playcount: Some(7),
+            playcount2: Some(7), // the §6 baseline rule's shape
+            skipcount: Some(2),
+            time_played: Some(1_700_000_000),
+            volume: Some(12),
+            ..Default::default()
+        })
+        .unwrap();
+    assert_eq!(dbid, host_pid, "create_track must keep the explicit dbid");
+    session.copy_track(dbid, &source).unwrap();
+    let playlist_id = session
+        .create_playlist("Плейлист Б-010", playlist_pid, &[dbid], false)
+        .unwrap();
+    assert_eq!(
+        playlist_id, playlist_pid,
+        "mhyp id is the host playlist pid"
+    );
+    // Reorder/add/remove in one write; duplicates preserved like iTunes.
+    session
+        .update_playlist_members(playlist_id, &[dbid, dbid])
+        .unwrap();
+
+    let staged = dir.path().join("iPod_Control/iTunes/iTunesDB.staged");
+    session.write_library_to(&staged).unwrap();
+    drop(session);
+
+    // Re-parse the staged output: everything written must come back.
+    std::fs::rename(&staged, dir.path().join("iPod_Control/iTunes/iTunesDB")).unwrap();
+    let session = ipod::DeviceSession::open(&backend, dir.path()).unwrap();
+    let tracks = session.tracks().unwrap();
+    assert_eq!(tracks.len(), 1);
+    let track = &tracks[0];
+    assert_eq!(track.dbid, host_pid, "dbid survives the staged write");
+    assert_eq!(track.playcount, 7);
+    assert_eq!(track.playcount2, 7);
+    assert_eq!(track.skipcount, 2);
+    assert_eq!(track.time_played, 1_700_000_000);
+    assert_eq!(track.volume, 12);
+    let playlists = session.playlists().unwrap();
+    assert_eq!(playlists.len(), 2, "master + the created playlist");
+    let ours = playlists
+        .iter()
+        .find(|playlist| !playlist.is_master)
+        .expect("the created playlist");
+    assert_eq!(ours.id, playlist_pid);
+    assert_eq!(ours.name.as_deref(), Some("Плейлист Б-010"));
+    assert_eq!(
+        ours.member_dbids,
+        vec![host_pid, host_pid],
+        "order and duplicates preserved through the rebuild"
+    );
+}
+
+/// B-010 step 4: the OTG exclusion — `write_library_to` never serializes
+/// libgpod-injected `OTG Playlist N` playlists, never touches
+/// `OTGPlaylistInfo`, and restores the session state afterwards.
+#[cfg(feature = "sync-writes")]
+#[test]
+fn staged_write_excludes_injected_otg_playlists() {
+    let Some(backend) = backend_or_skip() else {
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    ipod::testkit::init_device(&backend, dir.path(), "MA446", "fixture-pod").unwrap();
+    ipod::testkit::seed_sysinfo(dir.path(), "MA446").unwrap();
+
+    // One track so the OTG index resolves (the mhlt-order index the file
+    // format uses — measured in the R1 inventory).
+    let source = dir.path().join("song.mp3");
+    std::fs::write(&source, b"fake audio bytes").unwrap();
+    let mut session = ipod::DeviceSession::open(&backend, dir.path()).unwrap();
+    session
+        .create_track(&ipod::TrackMetadata {
+            title: Some("Трек".to_string()),
+            ..Default::default()
+        })
+        .unwrap();
+    session.write_library().unwrap();
+    drop(session);
+
+    // OTGPlaylistInfo: mhpo header (0x14) + one big-endian u32 index.
+    let mut otg = vec![0_u8; 0x14];
+    otg[0..4].copy_from_slice(b"mhpo");
+    otg[4..8].copy_from_slice(&0x14_u32.to_le_bytes());
+    otg[8..12].copy_from_slice(&4_u32.to_le_bytes());
+    otg[12..16].copy_from_slice(&1_u32.to_le_bytes());
+    otg.extend_from_slice(&0_u32.to_be_bytes());
+    std::fs::write(dir.path().join("iPod_Control/iTunes/OTGPlaylistInfo"), &otg).unwrap();
+
+    let mut session = ipod::DeviceSession::open(&backend, dir.path()).unwrap();
+    assert!(
+        session.playlists().unwrap().iter().any(|playlist| playlist
+            .name
+            .as_deref()
+            .is_some_and(|name| name.starts_with("OTG Playlist "))),
+        "parse must inject the OTG queue"
+    );
+
+    let staged = dir.path().join("iPod_Control/iTunes/iTunesDB.staged");
+    session.write_library_to(&staged).unwrap();
+    assert!(
+        dir.path()
+            .join("iPod_Control/iTunes/OTGPlaylistInfo")
+            .is_file(),
+        "the OTG file must never be touched"
+    );
+    assert!(
+        session.playlists().unwrap().iter().any(|playlist| playlist
+            .name
+            .as_deref()
+            .is_some_and(|name| name.starts_with("OTG Playlist "))),
+        "the session keeps the injected playlist after the write"
+    );
+    drop(session);
+
+    // The staged DB must not contain the injected playlist — check the raw
+    // bytes (a re-parse would re-inject it from the still-present
+    // OTGPlaylistInfo, which is exactly the device-owned behavior we want).
+    let staged_bytes = std::fs::read(&staged).unwrap();
+    let needle_utf16: Vec<u8> = "OTG Playlist 1"
+        .encode_utf16()
+        .flat_map(u16::to_le_bytes)
+        .collect();
+    let needle_utf8 = b"OTG Playlist 1".to_vec();
+    assert!(
+        !staged_bytes
+            .windows(needle_utf16.len())
+            .any(|window| window == needle_utf16)
+            && !staged_bytes
+                .windows(needle_utf8.len())
+                .any(|window| window == needle_utf8),
+        "the staged DB must not serialize the injected OTG playlist"
+    );
+}
