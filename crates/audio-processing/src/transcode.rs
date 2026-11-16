@@ -431,6 +431,10 @@ pub fn transcode_to_m4a(
     loop {
         if cancelled() {
             let _ = pipeline.set_state(gst::State::Null);
+            // Best-effort partial cleanup: on Linux the unlink succeeds
+            // even while the sink still holds the file open; elsewhere the
+            // B-010a staging sweep removes it instead.
+            let _ = std::fs::remove_file(output);
             return Err(io::Error::new(
                 io::ErrorKind::Interrupted,
                 "Transcoding cancelled",
@@ -441,7 +445,11 @@ pub fn transcode_to_m4a(
         };
         match message.view() {
             gst::MessageView::Eos(..) => return Ok(()),
-            gst::MessageView::Error(error) => return Err(map_pipeline_error(error, stream)),
+            gst::MessageView::Error(error) => {
+                let _ = pipeline.set_state(gst::State::Null);
+                let _ = std::fs::remove_file(output);
+                return Err(map_pipeline_error(error, stream));
+            }
             _ => {}
         }
     }
@@ -815,6 +823,44 @@ mod tests {
         file.write_all(&data_size.to_le_bytes()).expect("data size");
         file.write_all(&vec![0_u8; data_size as usize])
             .expect("wave samples");
+    }
+
+    #[test]
+    fn m4a_encoder_honours_cancellation() {
+        let directory = tempfile::tempdir().expect("transcode directory");
+        let path = directory.path().join("tone.wav");
+        write_wide_wave(&path);
+        let uri = gst::glib::filename_to_uri(&path, None).expect("wave URI");
+        let output = directory.path().join("cancelled.m4a");
+        let result = transcode_to_m4a(&ResolvedStream::new(uri.as_str()), 256, &output, || true);
+        assert_eq!(
+            result.err().map(|error| error.kind()),
+            Some(io::ErrorKind::Interrupted),
+            "a pre-cancelled encode must fail with Interrupted"
+        );
+        assert!(!output.exists(), "a cancelled encode must not leave a file");
+    }
+
+    #[test]
+    fn m4a_encoder_reports_unencodable_sources() {
+        let directory = tempfile::tempdir().expect("transcode directory");
+        let path = directory.path().join("not-audio.bin");
+        std::fs::write(&path, b"definitely not an audio file").unwrap();
+        let uri = gst::glib::filename_to_uri(&path, None).expect("file URI");
+        let output = directory.path().join("out.m4a");
+        // The cancellation deadline only exists so a pathological pipeline
+        // failure turns the test into a bounded assertion instead of a hang;
+        // the real expectation is the source error below.
+        let started = std::time::Instant::now();
+        let result = transcode_to_m4a(&ResolvedStream::new(uri.as_str()), 256, &output, || {
+            started.elapsed() > Duration::from_secs(10)
+        });
+        let error = result.expect_err("garbage input must fail the encode");
+        assert_ne!(
+            error.kind(),
+            io::ErrorKind::Interrupted,
+            "the failure must be the source error, not the test deadline: {error}"
+        );
     }
 
     fn write_silence_wave(path: &std::path::Path) {

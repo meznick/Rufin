@@ -141,23 +141,24 @@ GStreamer-free (b010_plan §7's caller-supplied-provider pattern).
 
 ### 3.4 Env-gated acceptance (`crates/ipod-sync`, dev-deps)
 
-One integration test, gated by the same env trio (`IPOD_TEST_TREE`,
-`RUFIN_LIBGPOD_DIR`, and a generated source — no `ITL_TEST_PATH` needed):
+One integration test, gated on `RUFIN_LIBGPOD_DIR` only (the pinned
+libgpod for the backend load). No snapshot corpus is involved at all —
+the device tree is built fresh by `ipod::testkit::init_device`, which is
+what makes a before/after tree-hash proof unnecessary (there are no
+originals to protect):
 
-1. Generate the hi-nominal-bitrate WAV (the 3.2 fixture generator, moved
-   into a shared test helper or duplicated in the dev test).
+1. Generate the hi-nominal-bitrate WAV (the 3.2 fixture generator,
+   duplicated in the dev test).
 2. `decide()` says `TranscodeToAac256` for it; a fake MP3 record and a
    ≤256 AAC record say `CopyVerbatim` (pure, no env).
 3. Encode via `audio-processing` (dev-dep) → assert the m4a parses and
    the size bound holds.
-4. On a **disposable copy** of the device tree (`ipod::testkit`
+4. On the **freshly initialized** device tree (`ipod::testkit`
    conventions): `create_track` with the host record's metadata and
    `filetype = "m4a"`, `copy_track(dbid, encoded_m4a)`, `write_library`;
    then a fresh session re-parses: the track exists, `ipod_path` resolves,
    the file is byte-identical to the encoded m4a, and the DB record says
    m4a/AAC with sane bitrate.
-5. The originals (device snapshot) stay byte-identical — tree hash before
-   and after, per the B-007/B-009 proof conventions.
 
 The acceptance proves the whole chain the main task will call: decide →
 encode → gated copy → parseable device state. Skip messages point at
@@ -202,9 +203,12 @@ re-check math, UI — all B-010/B-011+.
   paths, lifecycle + device-scoped orphan sweep).
 - `transcode_to_m4a` landed in `crates/audio-processing` with the shared
   `map_pipeline_error` refactor (the same error mapping now serves both
-  entry points). Crate-local test pins `ftyp`, moov-before-mdat (the
+  entry points). Crate-local tests pin `ftyp`, moov-before-mdat (the
   faststart layout the pod needs), the 32000 B/s capacity bound and
-  decode-back verification.
+  decode-back verification, plus the two failure paths: a pre-cancelled
+  encode returns `Interrupted` without leaving a file, and an unencodable
+  source returns the mapped pipeline error (bounded by a test-only
+  cancellation deadline).
 - Env-gated acceptance `crates/ipod-sync/tests/b010a_transcode.rs` passes
   against the pinned libgpod (fresh MA446 tree): decide → encode → gated
   create/copy/write → re-parse pins filetype `m4a`, bitrate 256, on-pod
