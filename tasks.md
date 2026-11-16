@@ -66,6 +66,27 @@ Tasks are listed in dependency order; IDs stay stable, so B-007 precedes discove
   - Research gate before implementation: revisit [R1](deltas/b001_research.md#r1-itdb_write_file-side-effects) for dry-run isolation and review the resulting test/design proposal with the owner.
   - Verification: Dry Run reports expected changes; before/after tree comparisons prove no creation, deletion, or mutation of device files (including stats/auxiliary files) and no host `.itl` write. Potentially mutating parse operations run only on disposable snapshots.
   - Depends on: B-008
+- [x] **B-010a: AAC-256 transcoding for the device sync**
+  - Spec reference: R-04, S-07 (file-writing behavior) — the transcode
+    sub-task split out of B-010 (owner 2026-11-16)
+  - Plan reference: [b010a_plan.md](deltas/b010a_plan.md)
+  - Verification: the owner-rule transcode decision is pure and unit-tested
+    (PDF never copied, MP3 always verbatim, lossless and non-MP3 >256 kbps
+    to AAC 256, ≤256 verbatim, unknown bitrate conservative with a
+    diagnostic); `transcode_to_m4a` produces an moov-first m4a within the
+    B-009 capacity bound; the env-gated acceptance runs decide → encode →
+    gated create/copy/write → re-parse on a fresh MA446 tree and pins
+    filetype m4a / bitrate 256 / byte-identical on-disk copy; failure paths
+    pinned (cancellation → `Interrupted` with no partial file; unencodable
+    source → mapped error). The executor wires the provider in B-010.
+  - Result: implemented on `feature/ipod-page-task-B-010a`
+    (9e3ca7e…c81f87d): `crates/ipod-sync/src/sync/transcode.rs` (decision +
+    staging lifecycle, 3 unit tests), `audio_processing::transcode_to_m4a`
+    (+ shared error mapping, 2 failure-path tests), env-gated acceptance
+    `crates/ipod-sync/tests/b010a_transcode.rs`. Battery: ipod-sync 74 unit
+    + full env-gated suite, audio-processing 15/15, test-synthetic,
+    test-wrapper, lint 0.
+  - Depends on: B-009
 - [ ] **B-010: Implement full bidirectional sync and recoverable coordination**
   - Spec reference: R-04, S-07, S-10, S-12, R-05, S-13
   - Plan reference: Phase 2, Sync Data Mapping, Recovery and Statistics
