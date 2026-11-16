@@ -1,6 +1,6 @@
 # B-010: Full bidirectional sync and recoverable coordination — implementation plan
 
-Status: **draft for owner review** (2026-11-13). Task branch:
+Status: **draft for owner review** (2026-11-16). Task branch:
 `feature/ipod-page-task-B-010`, based on `feature/ipod-page` at `52b7b28`
 (B-009 merged and checked off). Decisions required before implementation are
 collected in §11; the research-gate findings below are source-level evidence,
@@ -228,14 +228,17 @@ journal (the fault-injection gate asserts the invariant, §9).
    delta twice, §6; B-017 validates). Last-success advances only here
    (S-10); every earlier exit is a partial result with the journal retained.
 
-**Retry and dedup.** The journal records per-track watermarks (raw values
-last applied). The merge is computed as host-vs-observed-device diffs
-(§6) — naturally idempotent: a retry after a host commit but before the ack
-sees zero diff and skips; a retry after a device commit re-verifies and
-advances; a retry after a failed step resumes from that step. Numeric
-`track->id` reassignment (§2) cannot break anything because merge keys are
-dbids (= host PIDs) everywhere; Play Counts entries with un-attributable
-dbids are preserved in the journal with diagnostics, never dropped.
+**Retry and dedup.** The journal records the applied delta set before the
+host write: per-dbid watermarks (applied play and skip deltas) plus the
+consumed file identity. The additive merge (§6) is idempotent under those
+watermarks: a retry after a host commit but before the ack diffs the
+still-live pending file against them and applies only entries newer than
+the watermark; a retry after a device commit re-verifies and advances (the
+renamed `.bak` is never re-read); a retry after a failed step resumes from
+that step. Numeric `track->id` reassignment (§2) cannot break anything
+because merge keys are dbids (= host PIDs) everywhere; Play Counts entries
+with un-attributable dbids are preserved in the journal with diagnostics,
+never dropped.
 
 **Competing-writer exclusion** (S-12): refuse when (a) the mount is not
 writeable or not the same volume identity as at preflight; (b) any process
@@ -247,47 +250,80 @@ the realistic competitors are local processes — the scan covers them.
 
 ## 6. Stat import and merge
 
-**The device observation already includes pending plays.** `itdb_parse`
-merges `Play Counts` into the track model *additively* at parse time:
-`playcount += delta` (with `recent_playcount = delta`), `skipcount += delta`,
-`time_played` replaced when set, `rating` replaced when set (previous value
-backed up to `app_rating`). The wrapper's `tracks()` therefore carries the
-true device totals; the B-009 presence-only stance ends here. The raw file
-(mhdp: header with entry length/count, entries of dbid+counts+times) is
-parsed by a **pure-Rust reader** in ipod-sync (format is trivial, ~50 lines;
-libgpod's parser stays internal to C) and cross-checked against the merged
-`tracks()` values in the gate — the two must agree per dbid.
+**The pending delta store.** Every counter merge is additive because the
+device keeps a dedicated pending-delta file: `Play Counts` (mhdp, header
+0x60). Each entry carries playcount @+0, last-played timestamp @+4, bookmark
+@+8, and — depending on the entry length — rating @+12 (≥0x10), an unknown
+u32 @+16 (≥0x14), skipcount @+20 and last-skipped @+24 (≥0x1c). The mhit
+counters are totals; the file is the "since last sync" delta store, and
+iTunes consumes it (renames to .bak) in the same sync that adds the deltas
+to the host. libgpod's parse merges it the same way, additively:
+`playcount += delta`, `skipcount += delta`, `time_played` replaced; its
+`recent_playcount`/`recent_skipcount` hold the per-sync deltas ("for
+information only" per upstream). The wrapper's `tracks()` therefore already
+carries the true device totals. The raw file is parsed by a **pure-Rust
+reader** in ipod-sync (the entry layout above is the whole format); the gate
+cross-checks per dbid: the file's delta sums must equal the wrapper's merged
+values minus the stored mhit values (rating excluded from that check —
+libgpod applies entry ratings at parse while our reader ignores them, so a
+mismatch there *is* the stray-entry diagnostic below).
 
-**Merge policy (owner decision §11-3), proposed per-field:**
+**Merge policy (owner decision §11-3), per-field (corrected 2026-11-16 —
+additive, not max):**
 
-- `play_count`: merged = `max(host, device observed)`; host patch when
-  device > host; device field always written to merged.
-- `skip_count`: merged = `max(host, device observed)`; both sides as above
-  (the mhit has no skipcount2 baseline field, so max is the only idempotent
-  rule).
-- `play_date`: newest raw Apple-epoch value wins, both sides (raw space
-  end-to-end, B-008 §6; conversion only at the itl-sync boundary).
-- `rating`: host-wins push (Video/Classic firmware cannot author ratings;
-  the device value is a copy). A device value higher than host is a stale
-  copy or an out-of-band host change — never imported over the host's own
-  record; the diff is reported, not silently reverted. (max-merge would
-  resurrect a rating the user just downgraded in Rufin — rejected for this
-  field.)
-- `volume_adjustment`: out of merge scope — itl-sync has no volume patch
-  field today, and the real pair shows 0 diffs; device-side push requires an
-  itl-sync extension (recorded as debt, §11-4).
+- `play_count` — **additive**: host = host + device delta, where the delta
+  is the per-dbid sum of the pending `Play Counts` entries, cross-checked
+  against `mhit.playcount − mhit.playcount2` (playcount2 = the last-sync
+  baseline iTunes itself maintains). A max merge would silently lose plays:
+  with the host advanced by Rufin plays (100→103) and two pending device
+  plays (102), max keeps 103 and drops the two — iTunes sums to 105. After
+  the merge the device is written with playcount = merged total and
+  **playcount2 = merged total** (baseline reset; cross-iTunes rule below).
+- `skip_count` — **additive** the same way via the entry skipcount field.
+  The mhit has no skipcount2 baseline — the pending file is the delta store
+  and the mhit skipcount is a total. Device written to the merged total.
+- `play_date` — **newest wins**, both directions: timestamps merge by
+  recency and both sides author plays (max is correct for timestamps, unlike
+  for counters). Raw Apple-epoch space end-to-end (B-008 §6); conversion
+  only at the itl-sync boundary.
+- `rating` — **host-wins push**: Video/Classic firmware has no rating UI,
+  so a device rating is never device-authored — it is a stale copy iTunes
+  wrote, and iTunes' own rule ("newer modification wins", keyed on the
+  device by `mhit` @+0x20 `time_modified` and on the host by the `Date
+  Modified` the XML exports) degenerates to host-wins because the host is
+  the only author. The host-side mith offset for that timestamp is **not
+  yet verified** in itl-player NOTES — a merge-prerequisite research item
+  that matters only if a device rating author ever appears. The
+  `Play Counts` entry rating field is **ignored** on Video/Classic: these
+  firmwares never write it, and a file carrying one is reported as a
+  diagnostic with the values never applied.
+- `volume_adjustment` and `skip_date` — out of merge scope: itl-sync has
+  patch fields for neither (rating, play/skip counts, play date only), and
+  the real pair shows 0 volume diffs. Both defer to the itl-sync-extension
+  decision (§11-4); the device values are carried read-only.
 
 **The playcount2 baseline rule (cross-iTunes correctness).** iTunes uses
-`playcount2` (mhit @+0x54) as the per-device last-sync baseline: it computes
-the pending delta as `playcount − playcount2`. After we merge on-device plays
-into the host, we **must** write `playcount2 = merged playcount`; otherwise
-the next Windows iTunes sync re-adds the already-imported delta (double
-count). This mirrors iTunes' own behavior; the gate pins the written value
-and B-017's VM check verifies the real iTunes does not double-count. The
-same reasoning drives the `Play Counts.bak` removal in §5 step 8.
+`playcount2` (mhit @+0x54) as the per-device last-sync baseline: the pending
+delta is `playcount − playcount2`. After we merge on-device plays into the
+host, we **must** write `playcount2 = merged playcount`; otherwise the next
+Windows iTunes sync re-adds the already-imported delta (double count). This
+mirrors iTunes' own behavior; the gate pins the written value and B-017's
+VM check verifies the real iTunes does not double-count. The same reasoning
+drives the `Play Counts.bak` removal in §5 step 8.
+
+**The additive rule needs the journal (dedup).** Additive import is only
+safe because the journal records the applied delta set before the host write
+(§5 step 2): per-(dbid, applied play delta, applied skip delta) watermarks
+plus the consumed file identity. Crash after host write but before device
+write: the pending file is still live on the pod — the retry import diffs
+current entries against the watermarks and applies only entries newer than
+them (no double import). Crash after device write but before completion:
+only the `.bak` remains, and the import step never reads `.bak` — the merged
+values already live in host and device. All keys are dbids; the reassigned
+numeric `mhit` ids never participate.
 
 **Import-first ordering** (§5 step 4) makes the S-13 second clause safe: a
-device write can only consume `Play Counts` after the imported values are
+device write can only consume `Play Counts` after the imported deltas are
 durably on the host (itl-sync's atomic write + rolling backups are the host
 durability); if the host refuses, nothing is consumed and the retry starts
 from the same clean state.
@@ -414,23 +450,26 @@ No physical-device or Windows-iTunes claim is made here — those are B-017.
 
 ## 11. Decisions required before implementation
 
-1. **Write strategy.** Proposed: staged `itdb_write_file` + own rename +
+1. **Write strategy.** staged `itdb_write_file` + own rename +
    OTG exclusion (§4), accepting the second-`mhlp` category-list loss until
-   iTunes regenerates them. Alternative: own iTunesDB serializer (preserves
-   topology, requires reimplementing the Classic checksum — rejected on
-   cost/risk). Confirm the acceptance of the topology limitation.
-2. **Transcoding.** Proposed: B-010 implements `Copy` mode only; the
-   owner's "Convert higher bitrate songs to AAC 256" becomes its own task
-   (GStreamer encode + measurement-based capacity + device acceptance).
-   Alternative: transcode inside B-010 — significantly larger scope; needs
-   a decision on the encoder and the fallback for un-encodable tracks.
-3. **Stat merge policy.** Proposed per-field rules of §6 (max for counts
-   and date, host-wins rating, playcount2 baseline reset). Alternatives:
-   iTunes-delta arithmetic for counts; max for rating (rejected: resurrects
-   downgrades).
-4. **Volume adjustment.** Proposed: out of scope (0 diffs on the real pair;
-   itl-sync lacks the field). Alternative: extend itl-sync with a volume
-   patch first (cross-repo work + VM acceptance).
+   iTunes regenerates them.
+2. **Transcoding.** first of all implement transcoding to lower bitrate in separate sub-task (b-010a). after this one is ready and tested continue to main b-010
+3. **Stat merge policy.** Resolved in draft (corrected 2026-11-16, owner
+   review): additive deltas for play and skip counts — the `Play Counts`
+   file is the pending-delta store, the host sums the per-dbid deltas, and
+   the journal watermarks make retries dedup-safe; newest-wins for play
+   date (timestamps merge by recency); host-wins push for rating (no
+   device rating author on Video/Classic; `Play Counts` entry ratings
+   ignored with a diagnostic; the host-side date-modified mith offset is a
+   research prerequisite for the timestamp-newer-wins generalization);
+   playcount2 baseline reset on every device write; volume and skip date
+   deferred to an itl-sync extension (§6). Alternatives considered and
+   rejected: max for counts (loses plays/skips), max for rating
+   (resurrects downgrades).
+4. **Volume adjustment and skip date.** Proposed: both out of scope (0
+   volume diffs on the real pair; itl-sync has patch fields for neither).
+   Alternative: extend itl-sync first with volume and skip-date patches
+   (cross-repo work + VM acceptance), then add the merge rules.
 5. **Playlist selection.** Proposed: sync every host playlist iTunes would
    (all static and smart `miph`, including folder playlists), exclude PDF
    Digital Booklets from file copies (iTunes never copies them — B-009 gate
