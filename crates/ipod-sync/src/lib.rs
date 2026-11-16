@@ -61,6 +61,7 @@ pub mod mapping;
 pub mod mounts;
 pub mod preflight;
 pub mod retrieval;
+pub mod sync;
 
 pub use discovery::{
     BackendStatus, BlockedMount, Candidate, Discovery, IPOD_CONTROL_DIR, ScanReport,

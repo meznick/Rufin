@@ -30,3 +30,9 @@ ipod = { workspace = true, features = ["sync-writes"] }
 # crate-private) — owner decision b009_plan §9-1 (dev-dependency for the
 # artwork evidence).
 lofty.workspace = true
+# The B-010a acceptance gate drives the real AAC-256 encoder and needs
+# filename→URI conversion for the generated source — both dev-only
+# (`deltas/b010a_plan.md` §3.4); production deps stay read-side and
+# GStreamer-free.
+audio-processing.workspace = true
+gstreamer.workspace = true

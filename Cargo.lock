@@ -4272,6 +4272,8 @@ dependencies = [
 name = "ipod-sync"
 version = "0.16.6"
 dependencies = [
+ "audio-processing",
+ "gstreamer",
  "ipod",
  "itl-core",
  "itl-sync",
