@@ -466,17 +466,24 @@ No physical-device or Windows-iTunes claim is made here — those are B-017.
    deferred to an itl-sync extension (§6). Alternatives considered and
    rejected: max for counts (loses plays/skips), max for rating
    (resurrects downgrades).
-4. **Volume adjustment and skip date.** Proposed: both out of scope (0
+4. **Volume adjustment and skip date.** both out of scope (0
    volume diffs on the real pair; itl-sync has patch fields for neither).
-   Alternative: extend itl-sync first with volume and skip-date patches
-   (cross-repo work + VM acceptance), then add the merge rules.
 5. **Playlist selection.** Proposed: sync every host playlist iTunes would
    (all static and smart `miph`, including folder playlists), exclude PDF
    Digital Booklets from file copies (iTunes never copies them — B-009 gate
    evidence) and criteria-less Genius playlists; selection UI later.
-6. **Artwork removals.** Proposed: remove artwork only for tracks being
-   removed entirely; keep the 99 cache-written thumbnails the B-009 gate
-   surfaced (iTunes' own art cache writes them; fighting it is churn).
+6. **Artwork removals — none, ever.** Resolved in draft (corrected
+   2026-11-16, owner review): the executor performs no artwork deletions.
+   iTunes treats ArtworkDB as add-only — entries are never individually
+   cleaned, the file is only occasionally recreated whole — and libgpod's
+   own writer regenerates ArtworkDB + ithmb banks from the in-memory model
+   on every write with no per-entry deletion path. The B-009
+   `ArtworkRemove` list (the 99 cache-written thumbnails on the pair) is
+   therefore informational under every policy, including the default
+   `Remove`; `Remove` never applies to artwork. Matched tracks' artwork
+   state is never touched, so iTunes' cache-written thumbnails survive the
+   regeneration unchanged; adds are the only artwork mutation, and artwork
+   of removed tracks disappears only because the track leaves the model.
 7. **`Play Counts.bak` removal.** Proposed: remove after journal
    completion (§5 step 8) to prevent a later Windows-iTunes double-import;
    B-017 validates the real behavior. Alternative: leave it and accept
