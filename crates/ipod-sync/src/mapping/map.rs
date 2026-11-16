@@ -204,6 +204,7 @@ pub fn map_playlists(
                 device_id: device.id,
                 kind_agrees: device.is_spl == playlist.smart.is_some(),
             },
+            [] => name_outcome(&candidates, playlist, &mut mapping),
             several => {
                 mapping.diagnostics.push(MappingDiagnostic::new(format!(
                     "device carries {} playlists with id {}; host playlist #{} falls back to name matching",
@@ -213,7 +214,6 @@ pub fn map_playlists(
                 )));
                 name_outcome(&candidates, playlist, &mut mapping)
             }
-            [] => name_outcome(&candidates, playlist, &mut mapping),
         };
         if let PlaylistOutcome::Matched { device_id, .. } = outcome {
             claimed_device_ids.insert(device_id);
