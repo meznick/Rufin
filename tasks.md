@@ -166,3 +166,35 @@ Tasks are listed in dependency order; IDs stay stable, so B-007 precedes discove
   - Goal: during sync, a device-only saved `On-The-Go N` becomes a static playlist in the host library (members resolve via dbid = host PID), after which it syncs both ways like any other playlist.
   - Hazards to remember: adding a playlist to the `.itl` is exactly what itl-core's writer cannot do today — "never add/remove tracks/albums/playlists" (itl-player AGENTS.md): `reindex()` would merge the second `mlth` (purchased items) into the main list. The host-side capability needs its own itl-core spike + iTunes acceptance, or a decision that the import lands in Rufin's own playlist layer instead.
   - Verification: fixture sync imports a device-only saved OTG as a static host playlist; the result opens in iTunes; the device copy stays in sync both ways afterwards.
+- [ ] **B-023 (backlog): Write smart-playlist criteria to the device**
+  - Spec reference: R-04, S-07 — spec delta to review at implementation time
+  - Plan reference: [b010_plan.md](deltas/b010_plan.md) §8
+  - Depends on: B-010
+  - Why it exists: the B-010 executor defers smart-playlist creates and
+    criteria updates with diagnostics (never a silent conversion to
+    static). Until this lands, a smart playlist newly created in iTunes
+    does not appear on the pod and a criteria edit does not propagate;
+    the existing smart playlists keep working (their `mhod` 51 rule blobs
+    round-trip byte-exact through the normal write, R1-measured 3/3).
+  - Goal: for `PlaylistCreate { kind: Smart }` and `CriteriaDiffer`
+    updates, build the two device forms — the flattened `SLst` rules
+    (B-009's `flatten.rs` already produces them byte-exact) and the
+    72-byte SPLPREF compiled from the host's 112-byte Smart Info
+    (live-update/limit/sort/match-only) — and write them through a
+    wrapper extension that injects the rule structs into the playlist
+    model before the staged write.
+  - Hazards to remember: the Smart Info → SPLPREF field mapping must be
+    decoded against the pair's ground truth (the `.itl` holds both forms
+    for the snapshot's three smart playlists). libgpod's writer
+    serializes only the 14 SPLPREF bytes it models and zeroes the rest,
+    while iTunes writes a constant `05` at +0x10 on every playlist — the
+    byte-exactness route (patch libgpod vs. post-write splice vs. accept
+    the 14-byte window) is a design decision; the splice breaks the
+    Classic checksum. The four media-library category lists
+    (Музыка/Фильмы/Телешоу/Аудиокниги) live in the mhsd type-5 list
+    libgpod never surfaces — creating them as user playlists would
+    duplicate them; the executor must skip them.
+  - Verification: fixture sync creates a new smart playlist and updates
+    criteria byte-exactly against iTunes' own device blobs (B-017
+    validates on hardware); static playlists and the existing smart
+    lists stay byte-identical.

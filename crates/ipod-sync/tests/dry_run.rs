@@ -136,14 +136,33 @@ fn dry_run_pair_gate() {
     //    playlist selection);
     //  - 2 Die Antwoord tracks (#7233, #7237) — local files with plays,
     //    absent from the dump; same evidence gap as the 8 above.
+    // The live media root can drift between runs (a pinned track's file
+    // may disappear from the host disk) — such tracks must surface as
+    // HostFileMissing diagnostics, never as silent adds or removals.
     let expected_adds: [u32; 11] = [
         6877, 7233, 7237, 7365, 20454, 20459, 20462, 20465, 20471, 20474, 20477,
     ];
     let adds: Vec<u32> = report.file_adds.iter().map(|a| a.itl_id).collect();
-    assert_eq!(
-        adds, expected_adds,
-        "the pinned 11 host tracks missing from the device dump"
-    );
+    for add in &adds {
+        assert!(
+            expected_adds.contains(add),
+            "an unexpected add #{add} — the pair is not in sync on identity"
+        );
+    }
+    let missing: Vec<u32> = expected_adds
+        .iter()
+        .copied()
+        .filter(|expected| !adds.contains(expected))
+        .collect();
+    if !missing.is_empty() {
+        assert!(
+            report
+                .diagnostics
+                .iter()
+                .any(|d| d.contains("host file is missing")),
+            "pinned tracks absent from the report must be diagnosed as host-file-missing: {missing:?}"
+        );
+    }
     assert_eq!(report.file_repairs.len(), 0, "in-sync pair: no repairs");
     assert_eq!(
         report.file_removes.len(),

@@ -439,25 +439,37 @@ it as podcasts), smart-playlist creation/update via the §8 translation,
 member reorder, `remove_playlist`, and the OTG-exclusion write-prep +
 staged-write surface (§4).
 
-## 8. Smart playlist writing
+## 8. Smart playlist writing — deferred to B-023
 
-New smart playlists (`PlaylistCreate { kind: Smart }`) and criteria updates
-(`CriteriaDiffer`) need the two device forms iTunes writes: the flattened
-`SLst` rule blob (mhod 51) — B-009's `flatten.rs` already produces it from
-host criteria, proven byte-exact against the pair — and the 72-byte SPLPREF
-(mhod 50) compiled from the host's 112-byte Smart Info (live-update/limit/
-sort/match-only settings). Step 1 of §10 measures whether libgpod's own
-parse→write of these two mhods is byte-exact on the pair's three smart
-playlists; if yes, the translation is host-criteria → libgpod's rule API
-(`Itdb_SPLRULES` built for the *flattened* form, `Itdb_SPLPREF` fields mapped
-from Smart Info) and the gate re-verifies the emitted bytes against iTunes'
-own device blobs. If libgpod's round-trip is lossy, the fallback is a
-wrapper verbatim-blob write (the write-side counterpart of B-009's read-side
-`smart_blob`) — the plan commits to byte-equality with iTunes' output either
-way, and to never silently converting to static: `CriteriaUnknown` /
-unflattenable criteria skip the criteria write and keep membership, with a
-diagnostic (B-008 §7). Genius playlists (no criteria in the `.itl`) stay
-unsynced, as iTunes itself does not sync them.
+Status (owner 2026-11-17): the translation is a **backlog task (B-023)**,
+split out of B-010. The executor skips smart-playlist creates and criteria
+updates with explicit diagnostics — never a silent conversion to static.
+Existing smart playlists are unaffected: their `mhod` 51 rule blobs
+round-trip byte-exact through the normal staged write (R1-measured 3/3),
+so the pair's three smart lists keep working. What waits for B-023: new
+smart playlists reaching the device, criteria edits propagating, and the
+type-5 category-list duplicate guard.
+
+The design B-023 inherits:
+
+- the flattened `SLst` rule blob (mhod 51) — B-009's `flatten.rs` already
+  produces it from host criteria, proven byte-exact against the pair — and
+  the 72-byte SPLPREF (mhod 50) compiled from the host's 112-byte Smart
+  Info (live-update/limit/sort/match-only settings);
+- the R1-measured round-trip: mhod 51 is byte-exact through libgpod's
+  parse→write (3/3), mhod 50 loses bytes 14..71 (libgpod serializes only
+  the 14-byte window; iTunes writes a constant `05` at +0x10). The route —
+  libgpod's rule API (`Itdb_SPLRULES` for the flattened form,
+  `Itdb_SPLPREF` mapped from Smart Info) vs. a wrapper verbatim-blob write
+  vs. a patched libgpod — is B-023's design decision (the splice breaks
+  the Classic checksum);
+- the guardrails: `CriteriaUnknown` / unflattenable criteria skip the
+  criteria write and keep membership, with a diagnostic (B-008 §7);
+  Genius playlists (no criteria in the `.itl`) stay unsynced, as iTunes
+  itself does not sync them; and the four media-library category lists
+  (Музыка/Фильмы/Телешоу/Аудиокниги) live in the type-5 list libgpod
+  never surfaces — creating them as user playlists would duplicate them,
+  so B-023 must skip them.
 
 ## 9. Verification: gates and failure injection
 
@@ -614,3 +626,51 @@ No physical-device or Windows-iTunes claim is made here — those are B-017.
     iTunes regenerates it at its next sync (B-017 validates the claim on
     hardware). The vendored-patched-libgpod alternative is recorded and
     rejected as out of proportion.
+
+## 12. Implementation results (2026-11-16/17)
+
+All steps implemented on `feature/ipod-page-task-B-010` except the §8
+translation (backlog **B-023**, owner 2026-11-17 — the executor defers
+smart creates/criteria updates with diagnostics, never a conversion to
+static).
+
+- **Step 1 (measured R1/R2)** done 2026-11-16: the full write-path
+  inventory in §2/`b001_research.md` — topology survives via the type-5
+  list (members zeroed), dbids stable, the mhit-header shrink is
+  zero-padding, 632 unknown-mhod metadata drops accepted (§11-11), mhod
+  51 byte-exact / mhod 50 one-byte loss, pending-store formats pinned,
+  and the staged write's `playcounts_reset` measured as a **no-op** (wrong
+  directory) — consumption is the executor's completion step.
+- **Step 3**: pid-first playlist matching (5 tests; pair gate identical
+  outcomes, 12/12).
+- **Step 4**: wrapper write surface — stat-capable `TrackMetadata` with
+  explicit dbid, playlist create/remove/rebuild, staged `write_library_to`
+  with the OTG exclusion (gated integration tests incl. a real
+  `OTGPlaylistInfo` fixture).
+- **Steps 5-6**: additive merge with the drift guard + the mhdp reader
+  (17 tests); on-device journal/backup/recovery (13 tests incl. crash
+  survival and corrupt-journal refusal).
+- **Steps 7-8**: the executor — plan hash (FNV-1a over actions), the
+  exclusion layers (flock + /proc scan + writability probe), the
+  import-first host write, the §5 transaction with resumable steps.
+- **Steps 9-10 (gates, env-gated, disposable copies)**: the pair gate —
+  one full sync: 9 adds (11 − 2 PDF booklets), 3382 tracks post-sync,
+  artwork proof-read `Ok`, completed journal, originals byte-identical.
+  The failure battery — seeded pending (+2 plays/+1 skip): host-refusal
+  abort with the consistency set untouched, fail-after-every-step with
+  the device parsing after each crash, the pending imported **exactly
+  once** across the crashes, pending store consumed at completion,
+  held-lock refusal, post-DbWrite crash recovered by verify-and-advance.
+- **Gate-forced fixes**: one write session for mutations + DB write (a
+  fresh session silently lost the adds); FileOps re-runs on resume until
+  the DB write commits; recovery arms run the completion housekeeping;
+  `transcode_to_m4a` tears down to Null before returning (PLAYING-drop
+  criticals + a segfault under load).
+- **Verification**: ipod-sync 110 unit tests; audio-processing 15/15;
+  wrapper suite 48+13; test-synthetic; test-wrapper; lint exit 0;
+  clippy 0 on both touched crates; `git diff --check` clean.
+- **Deferred to B-023**: smart-playlist criteria translation (§8) and the
+  type-5 category-list duplicate guard; **to scripts**: the `test-sync`
+  FAT-image disk-full scenario (the code path is covered by the
+  battery's error propagation); **to B-017**: hardware/VM acceptance of
+  the whole write protocol.
