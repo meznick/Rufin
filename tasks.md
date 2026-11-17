@@ -1,6 +1,6 @@
 # tasks.md
 
-Tasks are listed in dependency order; IDs stay stable, so B-007 precedes discovery and B-005 precedes preflight. All Phase 1 and Phase 2 sync-core tasks (B-001 through B-011, including B-010a) are merged into `feature/ipod-page`; task-branch hashes are recorded in the entries that carry them. B-001 research does not claim runtime or hardware acceptance.
+Tasks are listed in dependency order; IDs stay stable, so B-007 precedes discovery and B-005 precedes preflight. All Phase 1 and Phase 2 sync-core tasks (B-001 through B-011, including B-010a) and the first Phase 3 task B-012 are merged into `feature/ipod-page`; task-branch hashes are recorded in the entries that carry them. B-001 research does not claim runtime or hardware acceptance.
 
 ## Phase 1: Device Connection Infrastructure
 
@@ -104,10 +104,11 @@ Tasks are listed in dependency order; IDs stay stable, so B-007 precedes discove
 
 ## Phase 3: UI Implementation
 
-- [ ] **B-012: Create iPod Page base layout**
+- [x] **B-012: Create iPod Page base layout**
   - Spec reference: R-01, S-01
   - Plan reference: Phase 3
   - Verification: Page is always accessible in Rufin, including its No iPod view when disconnected.
+  - Result: implemented on `feature/ipod-page-task-B-012` (plan `deltas/b012_plan.md` §11). `Route::Ipod` (serde/uniffi, not source-scoped) + the topbar `ipod` button (start group, after the playback-output button, before search — the R-01 access-point MODIFIED, `deltas/b012_delta.md`) → `navigate(Route::Ipod)`. gtk-library: `ipod_page.rs` — `IpodPageView` over `routes/ipod_page.ui` (the S-01 No-iPod view + temporary stub), the pure `decide()` carrying all state semantics, the snapshot subscription via `glib::spawn_future_local`, `ipod_route_view()`. gtk-shell: `Shell.ipod_connection` with a startup scan in `build.rs` (first B-006 instantiation in the app) and a mount-table scan on page open. Owner decision at acceptance (amends b006_delta D-1): manual scan only — the gio mount-event path is dead in the real app (its session-bus connection receives no broadcast signals at all; forensics in the plan §11); the event/debounce machinery stays shipped and gated but unwired, no polling. Gate-forced fixes: the state logic lives in the pure `decide()` (no widget tests are possible in this repo — GtkWidget class init asserts the main thread), and the stack pages use the repo's GtkStackPage convention (name on the page, not the child widget — the misnaming silently broke every non-disconnected render). Battery: rufin-core 154, gtk-widgets 56, gtk-library 115 + 3 env-gated gates, gtk-shell 54 — green; clippy 0 on the touched crates; workspace + i18n checks green.
   - Depends on: B-011
 - [ ] **B-013: Implement Connection State views**
   - Spec reference: R-02, S-05
