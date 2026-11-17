@@ -228,10 +228,13 @@ D-1 (page location) — the view lives in gtk-library (`ipod_page.rs`),
 like every other route view; the shell owns a thin dispatch arm. The
 connection service stays a gtk-library type.
 
-D-2 (service ownership) — the `Shell` owns `IpodConnection` +
-`IpodMountMonitor` (constructed in `shell/build.rs`); the page and later
-consumers get facade clones. Production backend search is
-`BackendSearch::FromEnv` (the shipped `IpodConnection::new()`).
+D-2 (service ownership) — the `Shell` owns the `IpodConnection` facade
+directly (constructed in `shell/build.rs` with the production
+`BackendSearch::FromEnv`); the page and later consumers get clones.
+**Amended at acceptance (owner, 2026-11-17):** no `IpodMountMonitor`
+wiring — the gio mount-event path proved dead in the real app (see §11),
+so scans run at startup and when the iPod page opens; the monitor module
+stays shipped and gated but unwired.
 
 D-3 (access point) — **not the sidebar**: the pages there lead to
 different library sorts, not devices. The iPod page opens from a button
@@ -296,11 +299,12 @@ unit matrix of §5 plus the existing `ipod_connection_gate` cover it.
    subscription (`glib::spawn_future_local`), `ipod_route_view()`.
    3 tests: the two `decide` matrices + the subscription roundtrip on a
    real worker thread with an unreachable backend.
-5. gtk-shell: `Shell.ipod_monitor` (`IpodMountMonitor::start(IpodConnection::new())`
-   in `build.rs` — the first-ever instantiation of the B-006 service in
-   the app), the `Route::Ipod` dispatch arm (static widget, before the
-   catalog path), the topbar `ipod` button (start group, after
-   `casting_host`, before the search title widget) with the
+5. gtk-shell: `Shell.ipod_connection` (the `IpodConnection` facade +
+   a startup scan in `build.rs` — the first-ever instantiation of the
+   B-006 service in the app), the `Route::Ipod` dispatch arm (scan on
+   page open per the owner's manual-scan decision, then the static
+   widget, before the catalog path), the topbar `ipod` button (start
+   group, after `casting_host`, before the search title widget) with the
    `bind()` → `navigate(Route::Ipod)` wiring. 1 new RouteStack test.
 6. `gtk-preferences/resources/style.css`: `.ipod-status-dot` +
    `.ipod-status-disconnected`. `locales/rufin.pot` regenerated — the
@@ -325,6 +329,22 @@ rufin-core/gtk-widgets/gtk-library; `cargo check --workspace` clean
 - **The topbar button is not widget-tested** for the same reason; its
   presence rides on the compiled-resource test and the click wiring rides
   on the tested `RouteStack` (the single manual-acceptance line).
+- **The gio mount-event path is dead in the real app (owner
+  acceptance, fixed here).** Live testing on the owner's machine: the
+  pod mounted while the app ran, the page stayed "No iPod detected". The
+  full forensics: the library path works headless (worker scan →
+  Connecting → retrieval with the real pod); the startup scan in the app
+  reaches `BackendUnavailable` correctly; but mount events never arrive —
+  the app's shared session-bus connection receives **no broadcast signals
+  at all** (a synthetic `dbus-send` broadcast with a raw leaked
+  subscription got nothing, while sync calls on the same connection
+  work), whereas minimal GTK probe apps on the same machine/session
+  receive them fine. Neither monitor-before-`app.run()` creation nor raw
+  D-Bus subscriptions fixed it. Owner decision (amends b006_delta D-1):
+  **manual scan only** — the iPod page opening runs a mount-table scan
+  (the topbar button is the trigger), plus the startup scan. The gio
+  event/debounce machinery stays shipped and gated in gtk-library but is
+  no longer wired into the app; no polling.
 - **Local-toolchain debt, not this task's:** the workspace carries
   pre-existing fmt drift (the local rustfmt is newer than CI's pinned
   one — `cargo fmt --all` rewrites a dozen untouched files, all reverted;

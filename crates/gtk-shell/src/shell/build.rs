@@ -489,9 +489,14 @@ pub async fn build(
             navigation_view,
             route_viewport,
             right_panel,
-            ipod_monitor: gtk_library::ipod_monitor::IpodMountMonitor::start(
-                gtk_library::ipod_connection::IpodConnection::new(),
-            ),
+            ipod_connection: {
+                // Startup scan: covers devices mounted before the app
+                // started. Later scans run when the iPod page opens (the
+                // user-triggered path — see the Shell field note).
+                let connection = gtk_library::ipod_connection::IpodConnection::new();
+                connection.scan();
+                connection
+            },
         }
     });
 

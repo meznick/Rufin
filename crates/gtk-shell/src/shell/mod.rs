@@ -62,11 +62,12 @@ pub(crate) struct Shell {
     pub(crate) navigation_view: NavigationWidgets,
     pub(crate) route_viewport: RouteViewport,
     pub(crate) right_panel: RightPanelWidgets,
-    /// B-012: the iPod connection service. The monitor owns the facade
-    /// and runs the mount-event scans; consumers grab
-    /// `monitor.connection()` clones (cheap). App-lifetime ownership —
-    /// the worker thread exits when the last facade drops.
-    pub(crate) ipod_monitor: gtk_library::ipod_monitor::IpodMountMonitor,
+    /// B-012: the iPod connection facade. App-lifetime ownership — the
+    /// worker thread exits when the last facade drops. Scans are
+    /// startup + user-triggered: opening the iPod page runs one (owner
+    /// decision — the gio mount-event path proved dead in this app; see
+    /// b012_plan §11).
+    pub(crate) ipod_connection: gtk_library::ipod_connection::IpodConnection,
 }
 
 mod media_menus;
