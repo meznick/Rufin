@@ -750,6 +750,9 @@ msgstr ""
 msgid "Check for updates"
 msgstr ""
 
+msgid "Check the libgpod backend installation, then scan again."
+msgstr ""
+
 msgid "Checking profile"
 msgstr ""
 
@@ -1000,6 +1003,9 @@ msgid "Connection name"
 msgstr ""
 
 msgid "Connection options"
+msgstr ""
+
+msgid "Connection service stopped"
 msgstr ""
 
 msgid "Connection settings"
@@ -3154,6 +3160,9 @@ msgstr ""
 msgid "Recommended when your server provides one"
 msgstr ""
 
+msgid "Reconnect the iPod and try again."
+msgstr ""
+
 msgid "Reconnect"
 msgstr ""
 
@@ -3371,6 +3380,9 @@ msgstr ""
 msgid "Response"
 msgstr ""
 
+msgid "Restart Rufin to reconnect the iPod."
+msgstr ""
+
 msgid "Restart now"
 msgstr ""
 
@@ -3513,6 +3525,9 @@ msgid "Saving changes"
 msgstr ""
 
 msgid "Saving..."
+msgstr ""
+
+msgid "Scan again"
 msgstr ""
 
 msgid "Scanning tracks"
@@ -4003,6 +4018,9 @@ msgid "Switching library..."
 msgstr ""
 
 msgid "Sync unavailable"
+msgstr ""
+
+msgid "Sync was interrupted"
 msgstr ""
 
 msgid "Synced lyrics"

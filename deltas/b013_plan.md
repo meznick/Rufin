@@ -1,6 +1,6 @@
 # B-013: Connection state views
 
-Status: draft — awaiting owner approval (2026-11-17).
+Status: owner-approved (2026-11-17); implemented as written (D-1..D-5 defaults accepted).
 
 ## 1. What this task is
 
@@ -287,4 +287,50 @@ being no sync button yet — B-015 owns the real gate.
 
 ## 11. Implementation results
 
-(filled after implementation — gates, corrections, battery)
+**Done 2026-11-17** on `feature/ipod-page-task-B-013`, per §10, with all
+five owner decisions as written:
+
+1. `ipod_connection.rs`: `worker_alive` in `ConnectionSnapshot`
+   (D-1); the worker carries a shared exit flag with an `AliveGuard`
+   clearing it when the loop ends (graceful or unwind); the facade's
+   `is_worker_alive()` reads it; a failed command send announces the
+   death once — flip the shared snapshot and fan out, lock ordering
+   identical to `publish()`. New gates: normal snapshots carry a live
+   worker; the crash gate injects a panicking `MountSource` (D-5),
+   polls the flag, asserts the fan-out snapshot, the facade-snapshot
+   flip, and the idempotent re-announce silence.
+2. `ipod_page.rs`: six-page `RenderedPage` (NoIpod, Connecting,
+   Unavailable, Ready, Error, ServiceDead), the extended `PageDecision`
+   (label, `show_diagnostics`, `show_device`, `notice_visible`,
+   `dot_class`), the ServiceDead precedence (keeps the notice — the
+   report outlives the service), `apply_snapshot` (headings, verbatim
+   diagnostics/device/notice, revealer), and the action wiring in
+   `ipod_route_view`: Scan again on No-iPod/Unavailable/Error, Retry on
+   Error (D-2/D-4). 7 decide-matrix gates replace the two B-012 ones;
+   the channel-flow gate stays.
+3. `ipod_page.ui`: six stack pages via GtkStackPage, the
+   display-only `GtkRevealer` notice banner above the stack (D-3),
+   state icons/spinners, hint copies.
+4. `style.css`: `.ipod-notice` (accent-bg mix — no warning token
+   exists in the theme). `locales/rufin.pot` regenerated.
+5. `deltas/b006_delta.md`: the two B-013-owned open items marked
+   resolved with pointers.
+
+Battery: gtk-library 121 lib tests (115 + 6) + 3 env-gated connection
+gates — green; clippy 0 on gtk-library; workspace check + i18n check
+green; my files fmt-clean (the pre-existing toolchain drift stays
+untouched, reverted after `cargo fmt --all` churn as in B-012).
+
+**Gate-forced corrections:**
+
+- The workspace denies `clippy::panic_in_result_fn` — the deliberate
+  crash in `PanickingMounts::mounts` carries a documented
+  `#[allow]`: the panic is the point of the injection, not an
+  accidental panic-in-Result.
+- No other corrections: the design held as planned; the composite
+  fields cross-check (19 bound ids vs the .ui) passes, so the template
+  instantiates without the B-012 class of stack-page mismatch.
+
+Manual acceptance (owner machine, env-gated backend) remains: the
+five-state walk, the notice banner, Scan again / Retry clicks, and the
+dead-service view in a dev build.

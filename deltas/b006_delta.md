@@ -250,7 +250,12 @@ review), the glib 0.22 `watch_channel` removal, the
   health surface: an atomic exit flag cleared when the worker loop ends,
   exposed as `is_worker_alive()` (or equivalent) on the facade, so the UI
   can surface a dead service instead of a frozen page. Found in the B-006
-  code review.
+  code review. **Resolved in B-013 (2026-11-17):** `worker_alive` rides
+  every snapshot; the worker clears a shared exit flag on loop end
+  (graceful or unwind), the facade fans out a death announcement on the
+  next failed command send, `is_worker_alive()` is the pull-side truth,
+  and the page's `ServiceDead` view overrides every state
+  (`deltas/b013_plan.md` §3.1).
 - **Command FIFO latency**: notice/retry commands queue behind multi-second
   libgpod parses (the worker processes commands serially). Acceptable by
   design, but B-010/B-013 must expect the interrupted-operation notice to
@@ -259,7 +264,11 @@ review), the glib 0.22 `watch_channel` removal, the
   shell when the page lands (B-012/B-013); until then they are library
   surface, same as B-003/B-005's glue.
 - B-013's retry button calls `connection.retry()`; B-013 owns the replug
-  hint copy.
+  hint copy. **Resolved in B-013 (2026-11-17):** the Error view carries
+  Retry (primary) and Scan again (secondary) with the replug hint copy;
+  No-iPod and Sync unavailable carry Scan again — `retry()` only
+  re-applies the stale last report, so a replugged device needs a scan
+  (`deltas/b013_plan.md` §3.2).
 - The `OperationNotice` placeholder is replaced by B-010's recovery model;
   the snapshot field stays.
 - **Model identity for restored iPods (research, B-005/B-007 follow-up)**:
