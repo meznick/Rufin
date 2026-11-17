@@ -23,11 +23,15 @@ use crate::sync::backup::{backup_consistency_set, restore_consistency_set};
 use crate::sync::exclusion::ExclusionGuard;
 use crate::sync::host::{HostWriteContext, write_host_patches};
 use crate::sync::import::{align_pending, parse_play_counts};
-use crate::sync::journal::{Journal, OperationRecord, Watermark};
+use crate::sync::journal::{FAILED_FILE, Journal, LastSuccess, OperationRecord, Watermark};
 use crate::sync::merge::{APPLE_UNIX_DELTA, StatMerge, StatPair, merge_stats};
 use crate::sync::plan::{ExecutionPlan, plan_hash};
 use crate::sync::recover::{RecoveryPlan, plan_recovery};
 use crate::sync::transcode::{FileWriteMode, decide_file_write};
+
+// B-011: the progress/outcome contract lives in `report`; the executor
+// re-exports it so the sync API surface stays in one place.
+pub use crate::sync::report::{ProgressEvent, RecoveryState, SyncChanges, SyncResult, SyncStatus};
 
 /// The ordered steps; the journal records completion by these names.
 pub const STEP_INTENT: &str = "Intent";
@@ -47,32 +51,20 @@ pub const STEPS: [&str; 6] = [
     STEP_VERIFY,
 ];
 
-/// What the run reported.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum SyncStatus {
-    Completed,
-    Partial {
-        failed_step: &'static str,
-        diagnostic: String,
-    },
-}
-
-/// The run's outcome (S-10: only a full completion advances last-success).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SyncOutcome {
-    pub status: SyncStatus,
-    pub host_patches_written: usize,
-    pub device_patches_written: usize,
-    pub files_added: usize,
-    pub files_removed: usize,
-    pub playlists_written: usize,
-    pub artwork_added: usize,
-    pub diagnostics: Vec<String>,
+/// What the run reported — the executor's internal accumulator
+/// (b011_plan §4), assembled into the public [`SyncResult`] at return
+/// time by [`run_sync`].
+#[derive(Debug)]
+struct SyncOutcome {
+    status: SyncStatus,
+    changes: SyncChanges,
+    diagnostics: Vec<String>,
+    recovery: Option<RecoveryState>,
 }
 
 /// A step failed — the journal is retained and the operation is resumable.
 #[derive(Debug)]
-pub struct SyncError {
+struct SyncError {
     pub step: &'static str,
     pub diagnostic: String,
 }
@@ -106,6 +98,80 @@ pub struct SyncContext<'a> {
     /// Test fault injection: return true to simulate a crash right after
     /// the named step's journal write. Production passes `|_| false`.
     pub fail_after: &'a dyn Fn(&str) -> bool,
+    /// B-011: the progress reporter (b011_plan §5). Called synchronously
+    /// and cheaply — a reporter that blocks would stall the sync. Use
+    /// [`crate::sync::report::ProgressPipe`] for the channel form; pass
+    /// `&|_| {}` when no stream is wanted.
+    pub reporter: &'a (dyn Fn(ProgressEvent) + Send + Sync),
+}
+
+/// B-011: the progress emitter — wraps the caller's reporter with the
+/// three event shapes (b011_plan §5).
+struct Progress<'a>(&'a (dyn Fn(ProgressEvent) + Send + Sync));
+
+impl Progress<'_> {
+    fn step(&self, name: &'static str, index: u8, total: u8, began: bool) {
+        (self.0)(ProgressEvent::Step {
+            name,
+            index,
+            total,
+            began,
+        });
+    }
+
+    fn item(&self, current: u32, total: u32, label: impl Into<String>) {
+        (self.0)(ProgressEvent::Item {
+            current,
+            total,
+            label: label.into(),
+        });
+    }
+
+    fn notice(&self, message: impl Into<String>) {
+        (self.0)(ProgressEvent::Notice(message.into()));
+    }
+}
+
+/// The 1-based protocol index of a step (the UI bar's x/6 position).
+fn step_index(step: &str) -> u8 {
+    STEPS.iter().position(|name| *name == step).unwrap_or(0) as u8 + 1
+}
+
+/// The recovery reference for a failed run: whatever the journal
+/// actually holds right now (never fabricated).
+fn journal_recovery(mount: &Path) -> Option<RecoveryState> {
+    match Journal::open(mount) {
+        Ok(journal) => match journal.load_active() {
+            Ok(Some(record)) => Some(RecoveryState::Resumable {
+                completed_steps: record
+                    .completed_steps
+                    .iter()
+                    .filter_map(|step: &String| {
+                        STEPS
+                            .iter()
+                            .position(|known: &&str| *known == step.as_str())
+                            .and_then(|position| STEPS.get(position).copied())
+                    })
+                    .collect(),
+            }),
+            Ok(None) if journal.root().join(FAILED_FILE).is_file() => {
+                Some(RecoveryState::FailedRecord)
+            }
+            Ok(None) => None,
+            Err(error) => Some(RecoveryState::Unavailable(error.to_string())),
+        },
+        Err(error) => Some(RecoveryState::Unavailable(error.to_string())),
+    }
+}
+
+/// The Last Sync source at report time (S-10: read-only here — only
+/// `Journal::complete` ever writes the marker).
+fn last_success_marker(mount: &Path) -> Option<LastSuccess> {
+    Journal::open(mount)
+        .ok()?
+        .load_last_success()
+        .ok()
+        .flatten()
 }
 
 fn now_unix() -> i64 {
@@ -122,9 +188,44 @@ fn sync_err(step: &'static str, message: impl Into<String>) -> SyncError {
     }
 }
 
-/// Run the sync transaction. Resumable: a `SyncError` leaves the journal
-/// holding every completed step; the next call recovers from it.
-pub fn run_sync(ctx: &SyncContext<'_>) -> Result<SyncOutcome, SyncError> {
+/// Run the sync transaction. B-011: the unified result — every outcome
+/// (complete, partial, failed) is a value; progress flows through the
+/// caller's reporter (advisory, never blocking). A failed run leaves the
+/// journal holding every committed step; the next call recovers from it
+/// (resume / verify-and-advance / restore, per `recover::plan_recovery`).
+pub fn run_sync(ctx: &SyncContext<'_>) -> SyncResult {
+    let progress = Progress(ctx.reporter);
+    match run_sync_inner(ctx, &progress) {
+        Ok(outcome) => SyncResult {
+            status: outcome.status,
+            changes: outcome.changes,
+            diagnostics: outcome.diagnostics,
+            recovery: outcome.recovery,
+            last_success: last_success_marker(ctx.mount),
+        },
+        Err(error) => {
+            progress.notice(error.diagnostic.clone());
+            SyncResult {
+                status: SyncStatus::Failed {
+                    step: error.step,
+                    diagnostic: error.diagnostic,
+                },
+                // A failed run reports no finished work: the committed
+                // prefix is what `recovery` references, and the resuming
+                // run reports the final counts.
+                changes: SyncChanges::default(),
+                diagnostics: Vec::new(),
+                recovery: journal_recovery(ctx.mount),
+                last_success: last_success_marker(ctx.mount),
+            }
+        }
+    }
+}
+
+fn run_sync_inner(
+    ctx: &SyncContext<'_>,
+    progress: &Progress<'_>,
+) -> Result<SyncOutcome, SyncError> {
     let journal = Journal::open(ctx.mount)
         .map_err(|error| sync_err(STEP_INTENT, format!("journal unavailable: {error}")))?;
     // Competing-writer exclusion — the refusal the spec wants before any
@@ -139,25 +240,35 @@ pub fn run_sync(ctx: &SyncContext<'_>) -> Result<SyncOutcome, SyncError> {
     let db_parses = ipod::DeviceSession::open(ctx.backend, ctx.mount).is_ok();
     let mut outcome = SyncOutcome {
         status: SyncStatus::Completed,
-        host_patches_written: 0,
-        device_patches_written: 0,
-        files_added: 0,
-        files_removed: 0,
-        playlists_written: 0,
-        artwork_added: 0,
+        changes: SyncChanges::default(),
         diagnostics: Vec::new(),
+        recovery: None,
     };
     let mut record = match plan_recovery(active, db_parses) {
         RecoveryPlan::None => None,
         RecoveryPlan::Resume(record) => {
-            outcome.diagnostics.push(format!(
+            let diagnostic = format!(
                 "resuming an interrupted operation ({}/6 steps completed)",
                 record.completed_steps.len()
-            ));
+            );
+            outcome.diagnostics.push(diagnostic.clone());
+            progress.notice(diagnostic);
             Some(record)
         }
         RecoveryPlan::VerifyAndAdvance(_record) => {
-            verify_device(ctx)?;
+            progress.step(
+                STEP_VERIFY,
+                step_index(STEP_VERIFY),
+                STEPS.len() as u8,
+                true,
+            );
+            verify_device(ctx, progress)?;
+            progress.step(
+                STEP_VERIFY,
+                step_index(STEP_VERIFY),
+                STEPS.len() as u8,
+                false,
+            );
             // The DB write already consumed the pending store — the
             // completion housekeeping belongs to this path too.
             remove_consumed_pending(ctx.mount)?;
@@ -171,6 +282,13 @@ pub fn run_sync(ctx: &SyncContext<'_>) -> Result<SyncOutcome, SyncError> {
             return Ok(outcome);
         }
         RecoveryPlan::Restore(record) => {
+            progress.step(
+                STEP_INTENT,
+                step_index(STEP_INTENT),
+                STEPS.len() as u8,
+                true,
+            );
+            progress.item(0, 0, "restoring the consistency set…");
             let backup = record
                 .backup_dir
                 .as_deref()
@@ -183,12 +301,19 @@ pub fn run_sync(ctx: &SyncContext<'_>) -> Result<SyncOutcome, SyncError> {
             journal.mark_failed().map_err(|error| {
                 sync_err(STEP_INTENT, format!("journal update failed: {error}"))
             })?;
+            progress.step(
+                STEP_INTENT,
+                step_index(STEP_INTENT),
+                STEPS.len() as u8,
+                false,
+            );
             outcome.status = SyncStatus::Partial {
                 failed_step: STEP_INTENT,
                 diagnostic: "recovered: consistency set restored from the backup; the interrupted \
                      operation is recorded as failed"
                     .into(),
             };
+            outcome.recovery = Some(RecoveryState::Restored);
             return Ok(outcome);
         }
     };
@@ -216,35 +341,72 @@ pub fn run_sync(ctx: &SyncContext<'_>) -> Result<SyncOutcome, SyncError> {
         }
         Ok(())
     };
+    let total_steps = STEPS.len() as u8;
 
     // 1. Revalidation (fresh plan only).
     if !done.contains(STEP_INTENT) {
-        revalidate(ctx)?;
-        step_done(record, &journal, STEP_INTENT)?;
+        progress.step(STEP_INTENT, step_index(STEP_INTENT), total_steps, true);
+        progress.item(0, 0, "re-checking the device…");
+        (|| -> Result<(), SyncError> {
+            revalidate(ctx)?;
+            step_done(record, &journal, STEP_INTENT)
+        })()?;
+        progress.step(STEP_INTENT, step_index(STEP_INTENT), total_steps, false);
     }
     // 2. Consistency-set backup.
     if !done.contains(STEP_BACKUP) {
-        let backup = backup_consistency_set(ctx.mount, journal.root())
-            .map_err(|error| sync_err(STEP_BACKUP, format!("backup failed: {error}")))?;
-        record.backup_dir = Some(
-            backup
-                .strip_prefix(journal.root())
-                .unwrap_or(&backup)
-                .to_string_lossy()
-                .into_owned(),
-        );
-        step_done(record, &journal, STEP_BACKUP)?;
+        progress.step(STEP_BACKUP, step_index(STEP_BACKUP), total_steps, true);
+        progress.item(0, 0, "backing up the device database…");
+        (|| -> Result<(), SyncError> {
+            let backup = backup_consistency_set(ctx.mount, journal.root())
+                .map_err(|error| sync_err(STEP_BACKUP, format!("backup failed: {error}")))?;
+            record.backup_dir = Some(
+                backup
+                    .strip_prefix(journal.root())
+                    .unwrap_or(&backup)
+                    .to_string_lossy()
+                    .into_owned(),
+            );
+            step_done(record, &journal, STEP_BACKUP)
+        })()?;
+        progress.step(STEP_BACKUP, step_index(STEP_BACKUP), total_steps, false);
     }
     // 3. Stat import and host write (import-first ordering).
     if !done.contains(STEP_HOST_WRITE) {
-        let merge = compute_merge(ctx, record)?;
-        write_host_patches(ctx.host_write, &merge.host_patches)
-            .map_err(|error| sync_err(STEP_HOST_WRITE, error.to_string()))?;
-        outcome.host_patches_written = merge.host_patches.len();
-        outcome
-            .diagnostics
-            .extend(merge.diagnostics.iter().cloned());
-        step_done(record, &journal, STEP_HOST_WRITE)?;
+        progress.step(
+            STEP_HOST_WRITE,
+            step_index(STEP_HOST_WRITE),
+            total_steps,
+            true,
+        );
+        progress.item(0, 0, "reading device playback counts…");
+        (|| -> Result<(), SyncError> {
+            let merge = compute_merge(ctx, record)?;
+            progress.item(
+                1,
+                1,
+                format!(
+                    "writing {} stat patches to the library",
+                    merge.host_patches.len()
+                ),
+            );
+            write_host_patches(ctx.host_write, &merge.host_patches)
+                .map_err(|error| sync_err(STEP_HOST_WRITE, error.to_string()))?;
+            outcome.changes.host_patches_written = merge.host_patches.len();
+            for diagnostic in &merge.diagnostics {
+                progress.notice(diagnostic.clone());
+            }
+            outcome
+                .diagnostics
+                .extend(merge.diagnostics.iter().cloned());
+            step_done(record, &journal, STEP_HOST_WRITE)
+        })()?;
+        progress.step(
+            STEP_HOST_WRITE,
+            step_index(STEP_HOST_WRITE),
+            total_steps,
+            false,
+        );
     }
     // 4-5. Device mutations and the staged DB write share ONE session —
     // the in-memory model mutated by the ops is exactly what gets
@@ -252,19 +414,35 @@ pub fn run_sync(ctx: &SyncContext<'_>) -> Result<SyncOutcome, SyncError> {
     // FileOps re-runs on every resume until the DB write commits: a
     // crashed session loses its in-memory mutations, while the DB write
     // itself is an idempotent re-serialization of the parsed state.
+    progress.item(0, 0, "opening the device database…");
     let mut write_session = ipod::DeviceSession::open(ctx.backend, ctx.mount)
         .map_err(|error| sync_err(STEP_FILE_OPS, format!("write session failed: {error}")))?;
     if !done.contains(STEP_DB_WRITE) {
-        apply_device_ops(ctx, &mut write_session, record, &mut outcome)?;
-        step_done(record, &journal, STEP_FILE_OPS)?;
+        // The FileOps work genuinely re-executes on a resume (the crashed
+        // session's mutations are gone), so its step events re-emit too —
+        // the resume notice explains why the bar shows step 4 again.
+        progress.step(STEP_FILE_OPS, step_index(STEP_FILE_OPS), total_steps, true);
+        (|| -> Result<(), SyncError> {
+            apply_device_ops(ctx, &mut write_session, record, &mut outcome, progress)?;
+            step_done(record, &journal, STEP_FILE_OPS)
+        })()?;
+        progress.step(STEP_FILE_OPS, step_index(STEP_FILE_OPS), total_steps, false);
     }
-    write_db_staged(ctx, &mut write_session)?;
-    step_done(record, &journal, STEP_DB_WRITE)?;
+    progress.step(STEP_DB_WRITE, step_index(STEP_DB_WRITE), total_steps, true);
+    (|| -> Result<(), SyncError> {
+        write_db_staged(ctx, &mut write_session, progress)?;
+        step_done(record, &journal, STEP_DB_WRITE)
+    })()?;
+    progress.step(STEP_DB_WRITE, step_index(STEP_DB_WRITE), total_steps, false);
     drop(write_session);
     // 6. Post-write verification.
     if !done.contains(STEP_VERIFY) {
-        verify_device(ctx)?;
-        step_done(record, &journal, STEP_VERIFY)?;
+        progress.step(STEP_VERIFY, step_index(STEP_VERIFY), total_steps, true);
+        (|| -> Result<(), SyncError> {
+            verify_device(ctx, progress)?;
+            step_done(record, &journal, STEP_VERIFY)
+        })()?;
+        progress.step(STEP_VERIFY, step_index(STEP_VERIFY), total_steps, false);
     }
     // 7. Completion — the only place last-success advances (S-10).
     remove_consumed_pending(ctx.mount)?;
@@ -431,12 +609,17 @@ fn compute_merge(
 }
 
 /// Step 4: all device-side mutations in one write session — transcode and
-/// copy adds, repair, remove, playlists, artwork, stat patches.
+/// copy adds, repair, remove, playlists, artwork, stat patches. B-011:
+/// every iteration emits its work item before the work runs, so the UI
+/// shows the in-flight title; skipped iterations (booklets, Genius,
+/// deferred smart writes, missing artwork) still count toward the phase
+/// total — the bar is monotonic (b011_plan §5).
 fn apply_device_ops(
     ctx: &SyncContext<'_>,
     session: &mut ipod::DeviceSession<'_>,
     record: &mut OperationRecord,
     outcome: &mut SyncOutcome,
+    progress: &Progress<'_>,
 ) -> Result<(), SyncError> {
     let host_by_pid: HashMap<u64, &crate::mapping::HostTrack> = ctx
         .host
@@ -445,16 +628,46 @@ fn apply_device_ops(
         .filter(|track| track.track_pid != 0)
         .map(|track| (track.track_pid, track))
         .collect();
+    let title_of = |pid: u64| {
+        host_by_pid
+            .get(&pid)
+            .and_then(|track| {
+                let title = track.metadata.title.as_deref().unwrap_or("").trim();
+                (!title.is_empty()).then(|| title.to_string())
+            })
+            .unwrap_or_else(|| format!("track {pid}"))
+    };
+
+    // The merge the device step applies — the same inputs as the host
+    // step (the pending store is still untouched until the DB write), so
+    // the patch set agrees by construction.
+    progress.item(0, 0, "reading device playback counts…");
+    let merge = compute_merge(ctx, record)?;
+
+    // The phase total: every plan entry plus the stat patches. Skipped
+    // iterations still emit their item, so `current` runs 1..=total
+    // without gaps.
+    let total = (ctx.plan.file_adds.len()
+        + ctx.plan.file_repairs.len()
+        + ctx.plan.file_removes.len()
+        + merge.device_patches.len()
+        + ctx.plan.playlist_creates.len()
+        + ctx.plan.playlist_updates.len()
+        + ctx.plan.playlist_removes.len()
+        + ctx.plan.artwork_adds.len()) as u32;
+    let mut current = 0_u32;
 
     // File adds — the owner's transcode rule decides the mode per file.
     for add in &ctx.plan.file_adds {
         if (ctx.cancelled)() {
             return Err(sync_err(STEP_FILE_OPS, "cancelled"));
         }
+        current += 1;
         let Some(host_track) = host_by_pid.get(&add.pid) else {
-            outcome
-                .diagnostics
-                .push(format!("add {}: host record vanished", add.pid));
+            progress.item(current, total, format!("Adding track {}", add.pid));
+            let diagnostic = format!("add {}: host record vanished", add.pid);
+            outcome.diagnostics.push(diagnostic.clone());
+            progress.notice(diagnostic);
             continue;
         };
         let decision = decide_file_write(
@@ -462,12 +675,21 @@ fn apply_device_ops(
             Some(u32::from(host_track.metadata.bit_rate)),
         );
         if decision.mode == FileWriteMode::NeverCopy {
-            outcome.diagnostics.push(format!(
+            let diagnostic = format!(
                 "add {}: not copied (PDF booklet, iTunes never copies it)",
                 add.pid
-            ));
+            );
+            progress.item(current, total, format!("Skipping {}", title_of(add.pid)));
+            outcome.diagnostics.push(diagnostic.clone());
+            progress.notice(diagnostic);
             continue;
         }
+        let label = if decision.mode == FileWriteMode::TranscodeToAac256 {
+            format!("Converting {}", title_of(add.pid))
+        } else {
+            format!("Adding {}", title_of(add.pid))
+        };
+        progress.item(current, total, label);
         let dbid = add.pid;
         session
             .create_track(&ipod::TrackMetadata {
@@ -515,19 +737,32 @@ fn apply_device_ops(
             .copy_track(dbid, &source)
             .map_err(|error| sync_err(STEP_FILE_OPS, format!("copy {}: {error}", add.pid)))?;
         let _ = std::fs::remove_file(&source);
-        outcome.files_added += 1;
+        outcome.changes.files_added += 1;
     }
 
     // Repairs: the DB record exists, the media file is gone.
     for repair in &ctx.plan.file_repairs {
+        current += 1;
+        progress.item(
+            current,
+            total,
+            format!("Restoring {}", title_of(repair.dbid)),
+        );
         session
             .copy_track(repair.dbid, &repair.host_path)
             .map_err(|error| sync_err(STEP_FILE_OPS, format!("repair {}: {error}", repair.dbid)))?;
-        outcome.files_added += 1;
+        outcome.changes.files_added += 1;
     }
 
     // Removals: the DB record and the media file.
     for remove in &ctx.plan.file_removes {
+        current += 1;
+        let name = remove
+            .device_path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| remove.device_path.to_string_lossy().into_owned());
+        progress.item(current, total, format!("Removing {name}"));
         session
             .remove_track(remove.dbid)
             .map_err(|error| sync_err(STEP_FILE_OPS, format!("remove {}: {error}", remove.dbid)))?;
@@ -548,13 +783,18 @@ fn apply_device_ops(
                 ));
             }
         }
-        outcome.files_removed += 1;
+        outcome.changes.files_removed += 1;
     }
 
     // Device stat patches — the same merge the host step applied (the
     // pending store is still untouched, so the inputs agree).
-    let merge = compute_merge(ctx, record)?;
     for patch in &merge.device_patches {
+        current += 1;
+        progress.item(
+            current,
+            total,
+            format!("Syncing stats (track {})", patch.dbid),
+        );
         session
             .update_track(
                 patch.dbid,
@@ -570,67 +810,92 @@ fn apply_device_ops(
             .map_err(|error| {
                 sync_err(STEP_FILE_OPS, format!("stat patch {}: {error}", patch.dbid))
             })?;
-        outcome.device_patches_written += 1;
+        outcome.changes.device_patches_written += 1;
     }
 
     // Playlists: static creates, updates, removes. Smart criteria writes
     // are the §8 translation — deferred with a diagnostic, never silently
     // converted to static (b010_plan §8).
     for create in &ctx.plan.playlist_creates {
+        current += 1;
+        let name = create.name.as_deref().unwrap_or("unnamed");
         match create.kind {
-            PlaylistKind::Static => {
-                // §11-5: criteria-less Genius playlists are never synced
-                // (iTunes itself does not sync them as criteria).
-                if create.name.as_deref() == Some("Genius") {
-                    outcome.diagnostics.push(format!(
-                        "Genius playlist ({}) not synced (owner decision §11-5)",
-                        create.host_pid
-                    ));
-                    continue;
-                }
+            PlaylistKind::Static if name != "Genius" => {
+                progress.item(current, total, format!("Adding playlist {name}"));
                 let members: Vec<u64> = create
                     .member_pids
                     .iter()
                     .filter_map(|member| *member)
                     .collect();
                 session
-                    .create_playlist(
-                        create.name.as_deref().unwrap_or(""),
-                        create.host_pid,
-                        &members,
-                        false,
-                    )
+                    .create_playlist(name, create.host_pid, &members, false)
                     .map_err(|error| {
                         sync_err(STEP_FILE_OPS, format!("create playlist: {error}"))
                     })?;
-                outcome.playlists_written += 1;
+                outcome.changes.playlists_written += 1;
+            }
+            PlaylistKind::Static => {
+                // §11-5: criteria-less Genius playlists are never synced
+                // (iTunes itself does not sync them as criteria).
+                let diagnostic = format!(
+                    "Genius playlist ({}) not synced (owner decision §11-5)",
+                    create.host_pid
+                );
+                progress.item(current, total, "Skipping the Genius playlist");
+                outcome.diagnostics.push(diagnostic.clone());
+                progress.notice(diagnostic);
             }
             PlaylistKind::Smart => {
-                outcome.diagnostics.push(format!(
+                let diagnostic = format!(
                     "smart playlist {:?} ({}) criteria write deferred (§8 translation)",
                     create.name, create.host_pid
-                ));
+                );
+                progress.item(current, total, format!("Deferring smart playlist {name}"));
+                outcome.diagnostics.push(diagnostic.clone());
+                progress.notice(diagnostic);
             }
         }
     }
     for update in &ctx.plan.playlist_updates {
+        current += 1;
         if update.is_spl {
-            if !matches!(update.criteria, CriteriaState::Equal) {
-                outcome.diagnostics.push(format!(
-                    "smart playlist {} criteria update deferred (§8 translation)",
-                    update.device_id
-                ));
+            match update.criteria {
+                CriteriaState::Equal => {
+                    progress.item(
+                        current,
+                        total,
+                        format!("Playlist {} up to date", update.device_id),
+                    );
+                }
+                _ => {
+                    let diagnostic = format!(
+                        "smart playlist {} criteria update deferred (§8 translation)",
+                        update.device_id
+                    );
+                    progress.item(
+                        current,
+                        total,
+                        format!("Deferring smart criteria ({})", update.device_id),
+                    );
+                    outcome.diagnostics.push(diagnostic.clone());
+                    progress.notice(diagnostic);
+                }
             }
             continue;
         }
-        let current: Vec<u64> = session
+        progress.item(
+            current,
+            total,
+            format!("Updating playlist {}", update.device_id),
+        );
+        let current_members: Vec<u64> = session
             .playlists()
             .map_err(|error| sync_err(STEP_FILE_OPS, format!("playlist read failed: {error}")))?
             .into_iter()
             .find(|playlist| playlist.id == update.device_id)
             .map(|playlist| playlist.member_dbids)
             .unwrap_or_default();
-        let mut ordered: Vec<u64> = current
+        let mut ordered: Vec<u64> = current_members
             .into_iter()
             .filter(|dbid| !update.members_remove.contains(dbid))
             .collect();
@@ -643,30 +908,49 @@ fn apply_device_ops(
                     format!("playlist update {}: {error}", update.device_id),
                 )
             })?;
-        outcome.playlists_written += 1;
+        outcome.changes.playlists_written += 1;
     }
     for remove in &ctx.plan.playlist_removes {
+        current += 1;
+        progress.item(
+            current,
+            total,
+            format!("Removing playlist {}", remove.device_id),
+        );
         session.remove_playlist(remove.device_id).map_err(|error| {
             sync_err(
                 STEP_FILE_OPS,
                 format!("playlist remove {}: {error}", remove.device_id),
             )
         })?;
-        outcome.playlists_written += 1;
+        outcome.changes.playlists_written += 1;
     }
 
     // Artwork adds (no removals, ever — owner decision §11-6).
     for add in &ctx.plan.artwork_adds {
+        current += 1;
         match (ctx.artwork)(add.pid) {
             Some(input) => {
+                progress.item(
+                    current,
+                    total,
+                    format!("Adding artwork for {}", title_of(add.pid)),
+                );
                 session.set_artwork(add.pid, &input).map_err(|error| {
                     sync_err(STEP_FILE_OPS, format!("artwork {}: {error}", add.pid))
                 })?;
-                outcome.artwork_added += 1;
+                outcome.changes.artwork_added += 1;
             }
-            None => outcome
-                .diagnostics
-                .push(format!("artwork {} unavailable at the provider", add.pid)),
+            None => {
+                let diagnostic = format!("artwork {} unavailable at the provider", add.pid);
+                progress.item(
+                    current,
+                    total,
+                    format!("Artwork unavailable ({})", title_of(add.pid)),
+                );
+                outcome.diagnostics.push(diagnostic.clone());
+                progress.notice(diagnostic);
+            }
         }
     }
     Ok(())
@@ -678,12 +962,16 @@ fn apply_device_ops(
 fn write_db_staged(
     ctx: &SyncContext<'_>,
     session: &mut ipod::DeviceSession<'_>,
+    progress: &Progress<'_>,
 ) -> Result<(), SyncError> {
     let itunes = ctx.mount.join("iPod_Control/iTunes");
     let staged = itunes.join("iTunesDB.staged");
+    progress.item(0, 0, "writing the device database…");
     session
         .write_library_to(&staged)
         .map_err(|error| sync_err(STEP_DB_WRITE, error.to_string()))?;
+
+    progress.item(0, 0, "verifying the written database…");
 
     // Verify the staged file parses on a disposable copy of the DB's own
     // dependencies (iTunes/, Artwork/, Device/ — never the media folder).
@@ -744,7 +1032,8 @@ fn write_db_staged(
 /// Step 6: the post-write verification — fresh parse and the artwork
 /// proof-read (R2: the only detector of the silently non-fatal artwork
 /// write failures).
-fn verify_device(ctx: &SyncContext<'_>) -> Result<(), SyncError> {
+fn verify_device(ctx: &SyncContext<'_>, progress: &Progress<'_>) -> Result<(), SyncError> {
+    progress.item(0, 0, "re-checking the device…");
     let session = ipod::DeviceSession::open(ctx.backend, ctx.mount)
         .map_err(|error| sync_err(STEP_VERIFY, format!("post-write re-parse failed: {error}")))?;
     let _tracks = session.tracks().map_err(|error| {

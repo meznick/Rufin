@@ -413,8 +413,9 @@ raw FFI):
   execution plan and re-validates it against a fresh dry run (§5 step 1).
 - `exec.rs` — the executor: revalidation, transcode pipeline + file
   copies/removals, wrapper write calls, staged DB write + rename + fsync,
-  post-write verification. Coarse `SyncEvent` phases exposed for B-011
-  (B-010 builds no UI progress).
+  post-write verification. The `STEPS` names were exposed as B-011's seam
+  (B-010 emits no UI progress itself — B-011 landed the event model in
+  `sync/report.rs`, b011_plan §13).
 - `exclusion.rs` — mount/identity re-check, `/proc` handle scan, `flock`.
 - `recover.rs` — journal scan at sync start (and on Ready for the device id):
   resume / verify-and-advance / restore-from-backup per §5.

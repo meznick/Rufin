@@ -355,3 +355,52 @@ is already a workspace dep); UI subscription is B-016.
 
 (filled on completion — date, what each step produced, gate outcomes,
 gate-forced fixes)
+
+**Done 2026-11-17** on `feature/ipod-page-task-B-011`, exactly per §12:
+
+1. `sync/report.rs`: `ProgressEvent`, the monotone `SyncProgress` fold,
+   `RecoveryState`, `SyncStatus`, `SyncChanges`, `SyncResult`, and the
+   capacity-configurable `ProgressPipe` (128 default; `try_send`,
+   drop-on-full) — 6 unit tests (fold invariants, Send+Sync reporter,
+   lossy pipe). `async-channel` added as a workspace dep.
+2. `exec.rs`: `run_sync` returns the unified `SyncResult` — the §4
+   mapping table implemented at every return site; `SyncOutcome` is now a
+   private accumulator; a failed run's `changes` stay empty (the
+   committed prefix is what `recovery` references). The §5 emission
+   schedule landed: recovery arms (resume notice, restore's indeterminate
+   item, verify-and-advance's Verify step), per-step began/ended events
+   on a x/6 bar, per-item FileOps emission with titles (adds/repairs/
+   removes/stat patches/playlists/artwork — skips emit item + notice),
+   indeterminate items around every libgpod parse and the staged write.
+   Deviation recorded: on a resume where FileOps committed but DbWrite
+   didn't, the FileOps step re-emits — the work genuinely re-executes
+   (the crashed session's mutations are gone); the resume notice explains
+   the bar.
+3. Reporter plumbing: `SyncContext.reporter` (`Send + Sync`, test helper
+   default `&|_| {}`); `Progress` wrapper keeps call sites one-liners.
+4. `ProgressPipe` + the lossy-pipe test (capacity-1 pipe, never-read
+   receiver, first event survives, the writer never blocks).
+5. Gates (env-gated, disposable corpora): the pair gate now pins the
+   emitted step sequence and the FileOps item stream; the failure battery
+   pins began-events == executed steps and the `Resumable` reference per
+   injected step; new gates for the resume bar, the restore arm
+   (`Partial` + `Restored`), cancellation, and the last-sync invariant
+   sweep. 116 unit + 5 executor gates green; clippy/lint 0;
+   `cargo check --workspace` clean.
+6. Docs: b010_plan §7 wording corrected; plan.md's Data Models &
+   Interfaces paragraph gained the done-marker; tasks.md B-011 checked
+   off with the Result line. `docs/itunes-ipod.md` §9 stays for the
+   merge-hygiene commit (it describes the merged state).
+
+**Gate-forced fixes** (the battery did its job):
+
+- The last-success marker is read at return time, not at entry — the
+  first version loaded it before the run and every completion reported
+  `None`.
+- Per-test device identities: the transcode staging dir keys on
+  `device_identity`, and the five parallel gates raced on each other's
+  staged m4a files (surface: spurious "Error opening … for reading" copy
+  failures mid-FileOps). Each gate now runs under its own identity —
+  production is unaffected (identity is per real device).
+- The battery's DbWrite-injection expectation: both FileOps and DbWrite
+  emit on that resume (FileOps re-executes by design).

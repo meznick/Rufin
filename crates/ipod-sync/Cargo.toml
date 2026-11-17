@@ -17,6 +17,8 @@ itl-sync = "0.1.0"
 libc.workspace = true
 tracing.workspace = true
 thiserror.workspace = true
+# The B-011 progress pipe (bounded, advisory, drop-on-full).
+async-channel.workspace = true
 # The B-010 journal (on-device operation record) — pure JSON, no cycles.
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true

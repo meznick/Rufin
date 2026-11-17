@@ -2,7 +2,8 @@
 //! transcode decision and staging lifecycle first ([`transcode`]); the
 //! merge and pending-store reader follow ([`merge`], [`import`]); the
 //! durable coordination layer is [`journal`] + [`backup`] + [`recover`];
-//! [`plan`], [`exclusion`], [`host`] and [`exec`] are the executor.
+//! [`plan`], [`exclusion`], [`host`] and [`exec`] are the executor;
+//! [`report`] is B-011's progress/outcome contract.
 
 pub mod backup;
 pub mod exclusion;
@@ -13,4 +14,5 @@ pub mod journal;
 pub mod merge;
 pub mod plan;
 pub mod recover;
+pub mod report;
 pub mod transcode;
