@@ -70,6 +70,7 @@ fn detected_device(mount_point: &Path) -> DeviceInfo {
         total_capacity: None,
         used_capacity: None,
         firewire_id: None,
+        serial_number: None,
         model_supported: false,
         checksum_possible: false,
     }
@@ -89,6 +90,7 @@ fn device_info_from_facts(facts: DeviceFacts, mount_point: &Path) -> DeviceInfo 
         total_capacity: facts.total_capacity,
         used_capacity: facts.used_capacity,
         firewire_id: facts.firewire_id,
+        serial_number: facts.serial_number,
         model_supported: facts.model_supported,
         checksum_possible: facts.checksum_possible,
     }
@@ -965,6 +967,7 @@ mod tests {
                 total_capacity: Some(30 * 1024 * 1024 * 1024),
                 used_capacity: Some(23 * 1024 * 1024 * 1024),
                 firewire_id: None,
+                serial_number: None,
                 model_supported: true,
                 checksum_possible: true,
             })
