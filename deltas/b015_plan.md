@@ -1,17 +1,21 @@
 # B-015: Sync button with Dry Run checkbox
 
-Status: draft — awaiting owner approval (2026-11-17).
+Status: owner-approved (2026-11-17); D-1/D-2 amended by the owner —
+Dry Run is dev-only (the S-08 delta, `deltas/b015_delta.md`), release
+builds run silently.
 
 ## 1. What this task is
 
 B-015 turns the greyed Sync placeholder (B-014's documented takeover
 point) into the real sync initiation: the enabled Sync button, the
-Dry Run option, the review step that turns a dry-run report into the
-approved execution plan, and the worker-thread sync service that runs
-the engine. Spec reference: R-04 (Sync Operation), S-07 (Initiation),
-S-08 (Dry Run), S-11 (State constraints). Plan reference: Phase 3.
-Task verification: sync is disabled outside Ready, readiness is
-rechecked before writes, and Dry Run is available and nonmutating.
+dev-build Dry Run option and review step, and the worker-thread sync
+service that runs the engine. Spec reference: R-04 (Sync Operation),
+S-07 (Initiation), S-08 (Dry Run — MODIFIED by the owner, see
+`deltas/b015_delta.md`), S-11 (State constraints). Plan reference:
+Phase 3. Task verification (amended with the delta): sync is disabled
+outside Ready, readiness is rechecked before writes, and Dry Run is
+available and nonmutating **in dev builds** — release builds omit the
+option entirely.
 
 The engine already exists end to end (B-008..B-011: `compute`,
 `collect_host`/`collect_device`, `run_sync` with the journal, the
@@ -183,23 +187,28 @@ the page). The sentinel pre-check (`library_busy()`) fires an early
 refusal with the itl-sync wording; the authoritative check remains
 inside the engine's host-write step.
 
-### 3.4 The UI: bottom bar + review dialog
+### 3.4 The UI: bottom bar + the dev review dialog
 
-1. **Dry Run checkbox** (`dry_run_check`, `GtkCheckButton`) in the
+1. **Dry Run checkbox** (`dry_run_check`, `GtkCheckButton`) — **dev
+   builds only** (`cfg!(debug_assertions)`; the delta's S-08), in the
    bottom bar between the storage bar and the Sync button (the
-   Параметры box keeps its furniture — D-1).
+   Параметры box keeps its furniture — D-1). Release builds compile
+   the checkbox and the review dialog out entirely.
 2. **Sync button**: `apply_snapshot` sets its sensitivity from
-   `sync_controls.sync_enabled` (and the checkbox from `!running`).
-3. **The flow** (D-2): every click of Sync — checkbox state
-   irrelevant — computes first (collect + `compute`; pure, seconds on
-   the real library) and shows the **review dialog**: the change
-   summary (files added/removed/repaired, playlists created/updated/
-   removed, capacity delta, stat counts, art adds/removes) with
-   "Sync" and "Close". With Dry Run checked, "Sync" is absent — the
-   dialog is the deliverable, Close discards (S-08: shown, nothing
-   changed). Unchecked, "Sync" approves the reviewed plan and starts
-   the run — the "plan the user reviewed" contract holds for every
-   real run. Dismissing a review discards the plan; the next click
+   `sync_controls.sync_enabled` (and the checkbox, where compiled,
+   from `!running`).
+3. **The flow** (D-2): in dev builds every Sync click computes first
+   (collect + `compute`; pure, seconds on the real library) and shows
+   the **review dialog**: the change summary (files
+   added/removed/repaired, playlists created/updated/removed,
+   capacity delta, stat counts, art adds/removes) with "Sync" and
+   "Close". With Dry Run checked, "Sync" is absent — the dialog is
+   the deliverable, Close discards (S-08: shown, nothing changed).
+   Unchecked, "Sync" approves the reviewed plan and starts the run.
+   In release builds the click **is** the approval: the plan computed
+   at that moment runs immediately, no dialog — and the engine still
+   re-verifies the plan hash against the device before any write.
+   Dismissing a dev review discards the plan; the next click
    recomputes.
 4. **Running**: the button and checkbox lock (`running`), the page
    shows a minimal in-flight indicator (spinner in the bottom bar).
@@ -210,7 +219,9 @@ inside the engine's host-write step.
 The dialog contents come from pure fns:
 `review_summary(&DryRunReport) -> ReviewSummary` and
 `outcome_summary(&SyncResult) -> SyncOutcomeSummary` — the widget
-layer only renders them.
+layer only renders them. The service and the engine path are
+**identical across builds**; only the dialog surface differs, so no
+second sync code path exists behind the `cfg`.
 
 ### 3.5 Copy (proposed, translatable)
 
@@ -299,14 +310,24 @@ stay furniture.
 - **Dialog conventions**: no MessageDialog precedent in gtk-library —
   pick the repo's adwaita dialog pattern at implementation (checked
   against gtk-shell's dialogs).
+- **The dev/release surface split** (the S-08 delta): only the dialog
+  surface differs — the service, the gating, and the engine path are
+  compiled identically in both builds, so the release silent run is
+  not an untested second path (the plan-hash re-verification at run
+  time holds in every build). The `cfg` gate is a surface difference,
+  not a behavioral fork.
 
 ## 8. Decisions for the owner
 
 - D-1: the Dry Run checkbox lives in the bottom bar next to Sync (the
-  Параметры box keeps its greyed furniture).
-- D-2: every Sync click shows the review dialog first — checked:
-  review only; unchecked: review with the Sync button approving the
-  reviewed plan. No silent run without a review.
+  Параметры box keeps its greyed furniture) — **dev builds only**
+  (`cfg!(debug_assertions)`, owner 2026-11-17); release builds omit
+  the checkbox and the review dialog (the S-08 delta).
+- D-2: dev builds show the review dialog on every Sync click —
+  checked: review only; unchecked: review with the Sync button
+  approving the reviewed plan. **Release builds run silently on the
+  click** — the click is the approval, the engine re-verifies the
+  plan hash at run time (owner 2026-11-17).
 - D-3: the readiness recheck is the existing `preflight` before any
   real run; a refusal is a failed sync with the diagnostic, the page
   state stays.
@@ -318,6 +339,9 @@ stay furniture.
 
 - Remove the B-015 takeover marker in `ipod_page.ui`; record the
   boundary in the module docs.
+- The S-08 delta (`deltas/b015_delta.md`) is part of this task and
+  ships with it; tasks.md's B-015 verification line is amended to
+  match (dev-build Dry Run) in this branch.
 - Pot regen; tasks.md checkoff + docs §9 entry land with the merge
   hygiene (post-FF).
 
