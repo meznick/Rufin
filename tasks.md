@@ -1,6 +1,6 @@
 # tasks.md
 
-Tasks are listed in dependency order; IDs stay stable, so B-007 precedes discovery and B-005 precedes preflight. All Phase 1 and Phase 2 sync-core tasks (B-001 through B-010, including B-010a) are merged into `feature/ipod-page`; task-branch hashes are recorded in the entries that carry them. B-001 research does not claim runtime or hardware acceptance.
+Tasks are listed in dependency order; IDs stay stable, so B-007 precedes discovery and B-005 precedes preflight. All Phase 1 and Phase 2 sync-core tasks (B-001 through B-011, including B-010a) are merged into `feature/ipod-page`; task-branch hashes are recorded in the entries that carry them. B-001 research does not claim runtime or hardware acceptance.
 
 ## Phase 1: Device Connection Infrastructure
 
