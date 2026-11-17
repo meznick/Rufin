@@ -10,8 +10,10 @@
 //! The Ready arm is B-014's iTunes-style device shell (b014_plan §3):
 //! a sidebar (device identity + greyed nav furniture), the Обзор page
 //! (the S-06 info box + the greyed Параметры box), and the bottom bar
-//! (storage + greyed Sync). The sync controls themselves are B-015's
-//! takeover point.
+//! (storage + Sync). B-015 makes the Sync real: the pure
+//! [`sync_controls`] gating, the Dry Run checkbox (dev builds — the
+//! S-08 delta), and the [`IpodSyncService`] behind the review/result
+//! dialogs (b015_plan §3.2–3.4).
 //!
 //! All state logic lives in the pure [`decide`] — display-free testable.
 //! No test in this workspace constructs GTK widgets (class init asserts
@@ -39,6 +41,7 @@ use localization::{msgid, tr, tr_with};
 
 use crate::device_manager::{ConnectionState, DeviceInfo};
 use crate::ipod_connection::{ConnectionSnapshot, IpodConnection};
+use crate::ipod_sync_service::{IpodSyncService, ReviewPolicy, SyncPhase, SyncState};
 
 gtk_widgets::composite_box!(
     pub IpodPageView,
@@ -68,6 +71,8 @@ gtk_widgets::composite_box!(
         firmware_value: gtk::Label,
         warning_label: gtk::Label,
         storage_bar: gtk::ProgressBar,
+        dry_run_check: gtk::CheckButton,
+        running_spinner: gtk::Spinner,
         sync_button: gtk::Button,
         error_heading: gtk::Label,
         error_diagnostic: gtk::Label,
@@ -350,6 +355,39 @@ pub fn support_warning(device: &DeviceInfo) -> Option<&'static str> {
     }
 }
 
+/// The B-015 sync gating decision (b015_plan §3.1): the Sync button is
+/// enabled only on a live Ready page with a supported model and no run
+/// in flight. The S-11 indication reuses the D-8 policy warning line —
+/// the page already renders it; the disabled button plus the line is
+/// the message.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SyncControls {
+    pub sync_enabled: bool,
+    pub gating_note: Option<&'static str>,
+    pub running: bool,
+}
+
+/// The pure gating decision for one connection snapshot plus the sync
+/// service's running flag.
+pub fn sync_controls(snapshot: &ConnectionSnapshot, running: bool) -> SyncControls {
+    let ready = snapshot.state == ConnectionState::Ready;
+    let alive = snapshot.worker_alive;
+    let supported = snapshot
+        .device
+        .as_ref()
+        .is_some_and(|device| device.model_supported);
+    let gating_note = snapshot
+        .device
+        .as_ref()
+        .filter(|_| ready && alive && !supported)
+        .and_then(|device| support_warning(device));
+    SyncControls {
+        sync_enabled: ready && alive && supported && !running,
+        gating_note,
+        running,
+    }
+}
+
 /// Decimal GB, exactly two decimals, round half-up, number-only
 /// (b014_plan D-5/D-10: the separator is hardcoded `.` — the repo has
 /// no locale machinery; the unit is appended by the widget layer).
@@ -415,7 +453,9 @@ impl IpodPageView {
     /// stack, the heading/diagnostics/device labels, and the notice
     /// banner. Called once with the initial snapshot (the subscription
     /// channel carries no replay) and on every channel event.
-    pub fn apply_snapshot(&self, snapshot: &ConnectionSnapshot) {
+    /// `sync_running` is the sync service's current in-flight flag —
+    /// the B-015 gating input.
+    pub fn apply_snapshot(&self, snapshot: &ConnectionSnapshot, sync_running: bool) {
         let decision = decide(snapshot);
         let imp = self.imp();
 
@@ -483,6 +523,10 @@ impl IpodPageView {
                         }
                         None => imp.storage_bar.set_show_text(false),
                     }
+                    // The B-015 gating (S-11): the Sync button follows
+                    // the snapshot + the in-flight flag.
+                    let controls = sync_controls(snapshot, sync_running);
+                    imp.sync_button.set_sensitive(controls.sync_enabled);
                 }
                 imp.state_stack.set_visible_child_name(READY_PAGE);
             }
@@ -522,26 +566,156 @@ impl IpodPageView {
     }
 }
 
-/// Attach the page to the connection's snapshot stream: apply the current
-/// view (no replay on the channel) and re-apply on every event. Runs the
-/// receiver on the thread-default main context.
-fn subscribe_to(view: &IpodPageView, connection: &IpodConnection) {
-    view.apply_snapshot(&connection.snapshot());
-    let receiver = connection.subscribe();
-    let view = view.clone();
+/// The dialog body for a reviewed dry run — plain lines, the pure
+/// [`ReviewSummary`] counts composed with the translatable templates.
+fn review_body(summary: &crate::ipod_sync_service::ReviewSummary) -> String {
+    if summary.nothing_to_do {
+        return tr(msgid(
+            "Nothing to sync — the device already matches the library.",
+        ));
+    }
+    let mut lines = Vec::new();
+    let mut push = |template: &str, count: usize| {
+        if count > 0 {
+            lines.push(tr_with(template, &[("count", &count.to_string())]));
+        }
+    };
+    push("{count} files to add", summary.files_added);
+    push("{count} files to repair", summary.files_repaired);
+    push("{count} files to remove", summary.files_removed);
+    push("{count} playlists to create", summary.playlists_created);
+    push("{count} playlists to update", summary.playlists_updated);
+    push("{count} playlists to remove", summary.playlists_removed);
+    push("{count} covers to add", summary.artwork_adds);
+    push("{count} covers to remove", summary.artwork_removes);
+    if summary.stat_updates > 0 {
+        lines.push(tr_with(
+            "{count} statistic updates",
+            &[("count", &summary.stat_updates.to_string())],
+        ));
+    }
+    if !summary.would_fit {
+        lines.push(tr_with(
+            "Needs {estimate} — only {free} free",
+            &[
+                (
+                    "estimate",
+                    &unit_gb_text(&format_gb(summary.estimate_bytes)),
+                ),
+                ("free", &unit_gb_text(&format_gb(summary.free_bytes))),
+            ],
+        ));
+    }
+    lines.join("\n")
+}
+
+/// The review dialog (dev builds): the dry-run deliverable — Sync
+/// approves the reviewed plan, Close discards it (b015_plan §3.4).
+fn present_review_dialog(
+    view: &IpodPageView,
+    summary: &crate::ipod_sync_service::ReviewSummary,
+    sync: &IpodSyncService,
+) {
+    let dialog = adw::AlertDialog::builder()
+        .heading(tr(msgid("Sync review")))
+        .body(&review_body(summary))
+        .build();
+    dialog.add_responses(&[("close", &tr(msgid("Close"))), ("sync", &tr(msgid("Sync")))]);
+    let sync = sync.clone();
+    let parent = view.root().and_downcast::<gtk::Window>();
     glib::spawn_future_local(async move {
-        while let Ok(snapshot) = receiver.recv().await {
-            view.apply_snapshot(&snapshot);
+        let response = dialog.choose_future(parent.as_ref()).await;
+        match response.as_str() {
+            "sync" => sync.approve(),
+            _ => sync.dismiss(),
         }
     });
+}
+
+/// The result dialog body: the engine outcome, its diagnostics verbatim
+/// (the B-013 convention).
+fn outcome_body(summary: &crate::ipod_sync_service::SyncOutcomeSummary) -> String {
+    let headline = match &summary.status {
+        ipod_sync::sync::report::SyncStatus::Completed => tr(msgid("Sync completed")),
+        ipod_sync::sync::report::SyncStatus::Partial { .. } => tr(msgid("Sync incomplete")),
+        ipod_sync::sync::report::SyncStatus::Failed { .. } => tr(msgid("Sync failed")),
+    };
+    let mut lines = vec![headline];
+    let changes = &summary.changes;
+    if changes.files_added + changes.files_removed > 0 {
+        lines.push(tr_with(
+            "{count} files written",
+            &[(
+                "count",
+                &(changes.files_added + changes.files_removed).to_string(),
+            )],
+        ));
+    }
+    for diagnostic in &summary.diagnostics {
+        lines.push(format!("• {diagnostic}"));
+    }
+    lines.join("\n")
+}
+
+/// The result dialog: the completed/partial/failed outcome with its
+/// diagnostics (the rich panel is B-016).
+fn present_result_dialog(
+    view: &IpodPageView,
+    summary: &crate::ipod_sync_service::SyncOutcomeSummary,
+    sync: &IpodSyncService,
+) {
+    let dialog = adw::AlertDialog::builder()
+        .heading(tr(msgid("Sync result")))
+        .body(&outcome_body(summary))
+        .build();
+    dialog.add_responses(&[("ok", &tr(msgid("OK")))]);
+    let sync = sync.clone();
+    let parent = view.root().and_downcast::<gtk::Window>();
+    glib::spawn_future_local(async move {
+        let _ = dialog.choose_future(parent.as_ref()).await;
+        sync.dismiss();
+    });
+}
+
+/// Apply one sync-service state to the page: the in-flight spinner, the
+/// running lock on the checkbox, and the phase-driven dialogs — the
+/// thin widget layer over the service's pure machine.
+fn apply_sync_state(
+    view: &IpodPageView,
+    state: &SyncState,
+    policy: ReviewPolicy,
+    sync: &IpodSyncService,
+) {
+    let imp = view.imp();
+    let running = matches!(state.phase, SyncPhase::Collecting | SyncPhase::Running);
+    imp.running_spinner.set_visible(running);
+    imp.running_spinner.set_spinning(running);
+    imp.dry_run_check.set_sensitive(!running);
+    match &state.phase {
+        SyncPhase::Review { summary } if policy == ReviewPolicy::Always => {
+            present_review_dialog(view, summary, sync);
+        }
+        SyncPhase::Done(summary) => present_result_dialog(view, summary, sync),
+        _ => {}
+    }
 }
 
 /// The shell's entry point for `Route::Ipod`: the built and subscribed
 /// page with the action wiring. Call on the GTK main thread (the
 /// subscription attaches to the thread-default main context).
-pub fn ipod_route_view(connection: &IpodConnection) -> gtk::Widget {
+pub fn ipod_route_view(
+    connection: &IpodConnection,
+    sync: &IpodSyncService,
+    policy: ReviewPolicy,
+) -> gtk::Widget {
     let view = IpodPageView::new();
     let imp = view.imp();
+
+    // The Dry Run checkbox is a dev-build surface (the S-08 delta,
+    // b015_plan D-1): release builds compile it out of the bar.
+    if policy != ReviewPolicy::Always {
+        imp.dry_run_check.set_visible(false);
+    }
 
     // Scan again (No-iPod / Sync unavailable / Error): a fresh
     // mount-table scan — `retry()` re-applies the stale last report, so
@@ -574,8 +748,59 @@ pub fn ipod_route_view(connection: &IpodConnection) -> gtk::Widget {
         imp.sidebar_scan_button
             .connect_clicked(move |_| connection.scan());
     }
+    // Sync (B-015): start the service with the dev checkbox state and
+    // the current device's mount. The service itself ignores a start
+    // outside Idle — the click cannot double-run.
+    {
+        let connection = connection.clone();
+        let sync = sync.clone();
+        let dry_run_check = imp.dry_run_check.clone();
+        imp.sync_button.connect_clicked(move |_| {
+            if let Some(device) = connection.snapshot().device {
+                sync.start(dry_run_check.is_active(), &device.mount_point);
+            }
+        });
+    }
 
-    subscribe_to(&view, connection);
+    // The connection snapshot + the sync running flag drive the Sync
+    // button together: both subscriptions re-apply the controls.
+    let last_snapshot =
+        std::rc::Rc::new(std::cell::RefCell::new(Option::<ConnectionSnapshot>::None));
+    let running = std::rc::Rc::new(std::cell::Cell::new(false));
+
+    let connection_receiver = connection.subscribe();
+    *last_snapshot.borrow_mut() = Some(connection.snapshot());
+    view.apply_snapshot(&connection.snapshot(), running.get());
+    {
+        let view = view.clone();
+        let last_snapshot = last_snapshot.clone();
+        let running = running.clone();
+        glib::spawn_future_local(async move {
+            while let Ok(snapshot) = connection_receiver.recv().await {
+                *last_snapshot.borrow_mut() = Some(snapshot.clone());
+                view.apply_snapshot(&snapshot, running.get());
+            }
+        });
+    }
+    let sync_receiver = sync.subscribe();
+    apply_sync_state(&view, &sync.snapshot(), policy, sync);
+    {
+        let view = view.clone();
+        let sync = sync.clone();
+        let last_snapshot = last_snapshot.clone();
+        let running = running.clone();
+        glib::spawn_future_local(async move {
+            while let Ok(state) = sync_receiver.recv().await {
+                let is_running = matches!(state.phase, SyncPhase::Collecting | SyncPhase::Running);
+                running.set(is_running);
+                if let Some(snapshot) = last_snapshot.borrow().as_ref() {
+                    view.apply_snapshot(snapshot, is_running);
+                }
+                apply_sync_state(&view, &state, policy, &sync);
+            }
+        });
+    }
+
     view.upcast()
 }
 
@@ -774,6 +999,60 @@ mod tests {
                 "No FireWire ID — the device database checksum cannot be generated for this Classic."
             ))
         );
+    }
+
+    /// A Ready snapshot over a supported device — the only shape that
+    /// enables the Sync button.
+    fn ready_snapshot() -> ConnectionSnapshot {
+        let mut snapshot = rich_snapshot(ConnectionState::Ready);
+        snapshot.device.as_mut().unwrap().model_supported = true;
+        snapshot
+    }
+
+    #[test]
+    fn sync_controls_gate_the_button() {
+        let controls = sync_controls(&ready_snapshot(), false);
+        assert!(
+            controls.sync_enabled,
+            "Ready + supported + idle enables sync"
+        );
+        assert_eq!(controls.gating_note, None);
+
+        // Every non-Ready state disables sync.
+        for state in [
+            ConnectionState::Disconnected,
+            ConnectionState::Connecting,
+            ConnectionState::BackendUnavailable,
+            ConnectionState::Error,
+        ] {
+            let controls = sync_controls(&rich_snapshot(state), false);
+            assert!(!controls.sync_enabled, "{state:?} disables sync");
+        }
+
+        // An unsupported model on Ready disables sync with the note.
+        let mut unsupported = ready_snapshot();
+        unsupported.device.as_mut().unwrap().model_supported = false;
+        let controls = sync_controls(&unsupported, false);
+        assert!(!controls.sync_enabled);
+        assert_eq!(
+            controls.gating_note,
+            support_warning(unsupported.device.as_ref().unwrap())
+        );
+
+        // A running sync disables the button regardless.
+        let controls = sync_controls(&ready_snapshot(), true);
+        assert!(!controls.sync_enabled);
+        assert!(controls.running);
+
+        // A dead worker disables the button.
+        let mut dead = ready_snapshot();
+        dead.worker_alive = false;
+        assert!(!sync_controls(&dead, false).sync_enabled);
+
+        // No device on Ready (defensive) disables the button.
+        let controls = sync_controls(&snapshot_with(ConnectionState::Ready), false);
+        assert!(!controls.sync_enabled);
+        assert_eq!(controls.gating_note, None);
     }
 
     #[test]

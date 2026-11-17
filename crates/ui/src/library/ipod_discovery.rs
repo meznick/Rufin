@@ -51,7 +51,7 @@ use crate::device_manager::{ConnectionState, DeviceInfo, DeviceManager, Prefligh
 /// (`BackendStatus::Loaded { abi_verified: false }`): the library loads,
 /// but its struct layouts are not covered by the wrapper's pinned ABI
 /// marker, so syncing is not supported.
-const ABI_UNVERIFIED_DIAGNOSTIC: &str = "the installed libgpod backend is a soft-accepted distro build \
+pub(crate) const ABI_UNVERIFIED_DIAGNOSTIC: &str = "the installed libgpod backend is a soft-accepted distro build \
      (ABI unverified) and is not supported for syncing";
 
 /// The `DeviceInfo` for a freshly detected candidate whose metadata could

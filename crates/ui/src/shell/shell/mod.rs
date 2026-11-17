@@ -69,7 +69,13 @@ pub(crate) struct Shell {
     /// decision — the gio mount-event path proved dead in this app; see
     /// b012_plan §11).
     pub(crate) ipod_connection: crate::library::ipod_connection::IpodConnection,
+    /// B-015: the sync boundary service — app-lifetime ownership, same
+    /// as the connection. Runs the engine on per-run threads; the
+    /// production boundary captures the configured iTunes source.
+    pub(crate) ipod_sync: crate::library::ipod_sync_service::IpodSyncService,
 }
+
+mod ipod_sync;
 
 mod full_artwork;
 mod route_keyboard;

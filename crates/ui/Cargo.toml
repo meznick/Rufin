@@ -12,6 +12,7 @@ publish.workspace = true
 
 [dependencies]
 ipod-sync.workspace = true
+itl-core = "0.1.1"
 # The production preflight composition (`preflight_with_backend`) needs the
 # backend handle. The ipod crate is pure Rust with runtime dlopen, so this
 # stays a compile-time-only edge — builds without libgpod.so still work.

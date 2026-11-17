@@ -296,6 +296,7 @@ pub use file::documents::{
 pub use file::documents::{
     read_document_image, read_document_prefix, read_document_track_reference,
 };
+pub use file::local::artwork::{EmbeddedCover, inspect_embedded_cover};
 pub use file::local::media::{
     local_access_locator, local_media_identity_path, read_local_track_reference,
 };

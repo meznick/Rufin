@@ -103,6 +103,38 @@ pub(crate) fn inspect_embedded(
         .map(|picture_index| embedded_reference(source_id, path, picture_index, revision))
 }
 
+/// A stateless embedded-cover extraction (the B-015 sync boundary's
+/// probe + write-side source): the picture bytes and its rotation.
+/// Embedded covers carry no rotation (iTunes' ilst `covr` has none), so
+/// the rotation is `0`.
+#[derive(Clone, Debug)]
+pub struct EmbeddedCover {
+    pub bytes: Vec<u8>,
+    pub rotation: i32,
+}
+
+/// Read the best embedded picture of a media file. `None` when the file
+/// has no readable picture — the caller decides whether that means
+/// absent or unknown.
+pub fn inspect_embedded_cover(path: &Path) -> Option<EmbeddedCover> {
+    let tagged = read_lofty(path, true).ok()??;
+    let picture_index =
+        best_picture_index(&tagged, tagged.primary_tag().or_else(|| tagged.first_tag()))?;
+    let mut file = fs::File::open(path).ok()?;
+    let uri = url::Url::from_file_path(path).ok()?;
+    let image = read_image_input(
+        &mut discovery::Reader::default(),
+        &mut file,
+        uri.as_str(),
+        picture_index,
+    )
+    .ok()?;
+    Some(EmbeddedCover {
+        bytes: image.bytes,
+        rotation: 0,
+    })
+}
+
 pub(crate) fn read_image(reference: &ArtworkReference) -> SourceResult<ImageBytes> {
     match reference {
         ArtworkReference::File(path) => Ok(ImageBytes {
