@@ -15,16 +15,22 @@
 //! and competing-writer refusal.
 
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use ipod_sync::dry_run::{
     ArtworkProbe, CoverEvidence, DeviceOnlyPolicy, HostInputs, SourceKey, SyncOptions,
     collect_device, collect_host, compute,
 };
-use ipod_sync::sync::exec::{SyncContext, SyncStatus, run_sync};
+use ipod_sync::sync::exec::{
+    STEP_BACKUP, STEP_DB_WRITE, STEP_FILE_OPS, STEP_HOST_WRITE, STEP_INTENT, STEP_VERIFY, STEPS,
+    SyncContext, SyncStatus, run_sync,
+};
 use ipod_sync::sync::host::HostWriteContext;
 use ipod_sync::sync::journal::{Journal, LAST_SUCCESS_FILE};
 use ipod_sync::sync::merge::StatMerge;
 use ipod_sync::sync::plan::ExecutionPlan;
+use ipod_sync::sync::report::{ProgressEvent, RecoveryState};
 use itl_core::ItlFile;
 
 struct LoftyProbe;
@@ -197,14 +203,64 @@ fn approved_plan(
     (host, plan)
 }
 
+/// Seed a pending store: the first track gets +2 plays / +1 skip (the
+/// R1-measured format: entries align to the mhlt order, no dbids).
+fn seed_pending_store(device_root: &Path) {
+    let mut bytes = vec![0_u8; 0x60];
+    bytes[0..4].copy_from_slice(b"mhdp");
+    bytes[4..8].copy_from_slice(&0x60_u32.to_le_bytes());
+    bytes[8..12].copy_from_slice(&0x1c_u32.to_le_bytes());
+    bytes[12..16].copy_from_slice(&1_u32.to_le_bytes());
+    let entry = [2_u32, 0xE7150000, 0, 0xFFFF_FFFF, 0, 1, 0];
+    for value in entry {
+        bytes.extend_from_slice(&value.to_le_bytes());
+    }
+    std::fs::write(device_root.join("iPod_Control/iTunes/Play Counts"), &bytes).unwrap();
+}
+
+#[allow(clippy::too_many_arguments)]
 fn context<'a>(
     device_root: &'a Path,
+    identity: &'a str,
     backend: &'a ipod::IpodBackend,
     host: &'a HostInputs,
     options: &'a SyncOptions,
     host_write: &'a HostWriteContext,
     plan: &'a ExecutionPlan,
     fail_after: &'a dyn Fn(&str) -> bool,
+    reporter: &'a (dyn Fn(ProgressEvent) + Send + Sync),
+) -> SyncContext<'a> {
+    context_with(
+        device_root,
+        identity,
+        backend,
+        host,
+        options,
+        host_write,
+        plan,
+        fail_after,
+        reporter,
+        &|| false,
+    )
+}
+
+/// The full context builder — `cancelled` is caller-supplied for the
+/// cancellation gate; the plain [`context`] passes `false` forever.
+/// `identity` is per-test and must be stable across one test's runs: the
+/// transcode staging dir keys on it, so two parallel tests sharing an
+/// identity would race on each other's staged m4a files.
+#[allow(clippy::too_many_arguments)]
+fn context_with<'a>(
+    device_root: &'a Path,
+    identity: &'a str,
+    backend: &'a ipod::IpodBackend,
+    host: &'a HostInputs,
+    options: &'a SyncOptions,
+    host_write: &'a HostWriteContext,
+    plan: &'a ExecutionPlan,
+    fail_after: &'a dyn Fn(&str) -> bool,
+    reporter: &'a (dyn Fn(ProgressEvent) + Send + Sync),
+    cancelled: &'a dyn Fn() -> bool,
 ) -> SyncContext<'a> {
     SyncContext {
         mount: device_root,
@@ -212,7 +268,7 @@ fn context<'a>(
         host,
         options,
         host_write,
-        device_identity: "gate-device",
+        device_identity: identity,
         plan,
         transcode: &|source, destination| {
             let uri = gstreamer::glib::filename_to_uri(source, None).unwrap();
@@ -224,8 +280,9 @@ fn context<'a>(
             )
         },
         artwork: &|_| None,
-        cancelled: &|| false,
+        cancelled,
         fail_after,
+        reporter,
     }
 }
 
@@ -265,21 +322,122 @@ fn sync_pair_gate() {
         tz_offset_seconds: None,
     };
 
+    let events = Mutex::new(Vec::<ProgressEvent>::new());
+    let reporter = |event: ProgressEvent| events.lock().unwrap().push(event);
+    let started = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
     let ctx = context(
         &device_root,
+        "gate-pair",
         &backend,
         &host,
         &options,
         &host_write,
         &plan,
         &|_| false,
+        &reporter,
     );
-    let outcome = run_sync(&ctx).expect("the pair sync completes");
-    assert_eq!(outcome.status, SyncStatus::Completed);
+    let result = run_sync(&ctx);
+    let finished = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    assert_eq!(result.status, SyncStatus::Completed);
     assert_eq!(
-        outcome.files_added, expected_adds,
+        result.changes.files_added, expected_adds,
         "all adds minus the PDF booklets: {:?}",
-        outcome.diagnostics
+        result.diagnostics
+    );
+    assert_eq!(
+        result.recovery, None,
+        "a completed run holds no pending recovery"
+    );
+    let last = result
+        .last_success
+        .expect("the completion advances last-success");
+    assert!(
+        last.completed_unix >= started && last.completed_unix <= finished,
+        "the marker carries the completion time ({:?} not in {started}..={finished})",
+        last.completed_unix
+    );
+
+    // B-011: the emitted step sequence — one began+ended per step, in
+    // protocol order, on a x/6 bar.
+    let events = events.into_inner().unwrap();
+    let steps: Vec<(&'static str, u8, bool)> = events
+        .iter()
+        .filter_map(|event| match event {
+            ProgressEvent::Step {
+                name,
+                index,
+                total,
+                began,
+            } => {
+                assert_eq!(*total, 6, "the step bar is x/6");
+                Some((*name, *index, *began))
+            }
+            _ => None,
+        })
+        .collect();
+    let mut expected_steps = Vec::new();
+    for (position, name) in STEPS.iter().enumerate() {
+        expected_steps.push((*name, position as u8 + 1, true));
+        expected_steps.push((*name, position as u8 + 1, false));
+    }
+    assert_eq!(steps, expected_steps, "one began+ended per step, in order");
+
+    // B-011: the FileOps item stream — determinate items run 1..=T with
+    // one constant total, and every item everywhere stays within it.
+    for event in &events {
+        if let ProgressEvent::Item { current, total, .. } = event {
+            assert!(
+                *total == 0 || *current <= *total,
+                "no determinate item exceeds its total: {current}/{total}"
+            );
+        }
+    }
+    let mut phase: Option<&str> = None;
+    let mut file_ops_items: Vec<(u32, u32)> = Vec::new();
+    for event in &events {
+        match event {
+            ProgressEvent::Step { name, began, .. } => {
+                if *began {
+                    phase = Some(name);
+                }
+            }
+            ProgressEvent::Item { current, total, .. }
+                if phase == Some(STEP_FILE_OPS) && *total > 0 =>
+            {
+                file_ops_items.push((*current, *total));
+            }
+            _ => {}
+        }
+    }
+    assert!(
+        !file_ops_items.is_empty(),
+        "the pair sync does determinate file work"
+    );
+    let file_ops_total = file_ops_items[0].1;
+    for (position, (current, item_total)) in file_ops_items.iter().enumerate() {
+        assert_eq!(*item_total, file_ops_total, "one constant FileOps total");
+        assert_eq!(
+            *current,
+            position as u32 + 1,
+            "current runs 1..=total without gaps"
+        );
+    }
+    let plan_sum = (plan.file_adds.len()
+        + plan.file_repairs.len()
+        + plan.file_removes.len()
+        + plan.playlist_creates.len()
+        + plan.playlist_updates.len()
+        + plan.playlist_removes.len()
+        + plan.artwork_adds.len()) as u32;
+    assert!(
+        file_ops_total >= plan_sum,
+        "the phase total covers the plan plus the stat patches ({file_ops_total} vs {plan_sum})"
     );
 
     // The post-sync device parses and carries the added tracks.
@@ -326,18 +484,6 @@ fn sync_failure_battery() {
 
     // Seed a pending store: the first track gets +2 plays / +1 skip (the
     // R1-measured format: entries align to the mhlt order, no dbids).
-    let seed = || {
-        let mut bytes = vec![0_u8; 0x60];
-        bytes[0..4].copy_from_slice(b"mhdp");
-        bytes[4..8].copy_from_slice(&0x60_u32.to_le_bytes());
-        bytes[8..12].copy_from_slice(&0x1c_u32.to_le_bytes());
-        bytes[12..16].copy_from_slice(&1_u32.to_le_bytes());
-        let entry = [2_u32, 0xE7150000, 0, 0xFFFF_FFFF, 0, 1, 0];
-        for value in entry {
-            bytes.extend_from_slice(&value.to_le_bytes());
-        }
-        std::fs::write(device_root.join("iPod_Control/iTunes/Play Counts"), &bytes).unwrap();
-    };
     let first_dbid = {
         let session = ipod::DeviceSession::open(&backend, &device_root).unwrap();
         session.tracks().unwrap()[0].dbid
@@ -361,7 +507,16 @@ fn sync_failure_battery() {
 
     // --- Host refusal: a broken library path must abort BEFORE any
     // device change (the import-first ordering invariant).
-    seed();
+    seed_pending_store(&device_root);
+    // A pre-existing last-success marker: a refused run must never touch
+    // it (S-10 — only full completion advances).
+    let seeded_marker = br#"{"device":"gate-device","plan_hash":"seed","completed_unix":12345}"#;
+    std::fs::create_dir_all(device_root.join("iPod_Control/Rufin")).unwrap();
+    std::fs::write(
+        device_root.join("iPod_Control/Rufin/last-success.json"),
+        seeded_marker,
+    )
+    .unwrap();
     // The refusal must leave the *consistency set* untouched (the journal
     // and backup legitimately land before the host write — write ordering).
     let device_before = consistency_hash(&device_root);
@@ -381,15 +536,43 @@ fn sync_failure_battery() {
     };
     let bad_context = context(
         &device_root,
+        "gate-battery",
         &backend,
         &host,
         &options,
         &bad_host_write,
         &plan,
         &|_| false,
+        &|_| {},
     );
-    let error = run_sync(&bad_context).expect_err("host refusal aborts");
-    assert_eq!(error.step, "HostWrite", "abort at the host write: {error}");
+    let result = run_sync(&bad_context);
+    let SyncStatus::Failed { step, diagnostic } = &result.status else {
+        panic!("host refusal must fail: {:?}", result.status);
+    };
+    assert_eq!(
+        *step, STEP_HOST_WRITE,
+        "abort at the host write: {diagnostic}"
+    );
+    assert_eq!(
+        result.recovery,
+        Some(RecoveryState::Resumable {
+            completed_steps: vec![STEP_INTENT, STEP_BACKUP],
+        }),
+        "the refused run leaves its committed prefix resumable"
+    );
+    assert_eq!(
+        std::fs::read(device_root.join("iPod_Control/Rufin/last-success.json")).unwrap(),
+        seeded_marker,
+        "a failed run never advances last-success"
+    );
+    assert_eq!(
+        result
+            .last_success
+            .as_ref()
+            .map(|marker| marker.completed_unix),
+        Some(12345),
+        "the result carries the previous marker, not a fresh one"
+    );
     assert_eq!(
         consistency_hash(&device_root),
         device_before,
@@ -413,33 +596,73 @@ fn sync_failure_battery() {
 
     // --- Fail after every step boundary, then recover: the pending delta
     // lands exactly once (no double import).
-    for injected in ipod_sync::sync::exec::STEPS {
-        let injection = |step: &str| step == injected;
+    for (position, injected) in STEPS.iter().enumerate() {
+        let injection = |step: &str| step == *injected;
+        let events = Mutex::new(Vec::<ProgressEvent>::new());
+        let reporter = |event: ProgressEvent| events.lock().unwrap().push(event);
         let ctx = context(
             &device_root,
+            "gate-battery",
             &backend,
             &host,
             &options,
             &good_host_write,
             &plan,
             &injection,
+            &reporter,
         );
         let result = run_sync(&ctx);
-        if injected == ipod_sync::sync::exec::STEP_VERIFY {
+        if *injected == STEP_VERIFY {
             // A crash after the committed DB write is recovered by the
             // planner's verify-and-advance route — that IS the designed
             // completion, and it finishes the operation.
-            let outcome = result.expect("the post-DbWrite crash verify-advances to completion");
-            assert_eq!(outcome.status, SyncStatus::Completed);
+            assert_eq!(result.status, SyncStatus::Completed);
+            assert_eq!(result.recovery, None);
             assert!(
-                outcome.diagnostics.iter().any(|d| d.contains("recovered")),
+                result.diagnostics.iter().any(|d| d.contains("recovered")),
                 "the verify-and-advance route reports the recovery: {:?}",
-                outcome.diagnostics
+                result.diagnostics
             );
         } else {
-            assert!(
-                result.is_err(),
-                "injection after {injected} must stop the run"
+            let SyncStatus::Failed { step, .. } = &result.status else {
+                panic!(
+                    "injection after {injected} must stop the run: {:?}",
+                    result.status
+                );
+            };
+            assert_eq!(*step, *injected, "the failure names the injected step");
+            // B-011: only the executed steps emit on a resume — the
+            // committed prefix resumes silently, and the journal holds
+            // exactly the committed prefix as the recovery reference.
+            // The DbWrite injection re-executes FileOps too (its commit
+            // is gated on DbWrite, and the crashed session's mutations
+            // are gone), so both steps emit.
+            let began: Vec<&'static str> = events
+                .into_inner()
+                .unwrap()
+                .iter()
+                .filter_map(|event| match event {
+                    ProgressEvent::Step {
+                        name, began: true, ..
+                    } => Some(*name),
+                    _ => None,
+                })
+                .collect();
+            let expected_began: Vec<&'static str> = if *injected == STEP_DB_WRITE {
+                vec![STEP_FILE_OPS, STEP_DB_WRITE]
+            } else {
+                vec![*injected]
+            };
+            assert_eq!(
+                began, expected_began,
+                "only the executed steps emit at position {position}"
+            );
+            assert_eq!(
+                result.recovery,
+                Some(RecoveryState::Resumable {
+                    completed_steps: STEPS[..=position].to_vec(),
+                }),
+                "the committed prefix is the recovery reference"
             );
             // The device must still parse (or be restorable next run).
             assert!(
@@ -492,15 +715,340 @@ fn sync_failure_battery() {
     let (host, plan) = approved_plan(&itl_copy, &media_root, &device_root, &backend);
     let ctx = context(
         &device_root,
+        "gate-battery",
         &backend,
         &host,
         &options,
         &good_host_write,
         &plan,
         &|_| false,
+        &|_| {},
     );
-    let error = run_sync(&ctx).expect_err("a held device lock refuses");
-    assert_eq!(error.step, "Intent");
-    assert!(error.diagnostic.contains("lock"), "{error}");
+    let result = run_sync(&ctx);
+    let SyncStatus::Failed { step, diagnostic } = &result.status else {
+        panic!("a held device lock must refuse: {:?}", result.status);
+    };
+    assert_eq!(*step, "Intent");
+    assert!(diagnostic.contains("lock"), "{diagnostic}");
+    assert_eq!(
+        result.recovery, None,
+        "a clean journal holds no recovery reference"
+    );
     drop(lock_file);
+}
+
+/// B-011 gate: the resume bar. A crash after FileOps leaves the committed
+/// prefix in the journal; the next run's first event is the resume
+/// notice, step events begin at the re-executed FileOps step (4/6), and
+/// the resumed run completes and advances last-success.
+#[test]
+fn sync_reporting_resumes_from_the_committed_prefix() {
+    let Some((itl, media_root, tree, backend)) = gate_env() else {
+        return;
+    };
+    let workdir = tempfile::tempdir().unwrap();
+    let device_root = workdir.path().join("device");
+    copy_tree(&tree, &device_root);
+    let itl_copy = workdir.path().join("library.itl");
+    std::fs::copy(&itl, &itl_copy).unwrap();
+    seed_media_files(&device_root, &backend);
+
+    let (host, plan) = approved_plan(&itl_copy, &media_root, &device_root, &backend);
+    let options = gate_options();
+    let host_write = HostWriteContext {
+        library_path: itl_copy.clone(),
+        media_root: media_root.clone(),
+        tz_offset_seconds: None,
+    };
+
+    // Crash after FileOps committed.
+    let crash = |step: &str| step == STEP_FILE_OPS;
+    let ctx = context(
+        &device_root,
+        "gate-resume",
+        &backend,
+        &host,
+        &options,
+        &host_write,
+        &plan,
+        &crash,
+        &|_| {},
+    );
+    let result = run_sync(&ctx);
+    assert_eq!(
+        result.status,
+        SyncStatus::Failed {
+            step: STEP_FILE_OPS,
+            diagnostic: "injected failure after the step committed".into(),
+        },
+        "the injected crash stops the run at FileOps"
+    );
+    assert_eq!(
+        result.recovery,
+        Some(RecoveryState::Resumable {
+            completed_steps: vec![STEP_INTENT, STEP_BACKUP, STEP_HOST_WRITE, STEP_FILE_OPS],
+        })
+    );
+    assert_eq!(
+        result.last_success, None,
+        "the crashed run never advanced last-success"
+    );
+
+    // Resume with a recording reporter.
+    let events = Mutex::new(Vec::<ProgressEvent>::new());
+    let reporter = |event: ProgressEvent| events.lock().unwrap().push(event);
+    let ctx = context(
+        &device_root,
+        "gate-resume",
+        &backend,
+        &host,
+        &options,
+        &host_write,
+        &plan,
+        &|_| false,
+        &reporter,
+    );
+    let result = run_sync(&ctx);
+    assert_eq!(result.status, SyncStatus::Completed);
+    assert!(
+        result
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.contains("resuming")),
+        "the resume is reported: {:?}",
+        result.diagnostics
+    );
+    let events = events.into_inner().unwrap();
+    assert!(
+        matches!(&events[0], ProgressEvent::Notice(message)
+            if message.contains("resuming an interrupted operation (4/6")),
+        "the resume notice comes first: {:?}",
+        events[0]
+    );
+    let first_step = events
+        .iter()
+        .find_map(|event| match event {
+            ProgressEvent::Step {
+                name,
+                index,
+                began: true,
+                ..
+            } => Some((*name, *index)),
+            _ => None,
+        })
+        .expect("a step event");
+    assert_eq!(
+        first_step,
+        (STEP_FILE_OPS, 4),
+        "the bar resumes at the re-executed step, never at zero"
+    );
+    let began_steps: Vec<&str> = events
+        .iter()
+        .filter_map(|event| match event {
+            ProgressEvent::Step {
+                name, began: true, ..
+            } => Some(*name),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        began_steps,
+        vec![STEP_FILE_OPS, STEP_DB_WRITE, STEP_VERIFY],
+        "the committed prefix emits no step events"
+    );
+    assert!(
+        result.last_success.is_some(),
+        "the resumed run completes and advances last-success"
+    );
+}
+
+/// B-011 gate: the restore arm. A crash after the committed DB write plus
+/// a corrupted device database must restore from the backup and report
+/// partial success with the `Restored` reference — never a silent
+/// completion, never a fresh last-success.
+#[test]
+fn sync_reporting_restores_a_broken_database() {
+    let Some((itl, media_root, tree, backend)) = gate_env() else {
+        return;
+    };
+    let workdir = tempfile::tempdir().unwrap();
+    let device_root = workdir.path().join("device");
+    copy_tree(&tree, &device_root);
+    let itl_copy = workdir.path().join("library.itl");
+    std::fs::copy(&itl, &itl_copy).unwrap();
+    seed_media_files(&device_root, &backend);
+
+    let (host, plan) = approved_plan(&itl_copy, &media_root, &device_root, &backend);
+    let options = gate_options();
+    let host_write = HostWriteContext {
+        library_path: itl_copy.clone(),
+        media_root: media_root.clone(),
+        tz_offset_seconds: None,
+    };
+
+    // Crash after the DB write committed.
+    let crash = |step: &str| step == STEP_DB_WRITE;
+    let ctx = context(
+        &device_root,
+        "gate-restore",
+        &backend,
+        &host,
+        &options,
+        &host_write,
+        &plan,
+        &crash,
+        &|_| {},
+    );
+    let result = run_sync(&ctx);
+    assert_eq!(
+        result.status,
+        SyncStatus::Failed {
+            step: STEP_DB_WRITE,
+            diagnostic: "injected failure after the step committed".into(),
+        }
+    );
+
+    // Corrupt the device database — the next run must restore, not resume.
+    std::fs::write(
+        device_root.join("iPod_Control/iTunes/iTunesDB"),
+        b"garbage database",
+    )
+    .unwrap();
+    let events = Mutex::new(Vec::<ProgressEvent>::new());
+    let reporter = |event: ProgressEvent| events.lock().unwrap().push(event);
+    let ctx = context(
+        &device_root,
+        "gate-restore",
+        &backend,
+        &host,
+        &options,
+        &host_write,
+        &plan,
+        &|_| false,
+        &reporter,
+    );
+    let result = run_sync(&ctx);
+    let SyncStatus::Partial {
+        failed_step,
+        diagnostic,
+    } = &result.status
+    else {
+        panic!(
+            "a broken DB must restore to partial success: {:?}",
+            result.status
+        );
+    };
+    assert_eq!(*failed_step, STEP_INTENT);
+    assert!(diagnostic.contains("restored"), "{diagnostic}");
+    assert_eq!(
+        result.recovery,
+        Some(RecoveryState::Restored),
+        "the partial result references the restore"
+    );
+    assert_eq!(
+        result.last_success, None,
+        "a restore never advances last-success"
+    );
+    assert!(
+        ipod::DeviceSession::open(&backend, &device_root).is_ok(),
+        "the restored database parses"
+    );
+    let events = events.into_inner().unwrap();
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, ProgressEvent::Item { label, .. } if label.contains("restoring the consistency set"))),
+        "the restore emits its indeterminate item: {events:?}"
+    );
+}
+
+/// B-011 gate: cancellation is a resumable failure. The pending store
+/// stays untouched, the last-success marker stays byte-identical, and the
+/// recovery reference carries the committed prefix.
+#[test]
+fn sync_reporting_cancellation_is_a_resumable_failure() {
+    let Some((itl, media_root, tree, backend)) = gate_env() else {
+        return;
+    };
+    let workdir = tempfile::tempdir().unwrap();
+    let device_root = workdir.path().join("device");
+    copy_tree(&tree, &device_root);
+    let itl_copy = workdir.path().join("library.itl");
+    std::fs::copy(&itl, &itl_copy).unwrap();
+    seed_media_files(&device_root, &backend);
+    seed_pending_store(&device_root);
+
+    let seeded_marker = br#"{"device":"gate-device","plan_hash":"seed","completed_unix":777}"#;
+    std::fs::create_dir_all(device_root.join("iPod_Control/Rufin")).unwrap();
+    std::fs::write(
+        device_root.join("iPod_Control/Rufin/last-success.json"),
+        seeded_marker,
+    )
+    .unwrap();
+
+    let (host, plan) = approved_plan(&itl_copy, &media_root, &device_root, &backend);
+    let options = gate_options();
+    let host_write = HostWriteContext {
+        library_path: itl_copy.clone(),
+        media_root: media_root.clone(),
+        tz_offset_seconds: None,
+    };
+
+    // The reporter flips the cancel flag at the first determinate item;
+    // the executor checks it at the next FileOps checkpoint.
+    let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let events = Mutex::new(Vec::<ProgressEvent>::new());
+    let reporter = {
+        let cancelled = std::sync::Arc::clone(&cancelled);
+        move |event: ProgressEvent| {
+            if matches!(&event, ProgressEvent::Item { total, .. } if *total > 0) {
+                cancelled.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+            events.lock().unwrap().push(event);
+        }
+    };
+    let cancelled_flag = {
+        let cancelled = std::sync::Arc::clone(&cancelled);
+        move || cancelled.load(std::sync::atomic::Ordering::SeqCst)
+    };
+    let ctx = context_with(
+        &device_root,
+        "gate-cancel",
+        &backend,
+        &host,
+        &options,
+        &host_write,
+        &plan,
+        &|_| false,
+        &reporter,
+        &cancelled_flag,
+    );
+    let result = run_sync(&ctx);
+    let SyncStatus::Failed { step, diagnostic } = &result.status else {
+        panic!("cancellation must fail the run: {:?}", result.status);
+    };
+    assert_eq!(*step, STEP_FILE_OPS);
+    assert!(diagnostic.contains("cancelled"), "{diagnostic}");
+    assert_eq!(
+        result.recovery,
+        Some(RecoveryState::Resumable {
+            completed_steps: vec![STEP_INTENT, STEP_BACKUP, STEP_HOST_WRITE],
+        }),
+        "the cancelled run keeps its committed prefix resumable"
+    );
+    assert!(
+        device_root
+            .join("iPod_Control/iTunes/Play Counts")
+            .is_file(),
+        "the pending store is untouched by the cancelled run"
+    );
+    assert_eq!(
+        std::fs::read(device_root.join("iPod_Control/Rufin/last-success.json")).unwrap(),
+        seeded_marker,
+        "cancellation never advances last-success"
+    );
+    assert!(
+        ipod::DeviceSession::open(&backend, &device_root).is_ok(),
+        "the device still parses after the cancellation"
+    );
 }
