@@ -237,9 +237,10 @@ pub enum OverviewValue {
 }
 
 /// The four Обзор rows in UI order (b014_plan §3.3): Capacity, Serial,
-/// Format, Firmware. Capacity shows the measured total; Format is a
-/// permanent placeholder — the DB-format marker is a model gap, not a
-/// device fact; the absent-optional rule (D-4) covers the rest.
+/// Format, Firmware. Capacity shows the measured total; Format shows the
+/// mounted filesystem's type ("FAT" for a Windows iPod — the honest
+/// measured fact behind iTunes' "Windows" wording); the absent-optional
+/// rule (D-4) covers the rest.
 pub fn overview_rows(device: &DeviceInfo) -> Vec<OverviewRow> {
     let capacity = device
         .total_capacity
@@ -249,6 +250,12 @@ pub fn overview_rows(device: &DeviceInfo) -> Vec<OverviewRow> {
         .serial_number
         .clone()
         .filter(|serial| !serial.is_empty())
+        .map(OverviewValue::Data)
+        .unwrap_or(OverviewValue::Unavailable);
+    let filesystem = device
+        .filesystem
+        .clone()
+        .filter(|filesystem| !filesystem.is_empty())
         .map(OverviewValue::Data)
         .unwrap_or(OverviewValue::Unavailable);
     let firmware = device
@@ -268,7 +275,7 @@ pub fn overview_rows(device: &DeviceInfo) -> Vec<OverviewRow> {
         },
         OverviewRow {
             label: msgid("Format"),
-            value: OverviewValue::Unavailable,
+            value: filesystem,
         },
         OverviewRow {
             label: msgid("Firmware"),
@@ -608,6 +615,7 @@ mod tests {
                 used_capacity: None,
                 firewire_id: None,
                 serial_number: None,
+                filesystem: None,
                 model_supported: true,
                 checksum_possible: false,
             }),
@@ -631,6 +639,7 @@ mod tests {
             used_capacity: Some(2_048_000_000),
             firewire_id: Some("0x000A270012345678".to_string()),
             serial_number: Some("YM6312345Y5N".to_string()),
+            filesystem: Some("FAT".to_string()),
             model_supported: true,
             checksum_possible: true,
         }
@@ -687,7 +696,7 @@ mod tests {
                 msgid("Serial number"),
                 OverviewValue::Data("YM6312345Y5N".to_string()),
             ),
-            (msgid("Format"), OverviewValue::Unavailable),
+            (msgid("Format"), OverviewValue::Data("FAT".to_string())),
             (msgid("Firmware"), OverviewValue::Data("1.3".to_string())),
         ];
         assert_eq!(rows.len(), expected.len(), "the UI contract is four rows");
@@ -703,13 +712,14 @@ mod tests {
         device.serial_number = None;
         device.firmware = None;
         device.total_capacity = None;
+        device.filesystem = None;
         let rows = overview_rows(&device);
         assert_eq!(rows[0].value, OverviewValue::Unavailable, "capacity");
         assert_eq!(rows[1].value, OverviewValue::Unavailable, "serial");
         assert_eq!(
             rows[2].value,
             OverviewValue::Unavailable,
-            "format stays a placeholder with full facts"
+            "format falls back to the placeholder without a measured filesystem"
         );
         assert_eq!(rows[3].value, OverviewValue::Unavailable, "firmware");
     }

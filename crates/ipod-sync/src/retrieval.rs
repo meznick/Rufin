@@ -25,6 +25,9 @@
 //!   statistics, never `Itdb_IpodInfo.capacity` (nominal model-table value).
 //!   A `statvfs` failure yields `None` capacities (explicit unavailability),
 //!   which keeps B-004's preflight from reaching Ready.
+//! - **Filesystem type** = `statfs` superblock magic on the same mount
+//!   (the B-014 Format row): known magics map to "FAT"/"exFAT"/"HFS+",
+//!   anything else stays explicit absence.
 //!
 //! # Write discipline
 //!
@@ -87,6 +90,11 @@ pub struct DeviceFacts {
     pub total_capacity: Option<u64>,
     /// Measured used space (`statvfs`), `<= total_capacity`.
     pub used_capacity: Option<u64>,
+    /// The mounted filesystem's type by superblock magic — the honest
+    /// source for the Format row (B-014): "FAT" for a Windows iPod.
+    /// `None` when the stat fails or the magic is outside the known set
+    /// (explicit absence, never a guess).
+    pub filesystem: Option<String>,
     /// The merged `FirewireGuid`, when the device exposes one.
     pub firewire_id: Option<String>,
     /// The device serial (`SysInfo` `SerialNumber` key), when present.
@@ -139,6 +147,9 @@ pub fn collect(device: &dyn DeviceRead, mount_point: &Path) -> Result<DeviceFact
         None => (false, false),
     };
     let (total_capacity, used_capacity) = filesystem_usage(mount_point);
+    let filesystem = filesystem_magic(mount_point)
+        .and_then(filesystem_name)
+        .map(str::to_owned);
 
     Ok(DeviceFacts {
         name,
@@ -148,6 +159,7 @@ pub fn collect(device: &dyn DeviceRead, mount_point: &Path) -> Result<DeviceFact
         firmware: None,
         total_capacity,
         used_capacity,
+        filesystem,
         firewire_id,
         serial_number,
         model_supported,
@@ -194,6 +206,46 @@ fn filesystem_usage(mount_point: &Path) -> (Option<u64>, Option<u64>) {
     let total = stat.f_blocks as u64 * fragment;
     let used = (stat.f_blocks as u64).saturating_sub(stat.f_bfree as u64) * fragment;
     (Some(total), Some(used.min(total)))
+}
+
+/// The mounted filesystem's superblock magic via `statfs`. `None` when
+/// the stat fails — capacity stays on `statvfs` (its fragment-size field
+/// is correct for FAT clusters), this is only the type probe for the
+/// Format row.
+fn filesystem_magic(mount_point: &Path) -> Option<u64> {
+    let Ok(path) = CString::new(mount_point.as_os_str().as_encoded_bytes()) else {
+        tracing::warn!(mount = %mount_point.display(), "statfs: mount point contains a NUL byte");
+        return None;
+    };
+    let mut stat: libc::statfs = unsafe { std::mem::zeroed() };
+    // SAFETY: `path` is a valid NUL-terminated string; `stat` is a valid
+    // out-parameter. `statfs` performs no writes to the mount.
+    let result = unsafe { libc::statfs(path.as_ptr(), &mut stat) };
+    if result != 0 {
+        tracing::warn!(
+            mount = %mount_point.display(),
+            "statfs failed; filesystem type unavailable"
+        );
+        return None;
+    }
+    Some(stat.f_type as u64)
+}
+
+/// exFAT's superblock magic — not exported by the `libc` crate.
+const EXFAT_SUPER_MAGIC: u64 = 0x2011_BAB0;
+/// HFS+'s superblock magic — not exported by the `libc` crate.
+const HFSPLUS_SUPER_MAGIC: u64 = 0x482B;
+
+/// The human name for a superblock magic. Known magics only — an
+/// unknown magic is explicit absence (the row shows "Unavailable"),
+/// never a guessed type.
+fn filesystem_name(f_type: u64) -> Option<&'static str> {
+    match f_type {
+        value if value == libc::MSDOS_SUPER_MAGIC as u64 => Some("FAT"),
+        EXFAT_SUPER_MAGIC => Some("exFAT"),
+        HFSPLUS_SUPER_MAGIC => Some("HFS+"),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -377,5 +429,31 @@ mod tests {
         let (total, used) = filesystem_usage(Path::new("/nonexistent/definitely/not/here"));
         assert_eq!(total, None);
         assert_eq!(used, None);
+    }
+
+    #[test]
+    fn filesystem_names_map_known_magics_only() {
+        assert_eq!(
+            filesystem_name(libc::MSDOS_SUPER_MAGIC as u64),
+            Some("FAT"),
+            "a Windows iPod's FAT32 partition"
+        );
+        assert_eq!(filesystem_name(EXFAT_SUPER_MAGIC), Some("exFAT"));
+        assert_eq!(filesystem_name(HFSPLUS_SUPER_MAGIC), Some("HFS+"));
+        // Unknown magics stay explicit absence — never a guess.
+        assert_eq!(
+            filesystem_name(0xEF53),
+            None,
+            "ext4 is out of the known set"
+        );
+        assert_eq!(filesystem_name(0), None);
+    }
+
+    #[test]
+    fn filesystem_magic_failure_is_explicit_none() {
+        assert_eq!(
+            filesystem_magic(Path::new("/nonexistent/definitely/not/here")),
+            None
+        );
     }
 }

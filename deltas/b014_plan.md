@@ -475,7 +475,40 @@ against the .ui.
   reproduce (layout in/out) pinned the GTK4 rule before the fix, and
   `gtk4-builder-tool validate ipod_page.ui` passes clean.
 
-Manual acceptance (owner machine, env-gated backend) remains: real
-pod Ready walk (name, badge, model heading, capacity/free numbers,
-firmware + Format "Unavailable", serial), the greyed furniture
-picture, the refresh button, the warning line via the fake tree.
+**Owner-driven extensions (2026-11-17, post-acceptance):**
+
+The owner's manual acceptance surfaced two data gaps, fixed in this
+task; the plan's D-4 wording is superseded where noted:
+
+- **Serial**: the real SysInfo files spell the key `pszSerialNumber`
+  (Apple's plain-SysInfo format), while the wrapper read only
+  `SerialNumber` (the SysInfoExtended plist key). `SYSINFO_KEYS`
+  gained the `psz` form and `ipod::DeviceInfo::serial_number()`
+  resolves both spellings (plain-SysInfo wins when both exist) — 4
+  new gates in the ipod crate.
+- **Format** (supersedes the "permanent placeholder" arm of D-4): the
+  row now shows the mounted filesystem's measured type — `statfs`
+  superblock magic mapped to "FAT"/"exFAT"/"HFS+", unknown or failed
+  → the "Unavailable" placeholder. That is the honest measured fact
+  behind iTunes' «Формат: Windows» wording; capacity stays on
+  `statvfs` (fragment-size correctness). 2 new retrieval gates
+  (magic→name matrix, statfs failure), the discovery pass-through
+  assertion, and the updated `overview_rows` matrices.
+- **Backlog** (owner decision): B-024 — the device re-read command
+  (the refresh-button gap this acceptance found: `apply_scan` never
+  re-parses the current device by design, so the sidebar refresh
+  cannot pick up changed facts until a restart); B-025 — the firmware
+  version from the OSOS image (the SCSI "1.62" revision is the
+  disk-mode revision, not the OS firmware version). Both recorded in
+  tasks.md.
+
+Battery after the extensions: gtk-library 129 lib tests + 3
+env-gated connection gates green; ipod-sync 119; ipod 52 (48 + 4
+serial gates); clippy 0 on the touched crates; workspace + i18n
+checks green; the template still validates clean
+(`gtk4-builder-tool`).
+
+Remaining manual acceptance: the owner re-walks Ready with the
+written SysInfo — serial populated, Format showing "FAT", firmware
+still "Unavailable" until B-025; the stale-facts refresh gap is
+B-024 (restart until then).

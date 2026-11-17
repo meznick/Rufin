@@ -202,3 +202,51 @@ Tasks are listed in dependency order; IDs stay stable, so B-007 precedes discove
     criteria byte-exactly against iTunes' own device blobs (B-017
     validates on hardware); static playlists and the existing smart
     lists stay byte-identical.
+- [ ] **B-024 (backlog): Re-read the current device's facts on demand**
+  - Spec reference: R-03, S-06
+  - Plan reference: Phase 3, Connection FSM
+  - Depends on: B-014
+  - Why it exists: `apply_scan` deliberately never re-retrieves a device
+    that is already current (B-006: "rescans never re-parse the device"
+    — the parses take seconds), so the Ready sidebar's Scan-again
+    (B-014 D-11) cannot pick up externally changed data. Measured
+    2026-11-17 at manual acceptance: a hand-written `Device/SysInfo`
+    stayed invisible (stale facts and the stale policy warning) until a
+    full player restart. The button's refresh semantics promise an
+    overview refresh; the scan only detects replugs.
+  - Goal: a new explicit worker command that re-runs retrieval +
+    preflight for the current device through the transient Connecting
+    state and re-emits the fresh snapshot; the Ready sidebar refresh
+    triggers it, the other Scan-again buttons keep their replug
+    semantics.
+  - Hazards to remember: re-preflight transiently leaves Ready (an
+    honest spinner flash, not a stuck state); the parse blocks the
+    worker FIFO (the b006 latency debt) — ignore duplicate clicks
+    while one re-read is in flight; the interrupted-operation notice
+    must stay untouched.
+  - Verification: gates — a re-read with changed facts updates the
+    snapshot; a failed re-read lands in Error with the diagnostic; the
+    notice survives a re-read; no re-parse happens without the
+    explicit command.
+- [ ] **B-025 (backlog): Read the iPod firmware version (Software version row)**
+  - Spec reference: R-03, S-06
+  - Plan reference: Phase 3, Data Models & Interfaces
+  - Depends on: B-014
+  - Why it exists: `firmware` is always `None` today — the pinned build
+    exports no `SysInfoExtended` parser symbols, and Video pods do not
+    carry `SysInfoExtended` at all (the row shows "Unavailable" on the
+    owner's 5.5G). The tempting SCSI source is a trap: the pod's SCSI
+    revision reads "1.62" (measured 2026-11-17) — the disk-mode
+    revision, not the OS firmware version, so displaying it would
+    conflate two different things.
+  - Goal: the honest source is the OSOS image on the hidden firmware
+    partition — a read-only mount + header parse for the version
+    string, shown in the Software version row and cross-checked
+    against iTunes' «Версия ПО» for the same pod.
+  - Hazards to remember: touching the firmware partition is a new
+    device interaction — read-only only, never a write; the OSOS
+    header format must be verified against the real pod and iTunes
+    before the value is trusted.
+  - Verification: the shown version matches iTunes for the pod during
+    hardware acceptance (B-017); the read-only guarantee pinned by a
+    partition tree hash before/after.
