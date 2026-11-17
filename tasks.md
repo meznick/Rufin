@@ -1,6 +1,6 @@
 # tasks.md
 
-Tasks are listed in dependency order; IDs stay stable, so B-007 precedes discovery and B-005 precedes preflight. All Phase 1 tasks (B-001 through B-006) and B-007 are merged into `feature/ipod-page`; task-branch hashes are recorded in the entries that carry them. B-001 research does not claim runtime or hardware acceptance.
+Tasks are listed in dependency order; IDs stay stable, so B-007 precedes discovery and B-005 precedes preflight. All Phase 1 and Phase 2 sync-core tasks (B-001 through B-010, including B-010a) are merged into `feature/ipod-page`; task-branch hashes are recorded in the entries that carry them. B-001 research does not claim runtime or hardware acceptance.
 
 ## Phase 1: Device Connection Infrastructure
 
@@ -87,11 +87,12 @@ Tasks are listed in dependency order; IDs stay stable, so B-007 precedes discove
     + full env-gated suite, audio-processing 15/15, test-synthetic,
     test-wrapper, lint 0.
   - Depends on: B-009
-- [ ] **B-010: Implement full bidirectional sync and recoverable coordination**
+- [x] **B-010: Implement full bidirectional sync and recoverable coordination**
   - Spec reference: R-04, S-07, S-10, S-12, R-05, S-13
   - Plan reference: Phase 2, Sync Data Mapping, Recovery and Statistics
   - Research gate before implementation: revisit [R1 and R2](deltas/b001_research.md#10-follow-up-research-required-before-implementation) for device-write side effects, artwork failure reporting, and recovery; obtain owner review of the resulting proposal.
   - Verification: Review the concrete backup/journal, write-ordering, writer-exclusion, stat-merge/deduplication, recovery, and flush/eject protocol before enabling destructive writes. Fixtures verify files, playlists, artwork, model-specific libgpod checksums, and host stats via sentinel-guarded itl-sync only. Failure injection covers disk full, removal, each multi-file write boundary, competing writers, zero sentinel, device success/host failure, host commit before acknowledgement, retrying twice, and reassigned numeric device track IDs. Recover the last consistent library and preserve pending changes without lost or duplicate imports. Partial success never advances last-success time. Test copies only; no start/stop-sync transaction assumption.
+  - Result: implemented on `feature/ipod-page-task-B-010` (plan `deltas/b010_plan.md` §12): the §5 transaction engine — on-device journal with per-dbid dedup watermarks, consistency-set backup, import-first host write via sentinel-guarded itl-sync, writer exclusion (flock + /proc scan), transcode adds (the B-010a provider), the staged DB write with OTG exclusion, resumable steps, verify-and-advance/restore recovery. R1/R2 measured on disposable copies (topology survives via the type-5 list, 632 unknown-mhod metadata drops accepted per owner §11-11, the staged write's `playcounts_reset` measured as a no-op — consumption is the executor's completion step). Gates green: the env-gated pair gate (full sync, 9 adds minus PDF booklets, journal completed, originals byte-identical) and the failure battery (host-refusal abort before device changes, fail-after-every-step, a seeded pending store imported exactly once across the crashes, lock refusal). 110 unit tests, clippy/lint 0. Smart-playlist criteria translation is backlog B-023; hardware/VM acceptance is B-017.
   - Debt (from the B-006 review, [b006 delta](deltas/b006_delta.md)): the interrupted-operation notice is carried by the serialized connection worker, so it queues behind multi-second libgpod parses and can arrive with the delay of an in-flight scan; the recovery protocol must account for the FIFO latency.
   - Depends on: B-009
 - [ ] **B-011: Implement sync progress and completion reporting**
