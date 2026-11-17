@@ -298,9 +298,19 @@ libgpod 0.8.3 с проверкой всех sha256 и пишет ABI-марке
   verify-and-advance / restore); pair-gate и failure-батарея зелёные.
   Smart-критерии плейлистов — бэклог B-023.
 
+- B-011 (прогресс/завершение) слит в `feature/ipod-page` 2026-11-17
+  (`deltas/b011_plan.md` §13): `sync/report.rs` — поток `ProgressEvent`
+  (шаги x/6, per-item работа с заголовками треков, indeterminate-фазы
+  для парсов libgpod), монотонный fold `SyncProgress`, advisory
+  `ProgressPipe`; `run_sync` возвращает единый `SyncResult`
+  (Completed/Partial/Failed + `RecoveryState` из журнала + last-success).
+  Гейты: pair-gate фиксирует последовательность шагов и поток items
+  FileOps, failure-батарея — соответствие emitted-шагов журналу; новые
+  гейты resume/restore/cancellation/lossy-pipe. Подписку UI делает B-016.
+
 Очередь (по `tasks.md`):
 
-- B-011 прогресс/завершение, B-012..B-016 UI (страница, состояния, overview, кнопка
+- B-012..B-016 UI (страница, состояния, overview, кнопка
   синка с Dry Run), B-017 приёмка на железе по моделям (ворота перед
   включением деструктивных записей), B-018 верификация точности
   и немутации dry run, B-020 финализация документации/приёмки.
