@@ -81,6 +81,11 @@ msgid ""
 msgstr ""
 
 msgid ""
+"No FireWire ID \342\200\224 the device database checksum cannot be generated "
+"for this Classic."
+msgstr ""
+
+msgid ""
 "No results \302\257\\_(\302\260\342\225\255\342\225\256\302\260)_/\302\257"
 msgstr ""
 
@@ -543,6 +548,9 @@ msgstr ""
 msgid "Audio"
 msgstr ""
 
+msgid "Audiobooks"
+msgstr ""
+
 #, rust-format
 msgid "August {year}"
 msgstr ""
@@ -700,6 +708,9 @@ msgid "Cancel download"
 msgstr ""
 
 msgid "Cancel"
+msgstr ""
+
+msgid "Capacity"
 msgstr ""
 
 msgid "Cast format"
@@ -1037,6 +1048,9 @@ msgid "Controller status"
 msgstr ""
 
 msgid "Controller"
+msgstr ""
+
+msgid "Convert higher bit rate songs to 256 kbps AAC"
 msgstr ""
 
 msgid "Copy access token"
@@ -1481,6 +1495,9 @@ msgstr ""
 msgid "Enable caching lyrics"
 msgstr ""
 
+msgid "Enable disk use"
+msgstr ""
+
 msgid "Enable partial star ratings"
 msgstr ""
 
@@ -1695,6 +1712,9 @@ msgstr ""
 msgid "Finishing setup"
 msgstr ""
 
+msgid "Firmware"
+msgstr ""
+
 msgid "Fit to height"
 msgstr ""
 
@@ -1751,6 +1771,10 @@ msgid "Frame rate limit"
 msgstr ""
 
 msgid "Frames per second"
+msgstr ""
+
+#, rust-format
+msgid "Free: {value}"
 msgstr ""
 
 msgid "Frequency \302\267 Hz"
@@ -2246,6 +2270,9 @@ msgstr ""
 msgid "Manage"
 msgstr ""
 
+msgid "Manually manage music and videos"
+msgstr ""
+
 msgid "Mapped Local Path"
 msgstr ""
 
@@ -2381,6 +2408,9 @@ msgid "Move provider up"
 msgstr ""
 
 msgid "Move up"
+msgstr ""
+
+msgid "Movies"
 msgstr ""
 
 msgid "Multi-selection"
@@ -2692,6 +2722,9 @@ msgstr ""
 msgid "Offline"
 msgstr ""
 
+msgid "On my device"
+msgstr ""
+
 msgid "On this device"
 msgstr ""
 
@@ -2741,6 +2774,9 @@ msgid "Open custom themes folder"
 msgstr ""
 
 msgid "Open fullscreen player"
+msgstr ""
+
+msgid "Open iTunes when this iPod is connected"
 msgstr ""
 
 msgid "Open on Emby"
@@ -2856,6 +2892,9 @@ msgid "Performer"
 msgstr ""
 
 msgid "Period"
+msgstr ""
+
+msgid "Photos"
 msgstr ""
 
 msgid "Pink"
@@ -3092,6 +3131,9 @@ msgid "Proxy casting through Rufin"
 msgstr ""
 
 msgid "Public"
+msgstr ""
+
+msgid "Purchases"
 msgstr ""
 
 msgid "Purple"
@@ -3374,6 +3416,9 @@ msgstr ""
 msgid "Reset to defaults"
 msgstr ""
 
+msgid "Reset warnings"
+msgstr ""
+
 msgid "Reset"
 msgstr ""
 
@@ -3390,6 +3435,9 @@ msgid "Restore User State"
 msgstr ""
 
 msgid "Restore defaults without deleting saved presets"
+msgstr ""
+
+msgid "Restore iPod\342\200\246"
 msgstr ""
 
 msgid "Restore player layout"
@@ -3528,6 +3576,9 @@ msgid "Saving..."
 msgstr ""
 
 msgid "Scan again"
+msgstr ""
+
+msgid "Scan for connected iPods"
 msgstr ""
 
 msgid "Scanning tracks"
@@ -3680,6 +3731,9 @@ msgstr ""
 
 #, rust-format
 msgid "September {year}"
+msgstr ""
+
+msgid "Serial number"
 msgstr ""
 
 msgid "Server Actions"
@@ -3894,6 +3948,9 @@ msgstr ""
 msgid "Soft spectrum"
 msgstr ""
 
+msgid "Software version"
+msgstr ""
+
 msgid "Solid bars"
 msgstr ""
 
@@ -3996,6 +4053,9 @@ msgstr ""
 msgid "Suggested"
 msgstr ""
 
+msgid "Summary"
+msgstr ""
+
 msgid "Sunday"
 msgstr ""
 
@@ -4017,10 +4077,16 @@ msgstr ""
 msgid "Switching library..."
 msgstr ""
 
+msgid "Sync only checked songs and videos"
+msgstr ""
+
 msgid "Sync unavailable"
 msgstr ""
 
 msgid "Sync was interrupted"
+msgstr ""
+
+msgid "Sync"
 msgstr ""
 
 msgid "Synced lyrics"
@@ -4036,6 +4102,9 @@ msgid "System keyring"
 msgstr ""
 
 msgid "System"
+msgstr ""
+
+msgid "TV Shows"
 msgstr ""
 
 msgid "Tags"
@@ -4088,6 +4157,9 @@ msgid "This is owned by {source}. Regular playlists are synced to your remote."
 msgstr ""
 
 msgid "This isn't available"
+msgstr ""
+
+msgid "This model is not in the supported set (Video 5/5.5G, Classic 6/7G)."
 msgstr ""
 
 #, rust-format
@@ -4614,6 +4686,10 @@ msgstr ""
 
 #, rust-format
 msgid "{stage}: {completed}"
+msgstr ""
+
+#, rust-format
+msgid "{value} GB"
 msgstr ""
 
 #. Windows installer: FinishText.

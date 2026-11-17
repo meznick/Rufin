@@ -18,6 +18,9 @@
 //!   `deltas/b005_delta.md`.
 //! - **FireWire ID** = the sysinfo hash's merged `FirewireGuid` entry
 //!   (libgpod merges `FireWireGUID` from `SysInfoExtended` at parse time).
+//! - **Serial** = the `SysInfo` `SerialNumber` entry, display-only
+//!   (B-014). Distinct from the `SysInfoExtended` plist serial libgpod
+//!   uses for model identification.
 //! - **Capacities** = `statvfs` on the mount point — measured filesystem
 //!   statistics, never `Itdb_IpodInfo.capacity` (nominal model-table value).
 //!   A `statvfs` failure yields `None` capacities (explicit unavailability),
@@ -86,6 +89,9 @@ pub struct DeviceFacts {
     pub used_capacity: Option<u64>,
     /// The merged `FirewireGuid`, when the device exposes one.
     pub firewire_id: Option<String>,
+    /// The device serial (`SysInfo` `SerialNumber` key), when present.
+    /// Display-only (B-014); absent when `SysInfo` has no such entry.
+    pub serial_number: Option<String>,
     /// Whether the resolved model is inside the supported set
     /// (Video 5/5.5G, Classic 6/6.5/7G — the B-001 scope). `false` for an
     /// unresolved or out-of-scope model. Informational, never a refusal:
@@ -116,6 +122,7 @@ pub fn collect(device: &dyn DeviceRead, mount_point: &Path) -> Result<DeviceFact
         None => (String::new(), String::new(), None),
     };
     let firewire_id = info.firewire_id().map(str::to_owned);
+    let serial_number = info.serial_number().map(str::to_owned);
     // The 2026-11-10 model policy verdicts (b006 delta decision 12): model
     // support and checksum feasibility are classifications for the UI to
     // gate on, not refusals. Both share the preflight module's model-table
@@ -142,6 +149,7 @@ pub fn collect(device: &dyn DeviceRead, mount_point: &Path) -> Result<DeviceFact
         total_capacity,
         used_capacity,
         firewire_id,
+        serial_number,
         model_supported,
         checksum_possible,
     })
@@ -322,6 +330,21 @@ mod tests {
         ];
         let facts = collect(&fake, Path::new("/mnt/ipod")).unwrap();
         assert_eq!(facts.firewire_id.as_deref(), Some("0x000A270012345678"));
+    }
+
+    #[test]
+    fn serial_number_passes_through_and_is_absent_without_sysinfo() {
+        let mut fake = fake_with(None, vec![playlist(Some("pod"), true)]);
+        fake.info.sysinfo = vec![
+            ("ModelNumStr".to_string(), "MA446".to_string()),
+            ("SerialNumber".to_string(), "YM6312345Y5N".to_string()),
+        ];
+        let facts = collect(&fake, Path::new("/mnt/ipod")).unwrap();
+        assert_eq!(facts.serial_number.as_deref(), Some("YM6312345Y5N"));
+
+        let bare = fake_with(None, vec![playlist(Some("pod"), true)]);
+        let facts = collect(&bare, Path::new("/mnt/ipod")).unwrap();
+        assert_eq!(facts.serial_number, None);
     }
 
     #[test]

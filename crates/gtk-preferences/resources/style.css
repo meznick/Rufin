@@ -1961,6 +1961,55 @@ scale.volume-slider:dir(rtl) {
   padding: 10px 12px;
 }
 
+/* The B-014 Ready shell: the iTunes-style three-region device window. */
+.ipod-sidebar {
+  background: color-mix(in srgb, var(--window-bg-color) 92%, var(--border-color));
+  border-right: 1px solid var(--border-color);
+}
+
+.ipod-badge {
+  background: color-mix(in srgb, var(--window-fg-color) 8%, transparent);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  padding: 1px 6px;
+  font-size: 0.85em;
+}
+
+.ipod-nav-title {
+  font-size: 0.85em;
+  font-weight: 700;
+  color: var(--dim-label-color);
+}
+
+.ipod-nav-list > row {
+  padding: 4px 15px;
+  min-height: 28px;
+}
+
+.ipod-nav-list > row.ipod-nav-active {
+  background: color-mix(in srgb, var(--accent-bg-color) 40%, transparent);
+  color: var(--accent-fg-color);
+  font-weight: 600;
+}
+
+.ipod-info-box {
+  background: color-mix(in srgb, var(--window-bg-color) 92%, var(--border-color));
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 16px 20px;
+}
+
+.ipod-warning {
+  color: var(--warning-color, var(--accent-color));
+}
+
+.ipod-bottom-bar {
+  background: color-mix(in srgb, var(--window-bg-color) 92%, var(--border-color));
+  border-top: 1px solid var(--border-color);
+  padding: 10px 20px;
+  min-height: 55px;
+}
+
 .lyrics-search-helper {
   color: color-mix(in srgb, var(--window-fg-color) 68%, var(--window-bg-color));
   font-size: 12px;

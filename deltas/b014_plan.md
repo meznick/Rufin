@@ -1,10 +1,8 @@
 # B-014: Device Overview view (iTunes-style Ready shell)
 
-Status: owner-directed (2026-11-17): the owner supplied an HTML/CSS demo
-of the Windows iTunes device window (`~/Downloads/
-deepseek_html_20261117_b5ef40.html`) and answered the six layout
-questions; this revision encodes those answers. Pending the owner's
-final read-through of D-8..D-11.
+Status: owner-approved (2026-11-17, demo + Q&A; D-8..D-11 defaults
+accepted at "go"); implemented as written with two recorded deviations
+(§11).
 
 ## 1. What this task is
 
@@ -403,4 +401,81 @@ New, pending the owner's sign-off:
 
 ## 11. Implementation results
 
-(filled after implementation — gates, corrections, battery)
+**Done 2026-11-17** on `feature/ipod-page-task-B-014`, per §10, with
+all owner decisions as written:
+
+1. Data layer (D-9): `serial_number: Option<String>` honestly from
+   `SysInfo`'s `"SerialNumber"` key — the `ipod` crate gained a
+   `serial_number()` helper next to `firewire_id()` (with the
+   SysInfoExtended-key distinction documented),
+   `ipod-sync/retrieval.rs` gained the `DeviceFacts` field + the
+   provenance doc line, `device_manager.rs`/`ipod_discovery.rs` the
+   `DeviceInfo` field and the two construction sites, and the
+   compiler-driven fixture sweep filled every test literal. New
+   gates: retrieval serial pass-through/absence; the device-manager
+   optional-fields test carries a serial arm.
+2. `ipod_page.rs`: the pure layer — `overview_rows` (four rows in UI
+   order: Capacity, Serial, Format, Firmware; absent → the
+   `Unavailable` placeholder, Format permanent), `ready_heading`
+   (model → "iPod"), `sidebar_name` (name → "iPod"), `capacity_badge`
+   (whole GB, `None` hides), `free_bytes`, `capacity_fraction`
+   (clamped), `support_warning` (the D-8 verdict mapping),
+   `format_gb`. The Ready arm of `decide()` stops using `show_device`
+   (the show_device gate is now Connecting-only); `apply_snapshot`
+   applies the shell; `apply_overview` renders the rows;
+   `ipod_route_view` wires the sidebar refresh → `connection.scan()`
+   (D-11).
+3. `ipod_page.ui`: the `ready` page rebuilt as the three-region
+   shell (D-1) — sidebar with device header (icon, name, badge,
+   refresh button) + both greyed nav sections (D-2), the Обзор
+   content (heading, info-box grid, D-8 warning label, the greyed
+   Параметры box with the demo's five checkboxes + reset button and
+   the greyed Обновить/Восстановить, D-6), and the bottom bar
+   (used/free progress bar with the "Free:" text, greyed Sync, no
+   Готово — D-7). Furniture sites carry XML comments marking them as
+   placeholders.
+4. `style.css`: `.ipod-sidebar`, `.ipod-badge`, `.ipod-nav-title`,
+   `.ipod-nav-list`, `.ipod-nav-active`, `.ipod-info-box`,
+   `.ipod-warning`, `.ipod-bottom-bar`. `locales/rufin.pot`
+   regenerated (76 new strings).
+5. Gates (§5): 8 new display-free matrices in `ipod_page.rs` —
+   `format_gb` (seven cases), `capacity_badge` (rounding + hide),
+   heading/name fallbacks, `overview_rows` order + full facts,
+   placeholder rule, `free_bytes`, `capacity_fraction`, policy
+   warnings — plus the renamed Connecting-only `show_device` gate
+   and the retrieval serial gate.
+
+Battery: gtk-library 129 lib tests (121 + 8) + 3 env-gated
+connection gates green; ipod-sync 117 (116 + 1 serial gate); ipod
+48; clippy 0 on gtk-library/ipod-sync/ipod; workspace + i18n checks
+green; touched files fmt-clean (the pre-existing toolchain drift
+stays untouched); the composite cross-check passes 28 bound fields
+against the .ui.
+
+**Deviations from the plan (both recorded, neither owner-visible):**
+
+- §5.1/§3.7: `format_gb` returns the number only ("2.05"), not
+  "2.05 GB" — the unit is the thin layer's `tr_with("{value} GB")`,
+  so the unit translates ("ГБ") instead of hardcoding English. The
+  gates assert the number strings; the composition stays untested by
+  the widget-free policy.
+- §3.4: the demo's bitrate select renders as static text inside the
+  checkbox label ("…to 256 kbps AAC") — a DropDown needs a model and
+  the row is greyed furniture.
+
+**Gate-forced correction (found by the owner's launch, 2026-11-17):**
+
+- The first template build failed at runtime: "Can't use <layout>
+  here". Cause: in GTK4's GtkBuilder, GtkGrid's `<layout>` element
+  belongs **inside** the `<object>` element (the GTK3-style
+  outside-placement was applied to the firmware cell). Caught by
+  `gtk4-builder-tool validate` — which the composite cross-check does
+  not cover (ids only, no XML semantics). **The validation tool is now
+  part of the housekeeping loop for every `.ui` change**: the minimal
+  reproduce (layout in/out) pinned the GTK4 rule before the fix, and
+  `gtk4-builder-tool validate ipod_page.ui` passes clean.
+
+Manual acceptance (owner machine, env-gated backend) remains: real
+pod Ready walk (name, badge, model heading, capacity/free numbers,
+firmware + Format "Unavailable", serial), the greyed furniture
+picture, the refresh button, the warning line via the fake tree.

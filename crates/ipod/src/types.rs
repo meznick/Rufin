@@ -110,6 +110,18 @@ impl DeviceInfo {
             .find(|(key, _)| key == "FirewireGuid")
             .map(|(_, value)| value.as_str())
     }
+
+    /// The device serial number (`SysInfo` `SerialNumber` key, e.g.
+    /// `YM6312345Y5N`), or `None` when the entry is absent. Display-only —
+    /// note that libgpod's model identification keys off a *different*
+    /// `SerialNumber` entry in the `SysInfoExtended` plist; this one is
+    /// the plain SysInfo value iTunes shows as the serial.
+    pub fn serial_number(&self) -> Option<&str> {
+        self.sysinfo
+            .iter()
+            .find(|(key, _)| key == "SerialNumber")
+            .map(|(_, value)| value.as_str())
+    }
 }
 
 /// Resolved model identity of a device.
