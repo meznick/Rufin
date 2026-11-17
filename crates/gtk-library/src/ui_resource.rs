@@ -12,6 +12,7 @@ pub const INTERFACE_RESOURCE_PATHS: &[&str] = &[
     LIBRARY_CONFIG_RESOURCE,
     HOME_SECTION_HEADER_RESOURCE,
     FOLDERS_RESOURCE,
+    IPOD_PAGE_RESOURCE,
     DETAIL_SHOWCASE_RESOURCE,
     COLLECTION_GRID_COVER_RESOURCE,
     COLLECTION_GRID_CARD_RESOURCE,
@@ -25,6 +26,7 @@ pub const LIBRARY_CONFIG_RESOURCE: &str = "/io/github/screwys/Rufin/ui/routes/li
 pub const HOME_SECTION_HEADER_RESOURCE: &str =
     "/io/github/screwys/Rufin/ui/routes/home_section_header.ui";
 pub const FOLDERS_RESOURCE: &str = "/io/github/screwys/Rufin/ui/routes/folders.ui";
+pub const IPOD_PAGE_RESOURCE: &str = "/io/github/screwys/Rufin/ui/routes/ipod_page.ui";
 pub const DETAIL_SHOWCASE_RESOURCE: &str = "/io/github/screwys/Rufin/ui/routes/detail_showcase.ui";
 pub const COLLECTION_GRID_COVER_RESOURCE: &str =
     "/io/github/screwys/Rufin/ui/routes/collection_grid_cover.ui";

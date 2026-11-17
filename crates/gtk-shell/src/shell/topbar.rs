@@ -17,6 +17,9 @@ pub(crate) struct Topbar {
     source: gtk::MenuButton,
     controller: gtk::MenuButton,
     pub casting_host: gtk::Box,
+    /// B-012: opens the iPod device page (`Route::Ipod`). No active state
+    /// — a destination, not a toggle (like Controller/Source).
+    ipod: gtk::Button,
 }
 
 impl Topbar {
@@ -73,6 +76,7 @@ impl Topbar {
             source: gtk::MenuButton,
             controller: gtk::MenuButton,
             casting_host: gtk::Box,
+            ipod: gtk::Button,
         });
         gtk_widgets::controls::configure_search_entry(&search);
         Self {
@@ -88,6 +92,7 @@ impl Topbar {
             source,
             controller,
             casting_host,
+            ipod,
         }
     }
 
@@ -98,6 +103,15 @@ impl Topbar {
             } else {
                 "<Control>k"
             });
+        // B-012: the iPod page entry point (b012_plan §4-6).
+        {
+            let weak = Rc::downgrade(shell);
+            self.ipod.connect_clicked(move |_| {
+                if let Some(shell) = weak.upgrade() {
+                    shell.navigate(gtk_widgets::route::Route::Ipod);
+                }
+            });
+        }
         self.search_popup
             .replace(Some(super::topbar_search::SearchPopup::new(
                 shell,

@@ -489,6 +489,9 @@ pub async fn build(
             navigation_view,
             route_viewport,
             right_panel,
+            ipod_monitor: gtk_library::ipod_monitor::IpodMountMonitor::start(
+                gtk_library::ipod_connection::IpodConnection::new(),
+            ),
         }
     });
 

@@ -42,6 +42,11 @@ msgid ""
 msgstr ""
 
 msgid ""
+"Connect a supported iPod (Video or Classic) to sync music, playlists, and "
+"statistics."
+msgstr ""
+
+msgid ""
 "Connecting an existing profile will remove all data in this device, do you "
 "really want to continue?"
 msgstr ""
@@ -163,6 +168,12 @@ msgid ""
 msgstr ""
 
 msgid ""
+"The iTunes Library.itl file. Ratings and play counts sync back into it. Do "
+"not run iTunes on this library at the same time. The media folder root "
+"defaults to the folder containing the library file."
+msgstr ""
+
+msgid ""
 "This is a fallback artwork Rufin uses, do you want to set this as the item "
 "artwork?"
 msgstr ""
@@ -200,6 +211,11 @@ msgstr ""
 
 msgid ""
 "You will need to reconnect through the clients you use with the new API key."
+msgstr ""
+
+msgid ""
+"iTunes has this library open \342\200\224 changes stay pending until it "
+"closes"
 msgstr ""
 
 msgid "(hold to shuffle)"
@@ -644,6 +660,9 @@ msgstr ""
 msgid "Browse"
 msgstr ""
 
+msgid "Browse\342\200\246"
+msgstr ""
+
 msgid "By Lyrics"
 msgstr ""
 
@@ -759,6 +778,15 @@ msgid "Choose one or more folders to scan and play directly from this computer"
 msgstr ""
 
 msgid "Choose playback output"
+msgstr ""
+
+msgid "Choose the Media Folder"
+msgstr ""
+
+msgid "Choose the iTunes Library"
+msgstr ""
+
+msgid "Choose the iTunes Library.itl file"
 msgstr ""
 
 msgid "Choose whether to keep the completed downloads."
@@ -954,6 +982,9 @@ msgstr ""
 
 #, rust-format
 msgid "Connecting to {device}..."
+msgstr ""
+
+msgid "Connecting"
 msgstr ""
 
 msgid "Connecting..."
@@ -1274,6 +1305,9 @@ msgstr ""
 msgid "Disconnect"
 msgstr ""
 
+msgid "Disconnected"
+msgstr ""
+
 msgid "Discord Rich Presence"
 msgstr ""
 
@@ -1483,6 +1517,9 @@ msgstr ""
 msgid "Equalizer"
 msgstr ""
 
+msgid "Error"
+msgstr ""
+
 msgid "Ever played"
 msgstr ""
 
@@ -1499,6 +1536,9 @@ msgid "Expand lyrics and visualizer"
 msgstr ""
 
 msgid "Expand sidebar"
+msgstr ""
+
+msgid "Explicit"
 msgstr ""
 
 msgid "Explore"
@@ -2035,6 +2075,9 @@ msgstr ""
 msgid "Legacy"
 msgstr ""
 
+msgid "Library file"
+msgstr ""
+
 msgid "Library"
 msgstr ""
 
@@ -2221,6 +2264,9 @@ msgstr ""
 
 #, rust-format
 msgid "May {year}"
+msgstr ""
+
+msgid "Media folder (optional)"
 msgstr ""
 
 msgid "Menu"
@@ -2500,6 +2546,9 @@ msgid "No file linked"
 msgstr ""
 
 msgid "No folders selected"
+msgstr ""
+
+msgid "No iPod detected"
 msgstr ""
 
 msgid "No limit"
@@ -3076,6 +3125,9 @@ msgid "Range selection"
 msgstr ""
 
 msgid "Rating"
+msgstr ""
+
+msgid "Reading iTunes library..."
 msgstr ""
 
 msgid "Reading tags..."
@@ -3950,6 +4002,9 @@ msgstr ""
 msgid "Switching library..."
 msgstr ""
 
+msgid "Sync unavailable"
+msgstr ""
+
 msgid "Synced lyrics"
 msgstr ""
 
@@ -4407,6 +4462,15 @@ msgid "excludes"
 msgstr ""
 
 msgid "here"
+msgstr ""
+
+msgid "iPod"
+msgstr ""
+
+msgid "iTunes library"
+msgstr ""
+
+msgid "iTunes"
 msgstr ""
 
 msgid "is empty"

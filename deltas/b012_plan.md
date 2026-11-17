@@ -1,8 +1,8 @@
 # B-012: iPod page base layout
 
-Status: proposal, awaiting owner review (D-3 reworked per the owner's
+Status: owner-approved (2026-11-17); D-3 reworked per the owner's
 topbar edit; delta `b012_delta.md` covers the spec change; everything not
-overridden here is implemented as written).
+overridden there is implemented as written.
 
 ## 1. What this task is
 
@@ -67,11 +67,12 @@ possible.
   `crates/gtk-library/resources/routes/*.ui` (manifest +
   `INTERFACE_RESOURCE_PATHS` test). The `empty-state` / `section-heading`
   / `muted` classes already exist (`placeholder.ui`, global
-  `gtk-preferences/resources/style.css`). Widget construction works in
-  unit tests without a display (gtk-widgets tests construct `GtkLabel`
-  etc. today); CI excludes the `gtk-*` crates from its test runs (they
-  only typecheck there), so these unit tests run locally — they must stay
-  display-free by construction.
+  `gtk-preferences/resources/style.css`). **Correction (gate-forced, see
+  §11):** no test in this repo constructs GTK widgets — class init asserts
+  the main thread — so the page's state logic lives in a pure `decide()`
+  and the widget application is the thin untested layer every other view
+  has. CI excludes the `gtk-*` crates from its test runs (they only
+  typecheck there), so these unit tests run locally.
 - Localization: `msgid`/`tr`; `locales/rufin.pot` is generated and CI
   checks it (`xtask generate i18n-template --check`).
 - The env-gated `ipod_connection_gate` already proves scan → snapshot
@@ -173,28 +174,25 @@ active-state styling on the topbar button.
   it is not source-scoped (`requires_selected_source` / `uses_selected_source`
   both false); `RouteStack` navigates to and back from `Route::Ipod`
   (extends `route_stack_tests`).
-- gtk-library (`ipod_page.rs` tests):
-  - constructing the view and applying a `Disconnected` snapshot shows
-    the No-iPod arm (visible) and hides the stub; the heading is
-    "No iPod detected" and the indicator shows "Disconnected";
-  - each of `Connecting` / `BackendUnavailable` / `Ready` / `Error`
-    snapshots shows the stub arm, never the No-iPod arm, never a panic —
-    the B-013 takeover point;
-  - the subscription roundtrip: `IpodConnection::with_backend_search`
-    with an unreachable `Explicit` dir (no device I/O, worker thread
-    real), `subscribe()`, apply the initial snapshot, then
-    `set_interrupted_operation(...)` → the page's applied snapshot
-    carries the notice — proving the channel plumbing the later views
-    ride on, without a display;
-  - the resource test picks up `ipod_page.ui` via
-    `INTERFACE_RESOURCE_PATHS` (automatic once registered).
-- gtk-shell (`topbar.rs` tests): `Topbar::new()` builds with the `ipod`
-  button present, correct icon name and accessible label — display-free
-  widget construction, no window. The `INTERFACE_RESOURCE_PATHS` test
-  keeps covering `topbar.ui` automatically. The three-line
+- gtk-library (`ipod_page.rs` tests): the pure `decide()` — a
+  `Disconnected` snapshot decides the No-iPod page with the
+  "Disconnected" label and the muted dot class; each of `Connecting` /
+  `BackendUnavailable` / `Ready` / `Error` decides the stub arm (the
+  B-013 takeover point), never the No-iPod arm; the subscription
+  roundtrip — `IpodConnection::with_backend_search` with an unreachable
+  `Explicit` dir (no device I/O, worker thread real), `subscribe()`,
+  initial snapshot, then `set_interrupted_operation(...)` → the notice
+  arrives on the channel and does not change the decided state. No GTK
+  widgets constructed (see §2 correction); the resource test picks up
+  `ipod_page.ui` via `INTERFACE_RESOURCE_PATHS` (automatic once
+  registered).
+- gtk-shell (`topbar.rs` / `route.rs` tests): the `RouteStack` test
+  navigates to and back from `Route::Ipod` (extends `route_stack_tests`).
+  The `Topbar` gains the `ipod` button; no widget-level test constructs
+  it (see §2 correction) — the button's presence rides on the
+  `INTERFACE_RESOURCE_PATHS` test for `topbar.ui`, and the three-line
   `bind()` → `shell.navigate(Route::Ipod)` wiring rides on the tested
-  `RouteStack` and is covered by the manual acceptance check (the only
-  non-automated line, called out in the results).
+  `RouteStack` (the only non-automated line, called out in the results).
 - Full battery at the end: `cargo test` (workspace minus the env-gated
   suites), clippy 0, fmt, `cargo check --workspace` (includes
   `rufin-android` — the `Route` uniffi enum gains a variant; the Kotlin
@@ -281,5 +279,57 @@ unit matrix of §5 plus the existing `ipod_connection_gate` cover it.
 
 ## 11. Implementation results
 
-(filled on completion — date, what each step produced, gate outcomes,
-gate-forced fixes)
+**Done 2026-11-17** on `feature/ipod-page-task-B-012`, per §10:
+
+1. `deltas/b012_delta.md`: the R-01 access-point MODIFIED (topbar button,
+   no sidebar) with its scenario.
+2. rufin-core: `Route::Ipod` (serde/uniffi, not source-scoped) + 2 tests
+   (serialization roundtrip, never source-scoped). No `SidebarRouteItem`
+   variant — the sidebar machinery stayed untouched per D-3.
+3. Icon: `rufin-ipod-symbolic.svg` (iPod silhouette with screen and click
+   wheel, `currentColor`, no raster embeds) + gtk-widgets manifest entry +
+   `verify_icons` whitelist entry.
+4. gtk-library: `ipod_page.rs` — `IpodPageView` composite over
+   `routes/ipod_page.ui` (stack: No-iPod view per S-01 with icon, heading,
+   body copy, status dot + label; the temporary stub arm), the pure
+   `decide()` carrying every semantic, `apply_snapshot`, the snapshot
+   subscription (`glib::spawn_future_local`), `ipod_route_view()`.
+   3 tests: the two `decide` matrices + the subscription roundtrip on a
+   real worker thread with an unreachable backend.
+5. gtk-shell: `Shell.ipod_monitor` (`IpodMountMonitor::start(IpodConnection::new())`
+   in `build.rs` — the first-ever instantiation of the B-006 service in
+   the app), the `Route::Ipod` dispatch arm (static widget, before the
+   catalog path), the topbar `ipod` button (start group, after
+   `casting_host`, before the search title widget) with the
+   `bind()` → `navigate(Route::Ipod)` wiring. 1 new RouteStack test.
+6. `gtk-preferences/resources/style.css`: `.ipod-status-dot` +
+   `.ipod-status-disconnected`. `locales/rufin.pot` regenerated — the
+   i18n-template check passes.
+
+Battery: rufin-core 154 lib tests, gtk-widgets 56, gtk-library 115 +
+3 env-gated connection gates, gtk-shell 54 — all green; clippy 0 on
+rufin-core/gtk-widgets/gtk-library; `cargo check --workspace` clean
+(includes the `rufin-android` uniffi typecheck); i18n check green.
+
+**Gate-forced corrections:**
+
+- **The widget-test claim was wrong.** No test in this repo constructs
+  GTK widgets — `GtkWidget` class init asserts the main thread, so
+  `IpodPageView::new()` in a unit test SIGABRTs. The plan's §2 claim
+  ("gtk-widgets tests construct GtkLabel etc.") described module bodies,
+  not tests. Fix: the page's state semantics moved into the pure
+  `decide()` (page arm, label, dot class) and the gates test that; the
+  widget application in `apply_snapshot` is the thin untested layer every
+  other view in this app has, covered by manual acceptance. §2 and §5 are
+  corrected above.
+- **The topbar button is not widget-tested** for the same reason; its
+  presence rides on the compiled-resource test and the click wiring rides
+  on the tested `RouteStack` (the single manual-acceptance line).
+- **Local-toolchain debt, not this task's:** the workspace carries
+  pre-existing fmt drift (the local rustfmt is newer than CI's pinned
+  one — `cargo fmt --all` rewrites a dozen untouched files, all reverted;
+  my files are fmt-clean) and pre-existing clippy debt in
+  `gtk-preferences/.../itunes.rs` (4× `into_owned`) and
+  `sources/tests/itunes_*.rs` (skip-message `eprintln!`) — both from the
+  earlier iTunes work, untouched here. Owner decision needed on whether
+  to fix those in a dedicated hygiene branch.

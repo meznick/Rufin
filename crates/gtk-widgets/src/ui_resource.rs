@@ -155,6 +155,7 @@ pub fn verify_icons() -> Result<(), String> {
         "scalable/actions/rufin-media-skip-backward-symbolic.svg",
         "scalable/actions/rufin-media-skip-forward-symbolic.svg",
         "scalable/actions/rufin-moods-symbolic.svg",
+        "scalable/actions/rufin-ipod-symbolic.svg",
         "scalable/actions/rufin-music-queue-symbolic.svg",
         "scalable/actions/rufin-sliders-vertical-symbolic.svg",
         "scalable/actions/rufin-sound-symbolic.svg",

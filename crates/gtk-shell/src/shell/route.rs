@@ -76,6 +76,15 @@ mod route_stack_tests {
         assert_eq!(routes.back(), Some(&root));
         assert_eq!(routes.forward(), Some(&child));
     }
+
+    #[test]
+    fn ipod_route_navigates_like_any_other_route() {
+        let mut routes = RouteStack::new(Route::Home);
+        routes.navigate(Route::Ipod);
+        assert_eq!(routes.current(), &Route::Ipod);
+        assert_eq!(routes.back(), Some(&Route::Home));
+        assert_eq!(routes.forward(), Some(&Route::Ipod));
+    }
 }
 
 fn route_is_current(shell: &Shell, route: &Route, source: SourceKey) -> bool {
@@ -449,6 +458,17 @@ impl Shell {
             let source_id = selected.as_ref().map(|selected| selected.source_id.clone());
             self.replace_mounted_route(route, source_id, render_started, |catalog| {
                 catalog.search_route()
+            });
+            return;
+        }
+        if route == Route::Ipod {
+            // B-012: the device page — static, not catalog-backed, never
+            // source-scoped. Renders at startup with no configured source.
+            self.cancel_root_order_read();
+            self.replace_mounted_route(route, None, render_started, |_| {
+                MountedRoute::static_widget(gtk_library::ipod_page::ipod_route_view(
+                    &self.ipod_monitor.connection(),
+                ))
             });
             return;
         }

@@ -1,0 +1,91 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<interface domain="rufin">
+  <requires lib="gtk" version="4.20"/>
+
+  <template class="RufinIpodPageView" parent="GtkBox">
+    <property name="orientation">vertical</property>
+    <property name="hexpand">true</property>
+    <property name="vexpand">true</property>
+    <style><class name="route-content"/><class name="ipod-page"/></style>
+    <child>
+      <object class="GtkStack" id="state_stack">
+        <property name="transition-type">crossfade</property>
+        <property name="transition-duration">160</property>
+        <child>
+          <object class="GtkBox" id="no_ipod_view">
+            <property name="name">no-ipod</property>
+            <property name="orientation">vertical</property>
+            <property name="spacing">12</property>
+            <property name="vexpand">true</property>
+            <property name="hexpand">true</property>
+            <property name="valign">center</property>
+            <property name="halign">center</property>
+            <style><class name="empty-state"/></style>
+            <child>
+              <object class="GtkImage" id="no_ipod_icon">
+                <property name="icon-name">rufin-ipod-symbolic</property>
+                <property name="pixel-size">64</property>
+                <property name="halign">center</property>
+                <style><class name="dim-label"/></style>
+              </object>
+            </child>
+            <child>
+              <object class="GtkLabel" id="no_ipod_heading">
+                <property name="label" translatable="yes">No iPod detected</property>
+                <style><class name="section-heading"/></style>
+              </object>
+            </child>
+            <child>
+              <object class="GtkLabel" id="no_ipod_body">
+                <property name="label" translatable="yes">Connect a supported iPod (Video or Classic) to sync music, playlists, and statistics.</property>
+                <property name="wrap">true</property>
+                <property name="justify">center</property>
+                <property name="max-width-chars">46</property>
+                <style><class name="muted"/></style>
+              </object>
+            </child>
+            <child>
+              <object class="GtkBox" id="status_row">
+                <property name="orientation">horizontal</property>
+                <property name="spacing">8</property>
+                <property name="halign">center</property>
+                <property name="margin-top">4</property>
+                <child>
+                  <object class="GtkBox" id="status_dot">
+                    <property name="width-request">8</property>
+                    <property name="height-request">8</property>
+                    <property name="valign">center</property>
+                    <style><class name="ipod-status-dot"/></style>
+                  </object>
+                </child>
+                <child>
+                  <object class="GtkLabel" id="status_label">
+                    <style><class name="muted"/></style>
+                  </object>
+                </child>
+              </object>
+            </child>
+          </object>
+        </child>
+        <child>
+          <object class="GtkBox" id="state_stub">
+            <property name="name">stub</property>
+            <property name="orientation">vertical</property>
+            <property name="spacing">12</property>
+            <property name="vexpand">true</property>
+            <property name="hexpand">true</property>
+            <property name="valign">center</property>
+            <property name="halign">center</property>
+            <style><class name="empty-state"/></style>
+            <child>
+              <object class="GtkLabel" id="stub_heading">
+                <style><class name="section-heading"/></style>
+              </object>
+            </child>
+          </object>
+        </child>
+      </object>
+    </child>
+  </template>
+
+</interface>
