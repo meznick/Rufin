@@ -69,6 +69,7 @@ fn detected_device(mount_point: &Path) -> DeviceInfo {
         firmware: None,
         total_capacity: None,
         used_capacity: None,
+        filesystem: None,
         firewire_id: None,
         serial_number: None,
         model_supported: false,
@@ -89,6 +90,7 @@ fn device_info_from_facts(facts: DeviceFacts, mount_point: &Path) -> DeviceInfo 
         firmware: facts.firmware,
         total_capacity: facts.total_capacity,
         used_capacity: facts.used_capacity,
+        filesystem: facts.filesystem,
         firewire_id: facts.firewire_id,
         serial_number: facts.serial_number,
         model_supported: facts.model_supported,
@@ -966,6 +968,7 @@ mod tests {
                 firmware: None,
                 total_capacity: Some(30 * 1024 * 1024 * 1024),
                 used_capacity: Some(23 * 1024 * 1024 * 1024),
+                filesystem: Some("FAT".to_string()),
                 firewire_id: None,
                 serial_number: None,
                 model_supported: true,
@@ -986,6 +989,16 @@ mod tests {
         assert_eq!(device.model_number.as_deref(), Some("A446"));
         assert_eq!(device.total_capacity, Some(30 * 1024 * 1024 * 1024));
         assert_eq!(device.used_capacity, Some(23 * 1024 * 1024 * 1024));
+        assert_eq!(
+            device.filesystem.as_deref(),
+            Some("FAT"),
+            "the filesystem type must ride along (the Format row)"
+        );
+        assert_eq!(
+            device.serial_number.as_deref(),
+            None,
+            "the serial is absent in this fixture"
+        );
         assert!(
             device.model_supported,
             "the retrieval verdict must ride along"

@@ -111,15 +111,19 @@ impl DeviceInfo {
             .map(|(_, value)| value.as_str())
     }
 
-    /// The device serial number (`SysInfo` `SerialNumber` key, e.g.
-    /// `YM6312345Y5N`), or `None` when the entry is absent. Display-only —
-    /// note that libgpod's model identification keys off a *different*
-    /// `SerialNumber` entry in the `SysInfoExtended` plist; this one is
-    /// the plain SysInfo value iTunes shows as the serial.
+    /// The device serial number, or `None` when the device exposes none.
+    ///
+    /// Two key spellings exist across the formats: Apple's plain-`SysInfo`
+    /// files (Video pods) carry `pszSerialNumber`, while the
+    /// `SysInfoExtended` plist (Classic pods) is merged by libgpod under
+    /// `SerialNumber` — both hold the same value on their respective
+    /// devices, so the plain-SysInfo spelling wins when both are present
+    /// (B-014: the real pod's hand-written SysInfo uses the `psz` form).
     pub fn serial_number(&self) -> Option<&str> {
         self.sysinfo
             .iter()
-            .find(|(key, _)| key == "SerialNumber")
+            .find(|(key, _)| key == "pszSerialNumber")
+            .or_else(|| self.sysinfo.iter().find(|(key, _)| key == "SerialNumber"))
             .map(|(_, value)| value.as_str())
     }
 }
@@ -384,4 +388,46 @@ pub struct ArtworkInput {
 pub struct PlaylistChanges {
     /// `(playlist id, track dbids to append)`.
     pub additions: Vec<(u64, Vec<u64>)>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::DeviceInfo;
+
+    fn info_with(entries: &[(&str, &str)]) -> DeviceInfo {
+        DeviceInfo {
+            sysinfo: entries
+                .iter()
+                .map(|(key, value)| (key.to_string(), value.to_string()))
+                .collect(),
+            ..DeviceInfo::default()
+        }
+    }
+
+    #[test]
+    fn serial_reads_the_plain_sysinfo_spelling() {
+        let info = info_with(&[("pszSerialNumber", "9C7059DVV9M")]);
+        assert_eq!(info.serial_number(), Some("9C7059DVV9M"));
+    }
+
+    #[test]
+    fn serial_falls_back_to_the_extended_spelling() {
+        let info = info_with(&[("SerialNumber", "YM6312345Y5N")]);
+        assert_eq!(info.serial_number(), Some("YM6312345Y5N"));
+    }
+
+    #[test]
+    fn the_plain_spelling_wins_when_both_exist() {
+        let info = info_with(&[
+            ("SerialNumber", "YM6312345Y5N"),
+            ("pszSerialNumber", "9C7059DVV9M"),
+        ]);
+        assert_eq!(info.serial_number(), Some("9C7059DVV9M"));
+    }
+
+    #[test]
+    fn serial_is_absent_without_either_key() {
+        let info = info_with(&[("ModelNumStr", "MA446")]);
+        assert_eq!(info.serial_number(), None);
+    }
 }

@@ -48,7 +48,12 @@ use crate::with_native;
 /// device: libgpod merges it in from `SysInfoExtended` (key `FireWireGUID`)
 /// at parse time (`itdb_device_read_sysinfo_extended`, itdb_device.c) — so
 /// the key appears exactly when the device actually exposes one.
-const SYSINFO_KEYS: [&str; 3] = ["ModelNumStr", "SerialNumber", "FirewireGuid"];
+const SYSINFO_KEYS: [&str; 4] = [
+    "ModelNumStr",
+    "pszSerialNumber",
+    "SerialNumber",
+    "FirewireGuid",
+];
 
 /// A parsed device session. See the module docs for the ownership and
 /// threading contracts.

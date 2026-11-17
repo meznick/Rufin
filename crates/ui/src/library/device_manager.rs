@@ -62,6 +62,10 @@ pub struct DeviceInfo {
     pub firmware: Option<String>,
     pub total_capacity: Option<u64>,
     pub used_capacity: Option<u64>,
+    /// The mounted filesystem's type by superblock magic (the Format
+    /// row, B-014) — "FAT"/"exFAT"/"HFS+", `None` when unmeasured or
+    /// outside the known set.
+    pub filesystem: Option<String>,
     pub firewire_id: Option<String>,
     /// The device serial (`SysInfo` `SerialNumber`), display-only
     /// (B-014). `None` when the device exposes no such entry.
@@ -291,6 +295,7 @@ mod tests {
                     used_capacity: Some(500),
                     firewire_id: None,
                     serial_number: None,
+                    filesystem: None,
                     model_supported: true,
                     checksum_possible: true,
                 });
@@ -327,6 +332,7 @@ mod tests {
             used_capacity: None,
             firewire_id: None,
             serial_number: None,
+            filesystem: None,
             model_supported: true,
             checksum_possible: true,
         });
@@ -351,6 +357,7 @@ mod tests {
             used_capacity: Some(2_048_000_000),
             firewire_id: None,
             serial_number: None,
+            filesystem: None,
             model_supported: true,
             checksum_possible: true,
         });
@@ -381,6 +388,7 @@ mod tests {
             used_capacity: Some(2_048_000_000),
             firewire_id: None,
             serial_number: None,
+            filesystem: None,
             model_supported: true,
             checksum_possible: true,
         });
@@ -399,6 +407,7 @@ mod tests {
             used_capacity: Some(2_048_000_000),
             firewire_id: None,
             serial_number: None,
+            filesystem: None,
             model_supported: true,
             checksum_possible: true,
         });
@@ -421,6 +430,7 @@ mod tests {
             used_capacity: Some(2_048_000_000),
             firewire_id: None,
             serial_number: None,
+            filesystem: None,
             model_supported: true,
             checksum_possible: true,
         });
@@ -442,6 +452,7 @@ mod tests {
             used_capacity: Some(500),
             firewire_id: None,
             serial_number: None,
+            filesystem: None,
             model_supported: false,
             checksum_possible: false,
         });
@@ -469,6 +480,7 @@ mod tests {
             used_capacity: Some(1_001),
             firewire_id: None,
             serial_number: None,
+            filesystem: None,
             model_supported: true,
             checksum_possible: true,
         });
@@ -490,6 +502,7 @@ mod tests {
             used_capacity: None,
             firewire_id: None,
             serial_number: None,
+            filesystem: None,
             model_supported: true,
             checksum_possible: true,
         });
@@ -516,6 +529,7 @@ mod tests {
                 used_capacity: capacity.map(|_| 500),
                 firewire_id: None,
                 serial_number: None,
+                filesystem: None,
                 model_supported: true,
                 checksum_possible: true,
             });
@@ -548,6 +562,7 @@ mod tests {
             used_capacity: Some(500),
             firewire_id: None,
             serial_number: None,
+            filesystem: None,
             model_supported: true,
             checksum_possible: true,
         });
@@ -579,6 +594,7 @@ mod tests {
             used_capacity: Some(500),
             firewire_id: None,
             serial_number: None,
+            filesystem: None,
             model_supported: true,
             checksum_possible: true,
         });
@@ -612,6 +628,7 @@ mod tests {
             used_capacity: Some(500),
             firewire_id: None,
             serial_number: None,
+            filesystem: None,
             model_supported: true,
             checksum_possible: true,
         });
@@ -651,6 +668,7 @@ mod tests {
             used_capacity: Some(500),
             firewire_id: None,
             serial_number: None,
+            filesystem: None,
             model_supported: true,
             checksum_possible: true,
         });
@@ -730,6 +748,7 @@ mod tests {
             used_capacity: Some(2048000000),
             firewire_id: None,
             serial_number: Some("YM6312345Y5N".to_string()),
+            filesystem: None,
             model_supported: true,
             checksum_possible: true,
         };
@@ -750,6 +769,7 @@ mod tests {
             used_capacity: None,
             firewire_id: None,
             serial_number: None,
+            filesystem: None,
             model_supported: true,
             checksum_possible: true,
         };
@@ -769,6 +789,7 @@ mod tests {
             used_capacity: None,
             firewire_id: Some("A2000000:00008832:00010000:00000001-0x10000".to_string()),
             serial_number: None,
+            filesystem: None,
             model_supported: true,
             checksum_possible: true,
         };
@@ -788,6 +809,7 @@ mod tests {
             used_capacity: None,
             firewire_id: None,
             serial_number: None,
+            filesystem: None,
             model_supported: true,
             checksum_possible: true,
         };
@@ -813,6 +835,7 @@ mod tests {
             used_capacity: None,
             firewire_id: None,
             serial_number: None,
+            filesystem: None,
             model_supported: true,
             checksum_possible: true,
         };
@@ -839,6 +862,7 @@ mod tests {
             used_capacity: None,
             firewire_id: None,
             serial_number: None,
+            filesystem: None,
             model_supported: true,
             checksum_possible: true,
         });
@@ -882,6 +906,7 @@ mod tests {
             used_capacity: None,
             firewire_id: None,
             serial_number: None,
+            filesystem: None,
             model_supported: true,
             checksum_possible: true,
         };
