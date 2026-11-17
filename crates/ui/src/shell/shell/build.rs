@@ -375,9 +375,14 @@ pub async fn build(
             layout_state,
             navigation_view,
             route_viewport,
-            ipod_monitor: crate::library::ipod_monitor::IpodMountMonitor::start(
-                crate::library::ipod_connection::IpodConnection::new(),
-            ),
+            ipod_connection: {
+                // Startup scan: covers devices mounted before the app
+                // started. Later scans run when the iPod page opens (the
+                // user-triggered path — see the Shell field note).
+                let connection = crate::library::ipod_connection::IpodConnection::new();
+                connection.scan();
+                connection
+            },
         }
     });
 

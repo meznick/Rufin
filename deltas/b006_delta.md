@@ -27,6 +27,16 @@ Owner-approved 2026-11-09 (implementation plan
    the authority. The debounce also absorbs the mount-ready race (the first
    event can fire before the filesystem is readable); the glue's idempotent
    rescans make an early partial scan benign.
+
+   **Amended 2026-11-17 (B-012, owner decision):** the event-driven driver
+   proved dead in the real app — gvfs mount signals never reach rufin's
+   session-bus connection (minimal GTK probe apps on the same machine
+   receive them; even synthetic broadcast signals do not arrive at the
+   app, while synchronous D-Bus calls work — b012_plan §11). The app now
+   scans on **startup** (mounts present at launch) and **when the iPod
+   page opens** (the topbar button is the scan trigger); the gio
+   event/debounce machinery stays shipped and gated but unwired. No
+   periodic polling.
 2. **Retry = full re-appearance at the service level** (`clear_device` +
    re-apply the last report — a "synthetic replug", retrieval and preflight
    re-run fresh). The glue itself gains no retry helper (B-004 decision 5

@@ -495,10 +495,14 @@ impl Shell {
         if route == Route::Ipod {
             // B-012: the device page — static, not catalog-backed, never
             // source-scoped. Renders at startup with no configured source.
+            // Opening the page triggers a mount-table scan (owner
+            // decision: the gio mount-event path is dead in this app) —
+            // the page subscribes and renders whatever the scan finds.
             self.cancel_root_order_read();
+            self.ipod_connection.scan();
             self.replace_mounted_route(route, None, render_started, |_| {
                 MountedRoute::static_widget(crate::library::ipod_page::ipod_route_view(
-                    &self.ipod_monitor.connection(),
+                    &self.ipod_connection,
                 ))
             });
             return;
