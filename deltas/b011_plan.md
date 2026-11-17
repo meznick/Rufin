@@ -1,6 +1,6 @@
 # B-011: sync progress and completion reporting
 
-Status: proposal, awaiting owner review (decisions in §10; everything not
+Status: owner-approved (2026-11-17); everything not
 overridden there is implemented as written).
 
 ## 1. What this task is
@@ -306,10 +306,9 @@ green after the signature change; `clippy` and `cargo fmt --check` zero;
 ## 10. Decisions for the owner
 
 D-1 (unified return) — `run_sync` returns `SyncResult`, the
-`Result`-shaped API dies, tests migrate. Recommended.
+`Result`-shaped API dies, tests migrate.
 
-D-2 (granularity) — per work item; per-byte copy progress rejected
-(libgpod's copy loop + finalization); transcode sub-progress deferred.
+D-2 (granularity) — per work item
 
 D-3 (indeterminate phases) — parses and the staged write emit
 `total: 0` items with labels instead of silence.
