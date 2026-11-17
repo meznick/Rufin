@@ -125,7 +125,7 @@ Tasks are listed in dependency order; IDs stay stable, so B-007 precedes discove
 - [ ] **B-015: Implement Sync button with Dry Run checkbox**
   - Spec reference: R-04, S-07, S-08, S-11
   - Plan reference: Phase 3
-  - Verification: Sync is disabled outside Ready, readiness is rechecked before writes, and Dry Run is available and nonmutating.
+  - Verification: Sync is disabled outside Ready, readiness is rechecked before writes, and Dry Run is available and nonmutating in dev builds only — release builds omit the option (S-08 MODIFIED, owner 2026-11-17, `deltas/b015_delta.md`).
   - Depends on: B-014
 - [ ] **B-016: Connect UI state to DeviceManager**
   - Spec reference: R-02, S-05, R-04, S-09, S-10, S-12, R-05, S-13
