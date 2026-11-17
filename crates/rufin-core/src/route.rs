@@ -73,6 +73,9 @@ pub enum Route {
     },
     /// Radio stations.
     Radio,
+    /// The iPod device page (B-012). Not a library sort: never
+    /// source-scoped — the page must render with no configured source.
+    Ipod,
 }
 
 impl Route {
@@ -276,5 +279,29 @@ impl CollectionCategory {
             Self::Albums => LibraryListKey::Albums,
             Self::Artists => LibraryListKey::Artists,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ipod_route_serializes_and_roundtrips() {
+        let value = serde_json::to_value(Route::Ipod).expect("Route::Ipod serializes");
+        assert_eq!(value.as_str(), Some("Ipod"));
+        assert_eq!(
+            serde_json::from_value::<Route>(value).expect("Route::Ipod deserializes"),
+            Route::Ipod
+        );
+    }
+
+    #[test]
+    fn ipod_route_is_never_source_scoped() {
+        assert!(
+            !Route::Ipod.requires_selected_source(),
+            "the device page must render with no configured source"
+        );
+        assert!(!Route::Ipod.uses_selected_source());
     }
 }

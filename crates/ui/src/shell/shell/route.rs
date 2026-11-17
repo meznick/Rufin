@@ -76,6 +76,15 @@ mod route_stack_tests {
         assert_eq!(routes.back(), Some(&root));
         assert_eq!(routes.forward(), Some(&child));
     }
+
+    #[test]
+    fn ipod_route_navigates_like_any_other_route() {
+        let mut routes = RouteStack::new(Route::Home);
+        routes.navigate(Route::Ipod);
+        assert_eq!(routes.current(), &Route::Ipod);
+        assert_eq!(routes.back(), Some(&Route::Home));
+        assert_eq!(routes.forward(), Some(&Route::Ipod));
+    }
 }
 
 /// Whether a page shows its scroll position again when it opens again: the lists, Home,
@@ -480,6 +489,17 @@ impl Shell {
             self.cancel_root_order_read();
             self.replace_mounted_route(route, selected, render_started, |catalog| {
                 catalog.radio_route()
+            });
+            return;
+        }
+        if route == Route::Ipod {
+            // B-012: the device page — static, not catalog-backed, never
+            // source-scoped. Renders at startup with no configured source.
+            self.cancel_root_order_read();
+            self.replace_mounted_route(route, None, render_started, |_| {
+                MountedRoute::static_widget(crate::library::ipod_page::ipod_route_view(
+                    &self.ipod_monitor.connection(),
+                ))
             });
             return;
         }

@@ -2437,6 +2437,15 @@ scale.volume-slider.vertical trough fill {
   color: color-mix(in srgb, var(--window-fg-color) 90%, var(--window-bg-color));
 }
 
+.ipod-status-dot {
+  border-radius: 999px;
+  background: var(--accent-color);
+}
+
+.ipod-status-disconnected {
+  background: color-mix(in srgb, var(--window-fg-color) 40%, var(--window-bg-color));
+}
+
 .lyrics-search-helper {
   color: color-mix(in srgb, var(--window-fg-color) 68%, var(--window-bg-color));
   font-size: 12px;

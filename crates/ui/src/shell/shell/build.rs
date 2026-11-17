@@ -375,6 +375,9 @@ pub async fn build(
             layout_state,
             navigation_view,
             route_viewport,
+            ipod_monitor: crate::library::ipod_monitor::IpodMountMonitor::start(
+                crate::library::ipod_connection::IpodConnection::new(),
+            ),
         }
     });
 

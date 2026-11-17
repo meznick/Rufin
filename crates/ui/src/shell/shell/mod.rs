@@ -63,6 +63,11 @@ pub(crate) struct Shell {
     layout_state: ShellLayoutState,
     pub(crate) navigation_view: NavigationWidgets,
     pub(crate) route_viewport: RouteViewport,
+    /// B-012: the iPod connection service. The monitor owns the facade
+    /// and runs the mount-event scans; consumers grab
+    /// `monitor.connection()` clones (cheap). App-lifetime ownership —
+    /// the worker thread exits when the last facade drops.
+    pub(crate) ipod_monitor: crate::library::ipod_monitor::IpodMountMonitor,
 }
 
 mod full_artwork;
