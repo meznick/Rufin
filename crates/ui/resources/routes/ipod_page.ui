@@ -8,9 +8,51 @@
     <property name="vexpand">true</property>
     <style><class name="route-content"/><class name="ipod-page"/></style>
     <child>
+      <object class="GtkRevealer" id="notice_revealer">
+        <property name="transition-type">slide-down</property>
+        <property name="reveal-child">false</property>
+        <property name="margin-bottom">12</property>
+        <child>
+          <object class="GtkBox" id="notice_box">
+            <property name="orientation">horizontal</property>
+            <property name="spacing">8</property>
+            <style><class name="ipod-notice"/></style>
+            <child>
+              <object class="GtkImage">
+                <property name="icon-name">dialog-warning-symbolic</property>
+                <property name="valign">start</property>
+                <style><class name="dim-label"/></style>
+              </object>
+            </child>
+            <child>
+              <object class="GtkBox">
+                <property name="orientation">vertical</property>
+                <property name="spacing">2</property>
+                <child>
+                  <object class="GtkLabel" id="notice_heading">
+                    <property name="label" translatable="yes">Sync was interrupted</property>
+                    <property name="xalign">0</property>
+                  </object>
+                </child>
+                <child>
+                  <object class="GtkLabel" id="notice_detail">
+                    <property name="wrap">true</property>
+                    <property name="xalign">0</property>
+                    <style><class name="muted"/></style>
+                  </object>
+                </child>
+              </object>
+            </child>
+          </object>
+        </child>
+      </object>
+    </child>
+    <child>
       <object class="GtkStack" id="state_stack">
         <property name="transition-type">crossfade</property>
         <property name="transition-duration">160</property>
+        <property name="vexpand">true</property>
+        <property name="hexpand">true</property>
         <child>
           <object class="GtkStackPage">
             <property name="name">no-ipod</property>
@@ -67,15 +109,22 @@
                     </child>
                   </object>
                 </child>
+                <child>
+                  <object class="GtkButton" id="scan_button">
+                    <property name="label" translatable="yes">Scan again</property>
+                    <property name="halign">center</property>
+                    <property name="margin-top">8</property>
+                  </object>
+                </child>
               </object>
             </property>
           </object>
         </child>
         <child>
           <object class="GtkStackPage">
-            <property name="name">stub</property>
+            <property name="name">connecting</property>
             <property name="child">
-              <object class="GtkBox" id="state_stub">
+              <object class="GtkBox" id="connecting_view">
                 <property name="orientation">vertical</property>
                 <property name="spacing">12</property>
                 <property name="vexpand">true</property>
@@ -84,8 +133,209 @@
                 <property name="halign">center</property>
                 <style><class name="empty-state"/></style>
                 <child>
-                  <object class="GtkLabel" id="stub_heading">
+                  <object class="GtkSpinner" id="connecting_spinner">
+                    <property name="spinning">true</property>
+                    <property name="halign">center</property>
+                  </object>
+                </child>
+                <child>
+                  <object class="GtkLabel" id="connecting_heading">
                     <style><class name="section-heading"/></style>
+                  </object>
+                </child>
+                <child>
+                  <object class="GtkLabel" id="connecting_device">
+                    <style><class name="muted"/></style>
+                  </object>
+                </child>
+              </object>
+            </property>
+          </object>
+        </child>
+        <child>
+          <object class="GtkStackPage">
+            <property name="name">unavailable</property>
+            <property name="child">
+              <object class="GtkBox" id="unavailable_view">
+                <property name="orientation">vertical</property>
+                <property name="spacing">12</property>
+                <property name="vexpand">true</property>
+                <property name="hexpand">true</property>
+                <property name="valign">center</property>
+                <property name="halign">center</property>
+                <style><class name="empty-state"/></style>
+                <child>
+                  <object class="GtkImage">
+                    <property name="icon-name">dialog-warning-symbolic</property>
+                    <property name="pixel-size">64</property>
+                    <property name="halign">center</property>
+                    <style><class name="dim-label"/></style>
+                  </object>
+                </child>
+                <child>
+                  <object class="GtkLabel" id="unavailable_heading">
+                    <style><class name="section-heading"/></style>
+                  </object>
+                </child>
+                <child>
+                  <object class="GtkLabel" id="unavailable_diagnostic">
+                    <property name="wrap">true</property>
+                    <property name="justify">center</property>
+                    <property name="max-width-chars">46</property>
+                    <style><class name="muted"/></style>
+                  </object>
+                </child>
+                <child>
+                  <object class="GtkLabel" id="unavailable_hint">
+                    <property name="label" translatable="yes">Check the libgpod backend installation, then scan again.</property>
+                    <property name="wrap">true</property>
+                    <property name="justify">center</property>
+                    <property name="max-width-chars">46</property>
+                    <style><class name="muted"/></style>
+                  </object>
+                </child>
+                <child>
+                  <object class="GtkButton" id="unavailable_scan_button">
+                    <property name="label" translatable="yes">Scan again</property>
+                    <property name="halign">center</property>
+                    <property name="margin-top">8</property>
+                  </object>
+                </child>
+              </object>
+            </property>
+          </object>
+        </child>
+        <child>
+          <object class="GtkStackPage">
+            <property name="name">ready</property>
+            <property name="child">
+              <object class="GtkBox" id="ready_view">
+                <property name="orientation">vertical</property>
+                <property name="spacing">12</property>
+                <property name="vexpand">true</property>
+                <property name="hexpand">true</property>
+                <property name="valign">center</property>
+                <property name="halign">center</property>
+                <style><class name="empty-state"/></style>
+                <child>
+                  <object class="GtkImage">
+                    <property name="icon-name">rufin-ipod-symbolic</property>
+                    <property name="pixel-size">64</property>
+                    <property name="halign">center</property>
+                    <style><class name="dim-label"/></style>
+                  </object>
+                </child>
+                <child>
+                  <object class="GtkLabel" id="ready_heading">
+                    <style><class name="section-heading"/></style>
+                  </object>
+                </child>
+                <child>
+                  <object class="GtkLabel" id="ready_device">
+                    <style><class name="muted"/></style>
+                  </object>
+                </child>
+              </object>
+            </property>
+          </object>
+        </child>
+        <child>
+          <object class="GtkStackPage">
+            <property name="name">error</property>
+            <property name="child">
+              <object class="GtkBox" id="error_view">
+                <property name="orientation">vertical</property>
+                <property name="spacing">12</property>
+                <property name="vexpand">true</property>
+                <property name="hexpand">true</property>
+                <property name="valign">center</property>
+                <property name="halign">center</property>
+                <style><class name="empty-state"/></style>
+                <child>
+                  <object class="GtkImage">
+                    <property name="icon-name">dialog-error-symbolic</property>
+                    <property name="pixel-size">64</property>
+                    <property name="halign">center</property>
+                    <style><class name="dim-label"/></style>
+                  </object>
+                </child>
+                <child>
+                  <object class="GtkLabel" id="error_heading">
+                    <style><class name="section-heading"/></style>
+                  </object>
+                </child>
+                <child>
+                  <object class="GtkLabel" id="error_diagnostic">
+                    <property name="wrap">true</property>
+                    <property name="justify">center</property>
+                    <property name="max-width-chars">46</property>
+                    <style><class name="error-text"/></style>
+                  </object>
+                </child>
+                <child>
+                  <object class="GtkLabel" id="error_hint">
+                    <property name="label" translatable="yes">Reconnect the iPod and try again.</property>
+                    <property name="wrap">true</property>
+                    <property name="justify">center</property>
+                    <property name="max-width-chars">46</property>
+                    <style><class name="muted"/></style>
+                  </object>
+                </child>
+                <child>
+                  <object class="GtkBox">
+                    <property name="orientation">horizontal</property>
+                    <property name="spacing">8</property>
+                    <property name="halign">center</property>
+                    <property name="margin-top">8</property>
+                    <child>
+                      <object class="GtkButton" id="error_retry_button">
+                        <property name="label" translatable="yes">Retry</property>
+                        <style><class name="suggested-action"/></style>
+                      </object>
+                    </child>
+                    <child>
+                      <object class="GtkButton" id="error_scan_button">
+                        <property name="label" translatable="yes">Scan again</property>
+                      </object>
+                    </child>
+                  </object>
+                </child>
+              </object>
+            </property>
+          </object>
+        </child>
+        <child>
+          <object class="GtkStackPage">
+            <property name="name">service-dead</property>
+            <property name="child">
+              <object class="GtkBox" id="service_dead_view">
+                <property name="orientation">vertical</property>
+                <property name="spacing">12</property>
+                <property name="vexpand">true</property>
+                <property name="hexpand">true</property>
+                <property name="valign">center</property>
+                <property name="halign">center</property>
+                <style><class name="empty-state"/></style>
+                <child>
+                  <object class="GtkImage">
+                    <property name="icon-name">dialog-warning-symbolic</property>
+                    <property name="pixel-size">64</property>
+                    <property name="halign">center</property>
+                    <style><class name="dim-label"/></style>
+                  </object>
+                </child>
+                <child>
+                  <object class="GtkLabel" id="dead_heading">
+                    <style><class name="section-heading"/></style>
+                  </object>
+                </child>
+                <child>
+                  <object class="GtkLabel" id="dead_body">
+                    <property name="label" translatable="yes">Restart Rufin to reconnect the iPod.</property>
+                    <property name="wrap">true</property>
+                    <property name="justify">center</property>
+                    <property name="max-width-chars">46</property>
+                    <style><class name="muted"/></style>
                   </object>
                 </child>
               </object>

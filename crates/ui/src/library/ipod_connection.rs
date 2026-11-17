@@ -25,9 +25,14 @@
 //!
 //! The worker exits when the last facade drops (the command channel
 //! disconnects); it is deliberately detached — nothing in the library needs
-//! to join it.
+//! to join it. Worker death is visible: `worker_alive` in every snapshot,
+//! flipped and fanned out by the facade when a command send fails (B-013,
+//! the b006 review debt). Note that release builds abort on a worker
+//! panic (`panic = "abort"`), so in practice the dead-service view serves
+//! dev builds and graceful exits — the flag covers both.
 
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -51,6 +56,11 @@ pub struct ConnectionSnapshot {
     /// Interrupted-operation notice, service-owned and preserved across
     /// removal/retry — never cleared by the FSM (see the module docs).
     pub interrupted_operation: Option<OperationNotice>,
+    /// Service liveness (B-013, the b006 debt): `false` means the worker
+    /// thread has ended — a crashed or exited worker, not a connection
+    /// state. The facade announces the flip via a fan-out on the next
+    /// failed command send; `state`/`device` are then stale.
+    pub worker_alive: bool,
 }
 
 /// A user-facing interrupted-operation notice (B-010 placeholder). The
@@ -81,10 +91,26 @@ struct Worker {
     last_report: Option<ScanReport>,
     snapshot: Arc<Mutex<ConnectionSnapshot>>,
     subscribers: Arc<Mutex<Vec<async_channel::Sender<ConnectionSnapshot>>>>,
+    /// Set while the worker loop runs; the guard clears it when the loop
+    /// ends (graceful exit or unwind). Read by the facade's
+    /// [`IpodConnection::is_worker_alive`].
+    alive: Arc<AtomicBool>,
+}
+
+/// Clears the liveness flag when the worker loop ends. Drop runs on both
+/// normal exit and unwind — but not on `panic = "abort"` (release), where
+/// the process dies with the worker and no UI could observe the flag.
+struct AliveGuard(Arc<AtomicBool>);
+
+impl Drop for AliveGuard {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
 }
 
 impl Worker {
     fn run(mut self, commands: mpsc::Receiver<Command>) {
+        let _alive = AliveGuard(self.alive.clone());
         for command in commands {
             match command {
                 Command::Scan => self.scan(Box::new(ProcMountInfo)),
@@ -160,6 +186,9 @@ impl Worker {
                 device: manager.current_device().cloned(),
                 diagnostics: manager.diagnostics().map(str::to_string),
                 interrupted_operation: interrupted.clone(),
+                // The worker only emits while alive — a death announcement
+                // comes from the facade's send-failure fan-out instead.
+                worker_alive: true,
             };
             *snapshot.lock().expect("snapshot lock poisoned") = view.clone();
             let mut subscribers = subscribers.lock().expect("subscribers lock poisoned");
@@ -177,6 +206,8 @@ impl Worker {
             device: self.manager.current_device().cloned(),
             diagnostics: self.manager.diagnostics().map(str::to_string),
             interrupted_operation: self.interrupted.clone(),
+            // The worker only publishes while alive (see `emit`).
+            worker_alive: true,
         };
         let mut slot = self.snapshot.lock().expect("snapshot lock poisoned");
         if *slot == view {
@@ -197,6 +228,7 @@ pub struct IpodConnection {
     commands: mpsc::Sender<Command>,
     snapshot: Arc<Mutex<ConnectionSnapshot>>,
     subscribers: Arc<Mutex<Vec<async_channel::Sender<ConnectionSnapshot>>>>,
+    alive: Arc<AtomicBool>,
 }
 
 impl IpodConnection {
@@ -211,11 +243,13 @@ impl IpodConnection {
     /// host; production uses [`IpodConnection::new`].
     pub fn with_backend_search(search: BackendSearch) -> Self {
         let (commands, receiver) = mpsc::channel();
+        let alive = Arc::new(AtomicBool::new(true));
         let snapshot = Arc::new(Mutex::new(ConnectionSnapshot {
             state: ConnectionState::Disconnected,
             device: None,
             diagnostics: None,
             interrupted_operation: None,
+            worker_alive: true,
         }));
         let subscribers = Arc::new(Mutex::new(Vec::new()));
         let worker = Worker {
@@ -225,6 +259,7 @@ impl IpodConnection {
             last_report: None,
             snapshot: snapshot.clone(),
             subscribers: subscribers.clone(),
+            alive: alive.clone(),
         };
         thread::Builder::new()
             .name("ipod-connection".to_string())
@@ -234,6 +269,7 @@ impl IpodConnection {
             commands,
             snapshot,
             subscribers,
+            alive,
         }
     }
 
@@ -287,10 +323,34 @@ impl IpodConnection {
         self.send(Command::ClearInterrupted);
     }
 
+    /// Whether the worker thread is still running. Cleared when the loop
+    /// ends (crash or exit); the UI surfaces the flip through the snapshot
+    /// fan-out, this is the pull-side truth for tests and diagnostics.
+    pub fn is_worker_alive(&self) -> bool {
+        self.alive.load(Ordering::SeqCst)
+    }
+
     fn send(&self, command: Command) {
         if self.commands.send(command).is_err() {
             tracing::error!("ipod connection worker is gone; command dropped");
+            self.announce_worker_death();
         }
+    }
+
+    /// The B-013 liveness announcement: flip `worker_alive` in the shared
+    /// snapshot and fan the view out once (idempotent — a second failed
+    /// send re-announces nothing). Lock ordering matches the worker's
+    /// `publish` (snapshot, then subscribers), so no deadlock is possible.
+    fn announce_worker_death(&self) {
+        let mut slot = self.snapshot.lock().expect("snapshot lock poisoned");
+        if !slot.worker_alive {
+            return;
+        }
+        slot.worker_alive = false;
+        let view = slot.clone();
+        drop(slot);
+        let mut subscribers = self.subscribers.lock().expect("subscribers lock poisoned");
+        subscribers.retain(|sender| sender.try_send(view.clone()).is_ok());
     }
 }
 
@@ -367,6 +427,24 @@ mod tests {
         }
     }
 
+    /// A mount source that kills the worker: `mounts()` panics on the
+    /// worker thread. Unwind ends the loop — the honest crash simulation
+    /// for the liveness gate (B-013), without a test-only command in
+    /// production code. The panic fires before the backend is touched, so
+    /// no libgpod is needed.
+    #[derive(Debug)]
+    struct PanickingMounts;
+
+    impl MountSource for PanickingMounts {
+        // The deliberate crash is the point of this injection — the
+        // workspace denies panic! in Result fns, so it is allowed here
+        // with the reason attached.
+        #[allow(clippy::panic_in_result_fn)]
+        fn mounts(&self) -> Result<Vec<MountEntry>, MountError> {
+            panic!("injected worker crash");
+        }
+    }
+
     fn expect(receiver: &async_channel::Receiver<ConnectionSnapshot>) -> ConnectionSnapshot {
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
@@ -415,6 +493,7 @@ mod tests {
                 device: None,
                 diagnostics: None,
                 interrupted_operation: None,
+                worker_alive: true,
             }
         );
     }
@@ -648,5 +727,48 @@ mod tests {
         clone.scan_from(Box::new(FakeMounts(vec![mount.entry()])));
         let connecting = expect(&snapshots);
         assert_eq!(connecting.state, ConnectionState::Connecting);
+    }
+
+    #[test]
+    fn normal_flow_snapshots_carry_a_live_worker() {
+        let mount = TestMount::new("alive");
+        let connection = connection();
+        let snapshots = connection.subscribe();
+        connection.scan_from(Box::new(FakeMounts(vec![mount.entry()])));
+        let connecting = expect(&snapshots);
+        assert!(connecting.worker_alive);
+        let unavailable = expect(&snapshots);
+        assert!(unavailable.worker_alive);
+    }
+
+    #[test]
+    fn a_crashed_worker_surfaces_as_dead_instead_of_silent() {
+        let connection = connection();
+        let snapshots = connection.subscribe();
+        connection.scan_from(Box::new(PanickingMounts));
+
+        // The worker unwinds and the guard clears the flag.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while connection.is_worker_alive() {
+            assert!(Instant::now() < deadline, "the worker did not die");
+            thread::sleep(Duration::from_millis(5));
+        }
+
+        // The next command's send failure announces the death once.
+        connection.scan();
+        let dead = expect(&snapshots);
+        assert!(
+            !dead.worker_alive,
+            "the fan-out snapshot must carry the death"
+        );
+        assert!(!connection.is_worker_alive());
+        assert!(
+            !connection.snapshot().worker_alive,
+            "the facade snapshot records the death"
+        );
+
+        // A second failed command re-announces nothing (idempotent).
+        connection.retry();
+        expect_silence(&snapshots);
     }
 }

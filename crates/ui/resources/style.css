@@ -2446,6 +2446,12 @@ scale.volume-slider.vertical trough fill {
   background: color-mix(in srgb, var(--window-fg-color) 40%, var(--window-bg-color));
 }
 
+.ipod-notice {
+  background: color-mix(in srgb, var(--accent-bg-color) 40%, var(--window-bg-color));
+  border-radius: 12px;
+  padding: 10px 12px;
+}
+
 .lyrics-search-helper {
   color: color-mix(in srgb, var(--window-fg-color) 68%, var(--window-bg-color));
   font-size: 12px;
