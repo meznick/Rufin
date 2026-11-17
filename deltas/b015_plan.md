@@ -360,4 +360,72 @@ stay furniture.
 
 ## 11. Implementation results
 
-(filled after implementation — gates, corrections, battery)
+**Done 2026-11-17** on `feature/ipod-page-task-B-015`, per §10, with
+all owner decisions as written:
+
+1. `gtk-library/src/ipod_sync_service.rs` (new): the boundary seam —
+   `SyncBoundary` (consolidated `source() -> Result<BoundarySource,
+   String>` carrying library/media root/tz/source key, plus
+   `cover`/`artwork`/`transcode`), `EngineRunner` (per-phase backend
+   loads on the run thread — `IpodBackend` is not `Send`; the
+   soft-accept ABI check at every load), the pure `advance` table
+   (the review skip is a **parameter** — `ReviewPolicy::Always`/`Never`
+   — so both arms are gated in one profile, no `cfg` inside the
+   logic), `review_summary`/`outcome_summary`, the facade with the
+   pending slot and the `Arc`-receiver `apply` (the run threads fan
+   their own results in; `try_send`, never a blocking send). 10
+   display-free gates: the summary mappings, the prepare-failure
+   shape, both policy arms, the full dev lifecycle, the bounded event
+   ring, no-ops, and two real-thread facade gates (dev flow through
+   review → approve → done; the release policy straight through).
+2. `gtk-library/src/ipod_page.rs`: `sync_controls` (Ready + supported
+   model + live worker + not running; the S-11 note reuses the D-8
+   warning line) with the gate matrix; `apply_snapshot` gains the
+   running flag; the bottom-bar wiring (the Sync click starts the
+   service with the dev checkbox state and the device mount), the
+   phase-driven `apply_sync_state` (spinner, checkbox lock, dialogs),
+   the review/result `adw::AlertDialog`s with the pure-summary bodies
+   (`choose_future`, the repo's dialog pattern).
+3. `ipod_page.ui`: the Dry Run checkbox + the in-flight spinner in
+   the bottom bar; the B-015 takeover comment removed. Template
+   validates via `gtk4-builder-tool`.
+4. `crates/sources`: the stateless `inspect_embedded_cover` +
+   `EmbeddedCover` (Lofty-based, re-exported) for the boundary's
+   probe.
+5. `gtk-shell`: `ShellSyncBoundary` (captures the configured iTunes
+   source's configs via the runtime's `configuration(&SourceId)`
+   accessor; D-4 refusals at prepare), the `Shell.ipod_sync` field
+   built in `build.rs`, `ipod_route_view` gains the service + policy,
+   `review_policy()` is the one `cfg!(debug_assertions)` point (dev =
+   `Always`, release = `Never`).
+
+Battery: gtk-library 140 lib tests (129 + 10 service + 1
+sync_controls) + 3 env-gated connection gates green; ipod-sync 119 +
+10 env-gated preflight gates; sources lib green (the two
+`file::discovery::process` network tests fail on the base commit too
+— pre-existing, recorded); clippy 0 on gtk-library/gtk-shell/sources
+lib (the gtk-preferences `into_owned` debt stays untouched); fmt on
+touched files; workspace + i18n checks green; pot regenerated (+40).
+
+**Deviations from the plan (recorded, owner-visible where noted):**
+
+- D-4's "disabled with a gating note" is implemented as an immediate
+  prepare failure with the dialog (no-source / several-sources
+  diagnostics) — the button gating layer only knows the connection;
+  the boundary's source state surfaces at click time. Same user
+  message, different surface.
+- `SyncBoundary.artwork(pid)` returns `None`: the pid → encoded-cover
+  mapping needs the runtime catalog (a follow-up; the B-010 gate
+  shipped the same `None` provider). The dry-run probe (`cover`) is
+  real (Lofty).
+- `transcode_aac` defaults to `false` until an options UI exists (the
+  Параметры box stays furniture) — flip with an owner call.
+- The review body's would-not-fit line uses the capacity formula
+  numbers; the ring cap is 64 events (the B-016 panel consumes the
+  stream).
+
+Manual acceptance (owner, env-gated) remains: Ready + Dry Run → the
+review dialog with real counts for the iTunesACCEPT library, nothing
+on the pod or the `.itl` changes; unchecked → review → Sync runs the
+engine on the disposable snapshot; gating walks (non-Ready states,
+the fake-tree unsupported model); release-build silent run.

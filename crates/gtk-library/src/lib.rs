@@ -6,6 +6,7 @@ pub mod ipod_connection;
 pub mod ipod_discovery;
 pub mod ipod_monitor;
 pub mod ipod_page;
+pub mod ipod_sync_service;
 mod playlist_entry_model;
 mod release_kind;
 mod track_model;

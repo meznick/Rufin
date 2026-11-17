@@ -654,7 +654,19 @@
                           </object>
                         </child>
                         <child>
-                          <!-- B-015's takeover point: the greyed Sync. -->
+                          <object class="GtkCheckButton" id="dry_run_check">
+                            <property name="label" translatable="yes">Dry Run</property>
+                            <property name="tooltip-text" translatable="yes">Show what the sync would change without writing to the iPod or the library.</property>
+                            <property name="valign">center</property>
+                          </object>
+                        </child>
+                        <child>
+                          <object class="GtkSpinner" id="running_spinner">
+                            <property name="visible">false</property>
+                            <property name="valign">center</property>
+                          </object>
+                        </child>
+                        <child>
                           <object class="GtkButton" id="sync_button">
                             <property name="label" translatable="yes">Sync</property>
                             <property name="sensitive">false</property>

@@ -159,6 +159,10 @@ msgid ""
 msgstr ""
 
 msgid ""
+"Show what the sync would change without writing to the iPod or the library."
+msgstr ""
+
+msgid ""
 "Some changes were saved. Close this editor and reopen it to review the "
 "result."
 msgstr ""
@@ -1414,6 +1418,9 @@ msgstr ""
 msgid "Drag to reorder"
 msgstr ""
 
+msgid "Dry Run"
+msgstr ""
+
 msgid "Duplicate preset"
 msgstr ""
 
@@ -2500,6 +2507,10 @@ msgstr ""
 msgid "Needs review"
 msgstr ""
 
+#, rust-format
+msgid "Needs {estimate} \342\200\224 only {free} free"
+msgstr ""
+
 msgid "NetEase"
 msgstr ""
 
@@ -2690,6 +2701,9 @@ msgstr ""
 msgid "Nothing queued"
 msgstr ""
 
+msgid "Nothing to sync \342\200\224 the device already matches the library."
+msgstr ""
+
 msgid "Notifications"
 msgstr ""
 
@@ -2707,6 +2721,9 @@ msgid "Number of backups"
 msgstr ""
 
 msgid "Number of songs"
+msgstr ""
+
+msgid "OK"
 msgstr ""
 
 #, rust-format
@@ -4077,7 +4094,22 @@ msgstr ""
 msgid "Switching library..."
 msgstr ""
 
+msgid "Sync completed"
+msgstr ""
+
+msgid "Sync failed"
+msgstr ""
+
+msgid "Sync incomplete"
+msgstr ""
+
 msgid "Sync only checked songs and videos"
+msgstr ""
+
+msgid "Sync result"
+msgstr ""
+
+msgid "Sync review"
 msgstr ""
 
 msgid "Sync unavailable"
@@ -4617,6 +4649,10 @@ msgstr[0] ""
 msgstr[1] ""
 
 #, rust-format
+msgid "{count} files written"
+msgstr ""
+
+#, rust-format
 msgid "{count} folder selected"
 msgid_plural "{count} folders selected"
 msgstr[0] ""
@@ -4639,6 +4675,10 @@ msgid "{count} result"
 msgid_plural "{count} results"
 msgstr[0] ""
 msgstr[1] ""
+
+#, rust-format
+msgid "{count} statistic updates"
+msgstr ""
 
 #, rust-format
 msgid "{count} track"

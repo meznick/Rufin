@@ -174,6 +174,21 @@ pub async fn build(
         add_server: RefCell::new(None),
         refresh_feedback_generation: Rc::new(Cell::new(0)),
     });
+    // The B-015 boundary: capture the configured iTunes source's engine
+    // inputs at build time (the D-4 rule — the runner refuses when none
+    // or several exist). Built before the Shell literal moves `source`
+    // and `products`.
+    let ipod_sync = {
+        let itunes_configs: Vec<sources::SourceConfiguration> = source
+            .configured
+            .borrow()
+            .sources
+            .iter()
+            .filter(|summary| summary.kind == sources::itunes::ITUNES_SOURCE_ID)
+            .filter_map(|summary| products.source.configuration(&summary.id))
+            .collect();
+        super::ipod_sync::ShellSyncBoundary::from_configured(&itunes_configs).service()
+    };
     let startup = StartupState {
         route_revealed: Cell::new(!defer_initial_route),
         initial_launch: Cell::new(defer_initial_route),
@@ -497,6 +512,7 @@ pub async fn build(
                 connection.scan();
                 connection
             },
+            ipod_sync,
         }
     });
 

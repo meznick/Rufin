@@ -32,6 +32,10 @@ lyrics.workspace = true
 playback.workspace = true
 secrets.workspace = true
 sources.workspace = true
+audio-processing.workspace = true
+gstreamer.workspace = true
+ipod.workspace = true
+ipod-sync.workspace = true
 tracing.workspace = true
 tokio.workspace = true
 
