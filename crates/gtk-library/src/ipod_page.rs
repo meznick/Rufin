@@ -609,18 +609,25 @@ fn review_body(summary: &crate::ipod_sync_service::ReviewSummary) -> String {
     lines.join("\n")
 }
 
-/// The review dialog (dev builds): the dry-run deliverable — Sync
-/// approves the reviewed plan, Close discards it (b015_plan §3.4).
+/// The review dialog (dev builds): for a dry run it is the S-08
+/// deliverable — Close only, no approval path. For a real run it offers
+/// Sync (approve the reviewed plan) and Close (discard) — b015_plan
+/// §3.4.
 fn present_review_dialog(
     view: &IpodPageView,
     summary: &crate::ipod_sync_service::ReviewSummary,
+    dry_run: bool,
     sync: &IpodSyncService,
 ) {
     let dialog = adw::AlertDialog::builder()
         .heading(tr(msgid("Sync review")))
         .body(&review_body(summary))
         .build();
-    dialog.add_responses(&[("close", &tr(msgid("Close"))), ("sync", &tr(msgid("Sync")))]);
+    if dry_run {
+        dialog.add_responses(&[("close", &tr(msgid("Close")))]);
+    } else {
+        dialog.add_responses(&[("close", &tr(msgid("Close"))), ("sync", &tr(msgid("Sync")))]);
+    }
     let sync = sync.clone();
     let parent = view.root().and_downcast::<gtk::Window>();
     glib::spawn_future_local(async move {
@@ -692,8 +699,8 @@ fn apply_sync_state(
     imp.running_spinner.set_spinning(running);
     imp.dry_run_check.set_sensitive(!running);
     match &state.phase {
-        SyncPhase::Review { summary } if policy == ReviewPolicy::Always => {
-            present_review_dialog(view, summary, sync);
+        SyncPhase::Review { summary, dry_run } if policy == ReviewPolicy::Always => {
+            present_review_dialog(view, summary, *dry_run, sync);
         }
         SyncPhase::Done(summary) => present_result_dialog(view, summary, sync),
         _ => {}

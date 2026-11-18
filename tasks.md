@@ -251,3 +251,43 @@ Tasks are listed in dependency order; IDs stay stable, so B-007 precedes discove
   - Verification: the shown version matches iTunes for the pod during
     hardware acceptance (B-017); the read-only guarantee pinned by a
     partition tree hash before/after.
+- [ ] **B-026 (backlog): Route libgpod's g_log output through tracing**
+  - Spec reference: none — diagnostics hygiene
+  - Plan reference: Phase 4
+  - Depends on: B-015
+  - Why it exists: libgpod prints its warnings straight to stderr — the
+    wrapper installs no `g_log` handler — so benign library warnings
+    masquerade as app errors in logs. Measured 2026-11-18 during the
+    owner's B-015 acceptance: two "Could not find corresponding track
+    (dbid: …) for artwork entry" lines (orphaned ArtworkDB entries
+    libgpod skips, B-027) appeared to be the sync failure while the
+    real failure sat elsewhere.
+  - Goal: install a `g_log_set_handler` (or the default-handler form)
+    once in the `ipod` crate, routing the gpod domain into
+    `tracing::warn`/`error` so the messages carry the rufin target and
+    respect the app's log configuration.
+  - Hazards to remember: the handler is process-global — install it
+    once, keep it minimal, never panic across the FFI boundary, and
+    preserve the original level semantics (errors stay errors).
+  - Verification: the acceptance warning appears under the rufin/ipod
+    tracing target; non-gpod domains are untouched.
+- [ ] **B-027 (backlog): Clean orphaned ArtworkDB entries on the device**
+  - Spec reference: R-04, S-07 — spec delta to review at implementation
+    time
+  - Plan reference: [b010_plan.md](deltas/b010_plan.md) (the staged
+    write)
+  - Depends on: B-010
+  - Why it exists: the pod's ArtworkDB carries `mhii` entries whose
+    dbids have no matching track (the B-009 dry run models them as
+    `artwork_orphaned`, informational under `Keep`). libgpod warns per
+    entry on every DB write (measured 2026-11-18) and the entries
+    consume device space; the executor never removes them.
+  - Goal: during the staged DB write (or a dedicated step), remove
+    orphan entries — the removal rides the same write discipline as
+    every other device change.
+  - Hazards to remember: ArtworkDB mutation must stay inside the staged
+    write with the verify/restore recovery; the Classic checksum
+    implications need the model table; the result must open in iTunes
+    (B-017).
+  - Verification: fixture with seeded orphans → sync → orphans gone,
+    the surviving artwork byte-stable, the pod opens in iTunes.

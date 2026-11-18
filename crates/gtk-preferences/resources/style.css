@@ -2004,10 +2004,12 @@ scale.volume-slider:dir(rtl) {
 }
 
 .ipod-bottom-bar {
-  background: color-mix(in srgb, var(--window-bg-color) 92%, var(--border-color));
-  border-top: 1px solid var(--border-color);
+  background: var(--card-bg-color);
+  border: 1px solid var(--border-color);
+  border-radius: 14px;
   padding: 10px 20px;
   min-height: 55px;
+  margin: 16px 16px 20px 16px;
 }
 
 .lyrics-search-helper {
