@@ -276,8 +276,11 @@ pub enum SyncPhase {
     /// The run thread is collecting (`.itl` + device + compute).
     Collecting,
     /// The dry run is shown and awaits the user's decision (dev flow).
+    /// `dry_run` marks the S-08 deliverable review — its dialog offers
+    /// no approval, and the machine refuses one.
     Review {
         summary: ReviewSummary,
+        dry_run: bool,
     },
     /// The engine transaction runs on the run thread.
     Running,
@@ -373,9 +376,10 @@ pub fn advance(
             },
         ) => {
             // A dry run always stops at the review: the dialog IS the
-            // deliverable (S-08).
+            // deliverable (S-08) — and it carries no approval.
             state.phase = SyncPhase::Review {
                 summary: review_summary(&prepared.report),
+                dry_run: true,
             };
             None
         }
@@ -389,6 +393,7 @@ pub fn advance(
             ReviewPolicy::Always => {
                 state.phase = SyncPhase::Review {
                     summary: review_summary(&prepared.report),
+                    dry_run: false,
                 };
                 None
             }
@@ -407,7 +412,10 @@ pub fn advance(
             state.phase = SyncPhase::Done(SyncOutcomeSummary::failed("Prepare", diagnostic));
             None
         }
-        (SyncPhase::Review { .. }, SyncEvent::Approved(prepared)) => {
+        // A dry review carries no approval: the S-08 deliverable cannot
+        // run the engine, whatever calls `approve`.
+        (SyncPhase::Review { dry_run: true, .. }, SyncEvent::Approved(_)) => None,
+        (SyncPhase::Review { dry_run: false, .. }, SyncEvent::Approved(prepared)) => {
             state.phase = SyncPhase::Running;
             Some(SyncAction::Execute(Box::new(prepared)))
         }
@@ -575,9 +583,15 @@ impl ServiceInner {
         let action = {
             let mut state = self.state.lock().expect("sync state lock poisoned");
             let action = advance(&mut state, event, self.policy);
-            if matches!(state.phase, SyncPhase::Review { .. }) {
-                *self.pending.lock().expect("pending lock poisoned") = stash;
-            }
+            // The prepared payload survives only while a review holds
+            // it; every other phase drops it (dismissal, the release
+            // straight-through, a finished run).
+            *self.pending.lock().expect("pending lock poisoned") =
+                if matches!(state.phase, SyncPhase::Review { .. }) {
+                    stash
+                } else {
+                    None
+                };
             action
         };
         self.publish();
@@ -673,8 +687,15 @@ impl IpodSyncService {
     }
 
     /// The review dialog's Sync button (dev flow): moves the pending
-    /// prepared sync into the approval event.
+    /// prepared sync into the approval event. A dry review refuses —
+    /// the S-08 deliverable has no approval path, however `approve` is
+    /// called.
     pub fn approve(&self) {
+        let state = self.inner.state.lock().expect("sync state lock poisoned");
+        if !matches!(state.phase, SyncPhase::Review { dry_run: false, .. }) {
+            return;
+        }
+        drop(state);
         let prepared = self
             .inner
             .pending
@@ -978,6 +999,41 @@ mod tests {
     }
 
     #[test]
+    fn a_dry_review_refuses_approval() {
+        let mut state = state();
+        state.phase = SyncPhase::Collecting;
+        advance(
+            &mut state,
+            SyncEvent::Prepared {
+                dry_run: true,
+                result: Ok(prepared()),
+            },
+            ReviewPolicy::Always,
+        );
+        assert!(matches!(
+            state.phase,
+            SyncPhase::Review { dry_run: true, .. }
+        ));
+        // The machine refuses the approval and stays on the review —
+        // the S-08 deliverable has no run path.
+        assert!(
+            advance(
+                &mut state,
+                SyncEvent::Approved(prepared()),
+                ReviewPolicy::Always
+            )
+            .is_none()
+        );
+        assert!(matches!(
+            state.phase,
+            SyncPhase::Review { dry_run: true, .. }
+        ));
+        // Dismissing still works.
+        advance(&mut state, SyncEvent::Dismissed, ReviewPolicy::Always);
+        assert_eq!(state.phase, SyncPhase::Idle);
+    }
+
+    #[test]
     fn stray_events_are_noops() {
         let mut state = state();
         assert!(
@@ -1075,6 +1131,27 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn the_facade_approval_ignores_a_dry_review() {
+        let service = IpodSyncService::new(Arc::new(StubRunner), ReviewPolicy::Always);
+        let receiver = service.subscribe();
+        service.start(true, Path::new("/mnt/ipod"));
+        wait_for(&receiver, |snapshot| {
+            matches!(snapshot.phase, SyncPhase::Review { .. })
+        });
+        service.approve();
+        // The stub runner would finish in milliseconds; a wrongly
+        // approved dry review would already be Done here. A short grace
+        // proves the approval never spawned it.
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert!(matches!(
+            service.snapshot().phase,
+            SyncPhase::Review { dry_run: true, .. }
+        ));
+        service.dismiss();
+        wait_for(&receiver, |snapshot| snapshot.phase == SyncPhase::Idle);
     }
 
     #[test]
