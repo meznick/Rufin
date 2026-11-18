@@ -436,15 +436,20 @@
                     <property name="hexpand">true</property>
                     <property name="vexpand">true</property>
                     <child>
-                      <object class="GtkBox">
-                        <property name="orientation">vertical</property>
-                        <property name="spacing">12</property>
+                      <object class="GtkScrolledWindow">
                         <property name="hexpand">true</property>
                         <property name="vexpand">true</property>
-                        <property name="margin-start">35</property>
-                        <property name="margin-end">35</property>
-                        <property name="margin-top">25</property>
-                        <property name="margin-bottom">25</property>
+                        <property name="hscrollbar-policy">never</property>
+                        <child>
+                          <object class="GtkBox">
+                            <property name="orientation">vertical</property>
+                            <property name="spacing">12</property>
+                            <property name="hexpand">true</property>
+                            <property name="vexpand">true</property>
+                            <property name="margin-start">35</property>
+                            <property name="margin-end">35</property>
+                            <property name="margin-top">25</property>
+                            <property name="margin-bottom">25</property>
                         <child>
                           <object class="GtkLabel" id="ready_heading">
                             <property name="xalign">0</property>
@@ -638,6 +643,8 @@
                               </object>
                             </child>
                           </object>
+                        </child>
+                      </object>
                         </child>
                       </object>
                     </child>
