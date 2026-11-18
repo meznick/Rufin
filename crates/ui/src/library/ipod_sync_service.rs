@@ -550,6 +550,21 @@ pub fn outcome_summary(result: &SyncResult) -> SyncOutcomeSummary {
     }
 }
 
+/// The status's own diagnostic — `Failed`/`Partial` carry the step and
+/// the reason. The result dialog must show it: the acceptance run
+/// showed a bare "Sync failed" while the reason sat unrendered in the
+/// status (and nowhere in the console).
+pub fn outcome_diagnostic(status: &SyncStatus) -> Option<String> {
+    match status {
+        SyncStatus::Failed { step, diagnostic } => Some(format!("{step}: {diagnostic}")),
+        SyncStatus::Partial {
+            failed_step,
+            diagnostic,
+        } => Some(format!("{failed_step}: {diagnostic}")),
+        SyncStatus::Completed => None,
+    }
+}
+
 // ---------------------------------------------------------------------
 // The facade: cloneable, subscriber fan-out, the thread spawning.
 // ---------------------------------------------------------------------
@@ -592,6 +607,23 @@ impl ServiceInner {
                 } else {
                     None
                 };
+            // The acceptance finding: a failed run printed nothing to
+            // the console — the diagnostic sat in the result. Log every
+            // terminal failure here so the console carries the reason.
+            if let SyncPhase::Done(summary) = &state.phase {
+                match &summary.status {
+                    SyncStatus::Failed { step, diagnostic } => {
+                        tracing::error!(step, diagnostic, "ipod sync failed");
+                    }
+                    SyncStatus::Partial {
+                        failed_step,
+                        diagnostic,
+                    } => {
+                        tracing::warn!(failed_step, diagnostic, "ipod sync incomplete");
+                    }
+                    SyncStatus::Completed => {}
+                }
+            }
             action
         };
         self.publish();
@@ -813,6 +845,25 @@ mod tests {
         assert_eq!(summary.status, SyncStatus::Completed);
         assert_eq!(summary.changes.files_added, 3);
         assert_eq!(summary.diagnostics, vec!["mapping note".to_string()]);
+    }
+
+    #[test]
+    fn outcome_diagnostic_carries_the_failure_reason() {
+        assert_eq!(
+            outcome_diagnostic(&SyncStatus::Failed {
+                step: "DbWrite",
+                diagnostic: "the write failed".to_string(),
+            }),
+            Some("DbWrite: the write failed".to_string())
+        );
+        assert_eq!(
+            outcome_diagnostic(&SyncStatus::Partial {
+                failed_step: "HostWrite",
+                diagnostic: "sentinel refused".to_string(),
+            }),
+            Some("HostWrite: sentinel refused".to_string())
+        );
+        assert_eq!(outcome_diagnostic(&SyncStatus::Completed), None);
     }
 
     #[test]

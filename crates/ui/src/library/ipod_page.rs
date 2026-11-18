@@ -648,6 +648,11 @@ fn outcome_body(summary: &crate::ipod_sync_service::SyncOutcomeSummary) -> Strin
         ipod_sync::sync::report::SyncStatus::Failed { .. } => tr(msgid("Sync failed")),
     };
     let mut lines = vec![headline];
+    // The status's own diagnostic first — the reason must never hide
+    // behind the headline (the acceptance finding).
+    if let Some(diagnostic) = crate::ipod_sync_service::outcome_diagnostic(&summary.status) {
+        lines.push(diagnostic);
+    }
     let changes = &summary.changes;
     if changes.files_added + changes.files_removed > 0 {
         lines.push(tr_with(
