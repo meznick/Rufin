@@ -605,7 +605,13 @@ fn compute_merge(
         });
     }
     record.watermarks = watermarks;
-    Ok(merge_stats(&pairs))
+    let tz_offset = ctx
+        .host
+        .library
+        .as_ref()
+        .map(|library| library.tz_offset_seconds)
+        .unwrap_or(0);
+    Ok(merge_stats(&pairs, tz_offset))
 }
 
 /// Step 4: all device-side mutations in one write session — transcode and
@@ -714,7 +720,17 @@ fn apply_device_ops(
                 playcount: Some(host_track.stats.play_count),
                 playcount2: Some(host_track.stats.play_count),
                 skipcount: Some(host_track.stats.skip_count),
-                time_played: Some(i64::from(host_track.stats.play_date_raw) - APPLE_UNIX_DELTA),
+                time_played: Some(
+                    i64::from(host_track.stats.play_date_raw)
+                        - APPLE_UNIX_DELTA
+                        - i64::from(
+                            ctx.host
+                                .library
+                                .as_ref()
+                                .map(|library| library.tz_offset_seconds)
+                                .unwrap_or(0),
+                        ),
+                ),
                 volume: Some(host_track.stats.volume_adjustment),
             })
             .map_err(|error| {
@@ -816,6 +832,12 @@ fn apply_device_ops(
     // Playlists: static creates, updates, removes. Smart criteria writes
     // are the §8 translation — deferred with a diagnostic, never silently
     // converted to static (b010_plan §8).
+    let device_dbids: HashSet<u64> = session
+        .tracks()
+        .map_err(|error| sync_err(STEP_FILE_OPS, format!("track read failed: {error}")))?
+        .into_iter()
+        .map(|track| track.dbid)
+        .collect();
     for create in &ctx.plan.playlist_creates {
         current += 1;
         let name = create.name.as_deref().unwrap_or("unnamed");
@@ -826,6 +848,10 @@ fn apply_device_ops(
                     .member_pids
                     .iter()
                     .filter_map(|member| *member)
+                    // The dry run's writable filter, mirrored: dangling
+                    // members (device-absent, e.g. cloud tracks) would
+                    // refuse the whole create (B-017 step-0 finding).
+                    .filter(|pid| device_dbids.contains(pid))
                     .collect();
                 session
                     .create_playlist(name, create.host_pid, &members, false)
@@ -858,31 +884,29 @@ fn apply_device_ops(
     }
     for update in &ctx.plan.playlist_updates {
         current += 1;
-        if update.is_spl {
-            match update.criteria {
-                CriteriaState::Equal => {
-                    progress.item(
-                        current,
-                        total,
-                        format!("Playlist {} up to date", update.device_id),
-                    );
-                }
-                _ => {
-                    let diagnostic = format!(
-                        "smart playlist {} criteria update deferred (§8 translation)",
-                        update.device_id
-                    );
-                    progress.item(
-                        current,
-                        total,
-                        format!("Deferring smart criteria ({})", update.device_id),
-                    );
-                    outcome.diagnostics.push(diagnostic.clone());
-                    progress.notice(diagnostic);
-                }
-            }
+        if update.is_spl && update.criteria != CriteriaState::Equal {
+            // Criteria translation is the B-023 backlog — deferred with a
+            // diagnostic, never silently converted to static (b010_plan §8).
+            let diagnostic = format!(
+                "smart playlist {} criteria update deferred (§8 translation)",
+                update.device_id
+            );
+            progress.item(
+                current,
+                total,
+                format!("Deferring smart criteria ({})", update.device_id),
+            );
+            outcome.diagnostics.push(diagnostic.clone());
+            progress.notice(diagnostic);
             continue;
         }
+        // Static playlists and Equal-criteria smart playlists: write the
+        // materialized members. iTunes itself materializes smart members
+        // onto the device, so the device list must follow the host's —
+        // dropping the removes and appending the adds mirrors what
+        // iTunes writes (smart order is iTunes-sorted, never user data,
+        // so no reorder applies — b015_fixes; the B-017 step-0 finding:
+        // the old executor skipped every smart update wholesale).
         progress.item(
             current,
             total,
@@ -899,7 +923,19 @@ fn apply_device_ops(
             .into_iter()
             .filter(|dbid| !update.members_remove.contains(dbid))
             .collect();
-        ordered.extend(update.members_add.iter().copied());
+        // Write-time guard mirroring the dry run's member filter: only
+        // dbids the database actually holds (the adds landed earlier in
+        // this session, so `device_dbids` includes them) can be appended
+        // — a dangling member (e.g. a purchased-not-downloaded host
+        // track) would refuse the whole update (the B-017 step-0
+        // finding).
+        ordered.extend(
+            update
+                .members_add
+                .iter()
+                .copied()
+                .filter(|dbid| device_dbids.contains(dbid)),
+        );
         session
             .update_playlist_members(update.device_id, &ordered)
             .map_err(|error| {

@@ -294,13 +294,20 @@ fn dry_run_pair_gate() {
         let Some(evidence) = host.artwork.get(&track.track_pid) else {
             continue;
         };
-        let Some(has_thumb) = device_tracks.get(&track.track_pid) else {
-            continue;
-        };
-        match evidence {
-            CoverEvidence::Present { .. } if !has_thumb => expected_adds += 1,
-            CoverEvidence::Absent if *has_thumb => expected_orphaned += 1,
-            _ => {}
+        match device_tracks.get(&track.track_pid) {
+            Some(has_thumb) => match evidence {
+                CoverEvidence::Present { .. } if !has_thumb => expected_adds += 1,
+                CoverEvidence::Absent if *has_thumb => expected_orphaned += 1,
+                _ => {}
+            },
+            // Host-only tracks (the adds) carry their cover at add time
+            // (the B-017 step-0 fix): a Present evidence counts as a
+            // planned artwork add; Absent/Unknown adds plan nothing.
+            None => {
+                if matches!(evidence, CoverEvidence::Present { .. }) {
+                    expected_adds += 1;
+                }
+            }
         }
     }
     assert_eq!(
