@@ -154,3 +154,41 @@ modulo two real entries.
 - itl-player `NOTES.md`: record `miph` @0x239 (VERIFIED vs XML
   `Distinguished Kind`, 9/9 + folder kinds) next to the other `miph`
   offsets.
+
+## Round 2 — live-pair acceptance findings (2026-11-19)
+
+The first live run after F1–F6 showed 3 creates / 3 updates / 765 stat
+updates. Three more causes, all fixed and live-verified (final review:
+2 adds, 1 update, **0 statistic updates**, no cover lines):
+
+- **itl-core offset bug**: `raw_header` starts at miph+8 (sig+len
+  excluded), so the verified item offset 0x239 lives at raw_header
+  0x231 — 0.1.2 read 8 bytes late and returned 0 for everything.
+  Fixed in itl-core 0.1.3, together with `Album::album_artist()`
+  (mhoh 302, 301 fallback).
+- **F2 was keyed by the album id, which is unusable** — `mith` @0x9C
+  is zero for most tracks and `album_persistent_id()` reads the
+  date-added bytes. The fill-down now keys albums by the lowercase
+  (name, album artist) pair, like the sources catalog. And it is
+  **explicit-only** (VERIFIED 2026-11-19 on the live pair): iTunes
+  materializes the album rating onto device tracks only for explicit
+  album ratings (`miah` flag 0x01) — 236/236 explicit matches,
+  540/540 computed (0x20) never materialized. Computed albums fill
+  down to 0, mirroring the device.
+- **Play-date 1970 artifact**: 545 tracks carry the raw Apple value
+  `APPLE_TO_UNIX + tz` (1970-01-01 local) on both sides; libgpod's
+  conversion squashes the device side to 0 while the old asymmetry arm
+  compared the raw host value — phantom diffs. The comparison now
+  converts both sides uniformly; both collapse to the same 0.
+- **Smart-playlist order is not user data**: iTunes writes smart
+  members sorted by the smart sort order, so the device order never
+  matches the host insertion order («Последние добавленные» and
+  «Самые популярные» reorder-only noise). Reorder now only applies to
+  static playlists; membership diffs still surface (Хай рейт +3/−2
+  stays).
+
+The `dry_run_pair_gate` rating pin moved from ≤250 to ≤600 with the
+mechanism documented: the env pair (live-`.itl` copy vs the
+restored-device snapshot) is mismatched, and the fill-down exposes the
+genuine corpus drift — the pin is a catastrophic-detection bound until
+the ACCEPT corpus is restored; the live pair measures 0.

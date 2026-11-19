@@ -247,10 +247,20 @@ pub fn compute(host: &HostInputs, device: &DeviceInputs, opts: &SyncOptions) -> 
                     ));
                 }
                 let host_members: Vec<u64> = resolved.iter().flatten().copied().collect();
-                let members_differ = host_members != device_pl.member_dbids;
                 let members_add = multiset_difference(&host_members, &device_pl.member_dbids);
                 let members_remove = multiset_difference(&device_pl.member_dbids, &host_members);
-                let members_reorder = members_add.is_empty() && members_remove.is_empty();
+                // Order is user data for static playlists only: iTunes
+                // writes smart members sorted by the smart sort order,
+                // so the device order never matches the host insertion
+                // order and "fixing" it would ping-pong with iTunes
+                // (b015_fixes — the live pair showed reorder-only noise
+                // on «Последние добавленные» and «Самые популярные»).
+                let members_reorder = !device_pl.is_spl
+                    && members_add.is_empty()
+                    && members_remove.is_empty()
+                    && host_members != device_pl.member_dbids;
+                let members_differ =
+                    !members_add.is_empty() || !members_remove.is_empty() || members_reorder;
                 let criteria = criteria_state(host_pl, device_pl, &device.smart_blobs);
                 if criteria == CriteriaState::Unknown {
                     report.diagnostics.push(format!(
@@ -473,29 +483,25 @@ fn stat_diffs(
             device_raw: i64::from(device.playcount),
         });
     }
-    match (stats.play_date_raw == 0, device.time_played == 0) {
-        (true, true) => {}
-        (false, false) => {
-            let host_unix = i64::from(stats.play_date_raw) - APPLE_TO_UNIX - i64::from(tz_offset);
-            if host_unix != device.time_played {
-                out.push(StatDiff {
-                    pid,
-                    field: StatField::PlayDate,
-                    host_raw: host_unix,
-                    device_raw: device.time_played,
-                });
-            }
-        }
-        (host_zero, _device_zero) => out.push(StatDiff {
+    // Play dates compare uniformly in converted unix-local space. The
+    // conversion is what handles the iTunes 1970 artifact: a raw host
+    // value of `APPLE_TO_UNIX + tz_offset` converts to unix 0 exactly,
+    // as does the device raw `APPLE_TO_UNIX + shift` through libgpod —
+    // so both sides collapse to the same 0 instead of the old
+    // asymmetry arm reporting a raw-vs-zero phantom diff (b015_fixes,
+    // measured 545/545 on the live pair).
+    let host_unix = if stats.play_date_raw == 0 {
+        0
+    } else {
+        i64::from(stats.play_date_raw) - APPLE_TO_UNIX - i64::from(tz_offset)
+    };
+    if host_unix != device.time_played {
+        out.push(StatDiff {
             pid,
             field: StatField::PlayDate,
-            host_raw: if host_zero {
-                0
-            } else {
-                i64::from(stats.play_date_raw)
-            },
+            host_raw: host_unix,
             device_raw: device.time_played,
-        }),
+        });
     }
     if stats.volume_adjustment != device.volume {
         out.push(StatDiff {
@@ -919,6 +925,87 @@ mod tests {
                 .iter()
                 .any(|d| d.field == StatField::PlayDate)
         );
+    }
+
+    #[test]
+    fn the_1970_epoch_artifact_is_not_a_play_date_diff() {
+        // The iTunes 1970 artifact: the raw host value that converts to
+        // unix 0 equals the device's 0 after libgpod's conversion — the
+        // old asymmetry arm reported it as a diff (b015_fixes,
+        // 545/545 on the live pair).
+        let mut host_track = mapped_track(7, 0xA1);
+        host_track.stats.play_date_raw = (APPLE_TO_UNIX + 3 * 3600) as u32;
+        let device_track = ipod::TrackInfo {
+            dbid: 0xA1,
+            rating: 80,
+            playcount: 5,
+            skipcount: 1,
+            time_played: 0,
+            ..Default::default()
+        };
+        let host = host_inputs(vec![host_track]);
+        let device = device_inputs(vec![device_track]);
+        let report = compute(&host, &device, &opts());
+        assert!(
+            !report
+                .stat_diffs
+                .iter()
+                .any(|d| d.field == StatField::PlayDate),
+            "host 1970 artifact vs device 0 must not diff"
+        );
+    }
+
+    #[test]
+    fn smart_playlist_order_is_not_an_update() {
+        // iTunes writes smart members sorted by the smart sort order;
+        // the host insertion order is not user data — a reorder-only
+        // smart difference must not surface (b015_fixes).
+        let mut host = host_inputs(vec![
+            mapped_track(1, 0xA1),
+            mapped_track(2, 0xA2),
+            mapped_track(3, 0xA3),
+        ]);
+        host.playlists = vec![{
+            let mut pl = host_playlist(10, "Хай рейт", Some((0x19, 69)));
+            pl.member_itl_ids = vec![3, 1, 2];
+            pl
+        }];
+        let mut device = device_inputs(vec![]);
+        device.playlists = vec![device_playlist(
+            1,
+            Some("Хай рейт"),
+            true,
+            false,
+            vec![0xA1, 0xA2, 0xA3],
+        )];
+        let report = compute(&host, &device, &opts());
+        assert!(
+            report.playlist_updates.is_empty(),
+            "smart member order is iTunes-sorted noise, not an update"
+        );
+
+        // The same reorder on a static playlist stays an update.
+        let mut host = host_inputs(vec![
+            mapped_track(1, 0xA1),
+            mapped_track(2, 0xA2),
+            mapped_track(3, 0xA3),
+        ]);
+        host.playlists = vec![{
+            let mut pl = host_playlist(11, "Плейлист", None);
+            pl.member_itl_ids = vec![3, 1, 2];
+            pl
+        }];
+        let mut device = device_inputs(vec![]);
+        device.playlists = vec![device_playlist(
+            1,
+            Some("Плейлист"),
+            false,
+            false,
+            vec![0xA1, 0xA2, 0xA3],
+        )];
+        let report = compute(&host, &device, &opts());
+        assert_eq!(report.playlist_updates.len(), 1);
+        assert!(report.playlist_updates[0].members_reorder);
     }
 
     fn host_playlist(pid: u64, name: &str, smart: Option<(u32, i64)>) -> HostPlaylist {

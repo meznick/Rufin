@@ -195,10 +195,21 @@ fn dry_run_pair_gate() {
     // measured counts (2026-11-13 run: rating 235, play_count 77,
     // skip_count 934, play_date 83, volume 0) with ~5% headroom. A wrong
     // comparison (e.g. every track diffing) lights up thousands and fails.
+    //
+    // The rating bound moved 2026-11-19 with the fill-down fix
+    // (b015_fixes F2): the host side now carries the effective album
+    // ratings, which on this env pair (live-`.itl` copy vs the
+    // restored-device snapshot) exposes the genuine drift between the
+    // two corpora — the snapshot device materialized the album ratings
+    // as they were when the dump was taken. Measured 536. On a
+    // *coherent* in-sync pair the fill-down cancels (live pair: 0
+    // rating diffs, 0 play-date diffs — the diag runner verifies this);
+    // the pin here stays a coarse catastrophic-detection bound, not an
+    // accuracy claim, until the ACCEPT corpus is restored.
     let counts = report.stat_counts;
     assert!(
-        counts.rating <= 250,
-        "rating diffs {counts:?} exceed the pinned range"
+        counts.rating <= 600,
+        "rating diffs {counts:?} exceed the drift bound"
     );
     assert!(
         counts.play_count <= 90,
