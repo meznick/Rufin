@@ -88,20 +88,37 @@ The claim inventory (every "B-017 validates" across the deltas):
 ## 4. Step 0 — app-level disposable write run (mine to prep, owner's click)
 
 1. Build the dev binary with the write surface:
-   `cargo build --features ipod/sync-writes` (the ipod crate's feature;
-   the app's dependency graph carries it).
-2. Device side: loop-mount a FAT image of the fakepod tree (the
-   `itdb_init_ipod`-built fixture the tests use; a writable `.img`,
-   mounted rw, appears as a real mount to gio).
-3. Host side: a temp iTunes source pointing at a disposable `.itl`
-   copy with its media root (`ITL_TEST_PATH`-style; never the live
-   library).
-4. Owner clicks through: scan → Ready → dry run → Sync. The dry run on
-   this pair must equal the engine's computed report (2 adds / 1 update
-   on the live corpus — or the fixture's own pinned numbers).
+   `cargo build -p rufin -F gtk-shell/sync-writes` — gtk-shell now has a
+   forwarding feature `sync-writes = ["ipod/sync-writes"]` (the rufin
+   binary has no direct ipod dependency, so the feature needs the
+   forwarding hop; D-3 builds on the same seam).
+2. Device side: a loop-mounted FAT image of the restored-device
+   snapshot tree (1.5G, udisks-mounts at `/run/media/meznick/IPOD`,
+   appears in the mount table the discovery reads).
+3. Host side: a disposable `.itl` copy (fresh byte copy of the live
+   library) as the source's library path, media folder unchanged —
+   the owner edits the existing iTunes source in the settings screen
+   (edit, don't add — the D-4 rule wants exactly one source), and
+   points it back after the run.
+4. Owner clicks through: scan → Ready → dev dry run (review must equal
+   the engine-computed report) → real Sync → Completed.
 5. Verification: byte-diff the device image before/after (journal,
-   backup, staged DB write, pending files gone), hash-compare the
-   `.itl` copy, and confirm the completion result renders.
+   backup, staged DB write, pending files gone, the add files landed),
+   hash-compare the `.itl` copy, and a second dry run reading 0 diffs.
+
+**Fixture note (measured 2026-11-19):** the restored snapshot ships no
+`Music/` media, so every matched track would compute as a repair and
+the capacity verdict would refuse (73 GB vs 1.2 GB). The engine's
+repair probe is existence-only (`dry_run/snapshot.rs`), and no sync
+path reads device file contents — so the image is seeded with
+zero-byte placeholders at every DB-listed pod path (3373 files), which
+turns the pair into a no-repair mirror of the live pod. The placeholder
+deviation is documented here, not hidden: file-content fidelity stays
+with the real-device phase A. Measured review on this pair: 11 adds
+(2 Die Antwoord + 9 tracks iTunes added to the real pod after the
+snapshot), 2 playlist updates («Последние добавленные» +3, «Хай рейт»
++33/−3), 220 stat updates (rating 16 / play count 99 / play date 105),
+0 creates/removes/repairs/covers, fits (~330 MB needed).
 
 ## 5. Phase A — device acceptance on the Video 5.5g
 
