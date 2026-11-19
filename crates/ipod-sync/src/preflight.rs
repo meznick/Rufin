@@ -21,10 +21,9 @@
 //! # Model policy (owner decision 2026-11-10, b006 delta decision 12)
 //!
 //! The model gates are **not refusals** anymore. An unsupported or
-//! unresolved model — and a supported Classic missing its FireWire GUID —
-//! is a *limited* device, not a broken one: an empty `SysInfo` is the
-//! normal state of a freshly restored iPod, and the frontend owns the
-//! function gating. The verdicts ride in `DeviceFacts`
+//! unresolved model is a *limited* device, not a broken one: an empty
+//! `SysInfo` is the normal state of a freshly restored iPod, and the
+//! frontend owns the function gating. The verdicts ride in `DeviceFacts`
 //! (`model_supported`, `checksum_possible`, computed in
 //! `retrieval::collect` via [`generation_supported`] and
 //! [`generation_requires_firewire`]) and reach the UI through
@@ -32,6 +31,13 @@
 //! unresolved model (`SkippedUnknownModel`) passes here — it means "cannot
 //! be assessed", not "artless", and the UI shows the limited state instead
 //! of pretending the device is fine.
+//!
+//! The supported set itself shrank 2026-11-19 (B-017 D-1): only the Video
+//! family (5g/5.5g) is accepted, on the owner's 5.5g hardware evidence —
+//! Video 1 stays in by format-family proximity (same iTunesDB family, same
+//! libgpod converter, NONE checksum). Classics (6/6.5/7g) are unverified
+//! until a device appears and re-opens the set; their FireWire-GUID
+//! requirement stays modeled for that day.
 //!
 //! Capacity is deliberately **not** checked here: B-002's
 //! `DeviceManager::set_ready_after_preflight` validates the measured
@@ -54,33 +60,35 @@ use std::path::Path;
 
 use ipod::{ArtworkStatus, ArtworkVerdict, DeviceSession, IpodBackend};
 
-/// Supported generations — the B-001 scope (Video 5/5.5g, Classic
-/// 6/6.5/7g). Values are the `Itdb_IpodGeneration` enum constants in
-/// `ipod::ffi::layouts`; the test `generation_consts_match_the_wrapper`
-/// pins them against the wrapper so the two cannot drift.
+/// Model-table constants. Values are the `Itdb_IpodGeneration` enum
+/// constants in `ipod::ffi::layouts`; the test
+/// `generation_consts_match_the_wrapper` pins them against the wrapper so
+/// the two cannot drift. The Classic constants are retained even though
+/// the generation is outside the supported set (B-017 D-1): the
+/// FireWire-GUID verdict models them for when a device re-opens the set.
 const GENERATION_VIDEO_1: i32 = 16;
 const GENERATION_VIDEO_2: i32 = 17;
 const GENERATION_CLASSIC_1: i32 = 18;
 const GENERATION_CLASSIC_2: i32 = 19;
 const GENERATION_CLASSIC_3: i32 = 26;
 
-/// Whether a resolved model generation is inside the supported set.
+/// Whether a resolved model generation is inside the supported set —
+/// the Video family only (B-017 D-1, 2026-11-19): accepted on the
+/// owner's Video 5.5g; Video 1 stays in by format-family proximity.
+/// Classics (6/6.5/7g) are unverified until a device re-opens the set.
 /// `pub(crate)` because `retrieval::collect` computes the
 /// `model_supported` verdict from it; not refusal logic anymore (see the
 /// module docs).
 pub(crate) fn generation_supported(generation: i32) -> bool {
-    matches!(
-        generation,
-        GENERATION_VIDEO_1
-            | GENERATION_VIDEO_2
-            | GENERATION_CLASSIC_1
-            | GENERATION_CLASSIC_2
-            | GENERATION_CLASSIC_3
-    )
+    matches!(generation, GENERATION_VIDEO_1 | GENERATION_VIDEO_2)
 }
 
 /// Classic 6/6.5/7G: the database checksum (HASH58) requires the FireWire
 /// GUID (itdb_hash58.c:249). Video checksums are NONE — no requirement.
+/// The Classic set is currently unsupported (B-017 D-1), but the
+/// requirement stays modeled: `checksum_possible` is computed against the
+/// device's actual generation, so the verdict is already correct the day
+/// a Classic re-opens the set.
 /// `pub(crate)`: feeds the `checksum_possible` verdict in
 /// `retrieval::collect`.
 pub(crate) fn generation_requires_firewire(generation: i32) -> bool {
@@ -291,24 +299,29 @@ mod tests {
         );
     }
 
-    /// The supported set is exactly the B-001 scope: Video 5/5.5G and
-    /// Classic 6/6.5/7G — everything else is classified unsupported. The
-    /// classification feeds the `model_supported` verdict, not a refusal.
+    /// The supported set is the Video family only (B-017 D-1): accepted on
+    /// the owner's 5.5g hardware evidence, Video 1 by format-family
+    /// proximity. Classic 6/6.5/7g and everything else are classified
+    /// unsupported until a device re-opens the set. The classification
+    /// feeds the `model_supported` verdict, not a refusal.
     #[test]
-    fn supported_generation_set_matches_the_b001_scope() {
-        for generation in [
-            GENERATION_VIDEO_1,
-            GENERATION_VIDEO_2,
-            GENERATION_CLASSIC_1,
-            GENERATION_CLASSIC_2,
-            GENERATION_CLASSIC_3,
-        ] {
+    fn supported_generation_set_matches_the_b017_scope() {
+        for generation in [GENERATION_VIDEO_1, GENERATION_VIDEO_2] {
             assert!(
                 generation_supported(generation),
                 "generation {generation} must be inside the supported set"
             );
         }
-        for generation in [0, 11, 12, 20, 27] {
+        for generation in [
+            0,
+            11,
+            12,
+            20,
+            27,
+            GENERATION_CLASSIC_1,
+            GENERATION_CLASSIC_2,
+            GENERATION_CLASSIC_3,
+        ] {
             assert!(
                 !generation_supported(generation),
                 "generation {generation} must be outside the supported set"

@@ -125,14 +125,17 @@
   нормальное состояние свежевосстановленного iPod → модель неизвестна, без
   изобретения значений.
 - **Preflight** (B-004), порядок проверок (первая ошибка выигрывает): read-only mount →
-  parse БД → модель разрешена → поддерживаемый набор (Video 5/5.5G + Classic
-  6/6.5/7G) → FireWire ID для Classic (чексумма обязательна даже по USB; у Video
-  такого требования нет) → вердикт обложек. Без Trust/pairing (Video/Classic — не
+  parse БД → модель разрешена → поддерживаемый набор (Video 5/5.5G — после
+  B-017 D-1, 2026-11-19: набор сужен до Video-семейства, Classic 6/6.5/7G
+  непроверены до появления устройства) → FireWire ID для Classic (чексумма
+  обязательна даже по USB; у Video такого требования нет — требование
+  смоделировано заранее на случай возвращения Classic в набор) → вердикт
+  обложек. Без Trust/pairing (Video/Classic — не
   iOS, usbmuxd не нужен). Отсутствующая прошивка сама по себе Ready не блокирует.
-- **Модельная политика** (решения владельца 2026-11-10, `deltas/b006_delta.md`):
-  unsupported/unresolved модели и Classic-без-FireWire доходят до Ready; вердикты
-  `model_supported`/`checksum_possible` едут в `DeviceFacts`/`DeviceInfo` для
-  гейтинга UI; preflight отказывает только на ro-mount/БД/обложках.
+- **Модельная политика** (решения владельца 2026-11-10, `deltas/b006_delta.md`;
+  набор моделей — B-017 D-1): unsupported/unresolved модели доходят до Ready;
+  вердикты `model_supported`/`checksum_possible` едут в `DeviceFacts`/`DeviceInfo`
+  для гейтинга UI; preflight отказывает только на ro-mount/БД/обложках.
 - Извлечение устройства из любого состояния → `Disconnected`; прерванная операция
   хранится отдельно от состояния и не стирается retry/removal.
 
