@@ -466,11 +466,20 @@ pub struct ReviewSummary {
     pub free_bytes: u64,
     pub would_fit: bool,
     pub diagnostic_count: usize,
+    /// The report's own findings (mapping + dry-run diagnostics),
+    /// capped at the dialog's rendering budget — verbatim, so a
+    /// phantom diff names its own reason (b015_fixes F6).
+    pub diagnostics: Vec<String>,
     /// Nothing at all would change.
     pub nothing_to_do: bool,
 }
 
 impl ReviewSummary {
+    /// The dialog's rendering budget for verbatim findings — the
+    /// report can carry many; the review shows the first few
+    /// (b015_fixes F6).
+    const DIAGNOSTIC_CAP: usize = 5;
+
     fn from_report(report: &DryRunReport) -> Self {
         let stat_updates = report.stat_counts.rating
             + report.stat_counts.play_count
@@ -494,6 +503,12 @@ impl ReviewSummary {
             free_bytes: report.capacity.free_bytes,
             would_fit: report.capacity.would_fit,
             diagnostic_count: report.diagnostics.len(),
+            diagnostics: report
+                .diagnostics
+                .iter()
+                .take(Self::DIAGNOSTIC_CAP)
+                .cloned()
+                .collect(),
             nothing_to_do: false,
         };
         Self {

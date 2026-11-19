@@ -269,15 +269,16 @@ fn dry_run_pair_gate() {
     }
 
     // Artwork: adds only where the host carries an embedded cover and the
-    // device lacks a thumbnail; removals only where the host is artless
-    // and the device carries a thumbnail (the iTunes art-cache caveat).
+    // device lacks a thumbnail. Removals never exist (decision #6,
+    // b015_fixes F1): a device thumbnail the host lacks is informational
+    // under every policy — the append-only discipline.
     let device_tracks: std::collections::HashMap<u64, bool> = device
         .tracks
         .iter()
         .map(|t| (t.dbid, t.has_thumbnail))
         .collect();
     let mut expected_adds = 0u32;
-    let mut expected_removes = 0u32;
+    let mut expected_orphaned = 0u32;
     for track in &host.tracks {
         let Some(evidence) = host.artwork.get(&track.track_pid) else {
             continue;
@@ -287,7 +288,7 @@ fn dry_run_pair_gate() {
         };
         match evidence {
             CoverEvidence::Present { .. } if !has_thumb => expected_adds += 1,
-            CoverEvidence::Absent if *has_thumb => expected_removes += 1,
+            CoverEvidence::Absent if *has_thumb => expected_orphaned += 1,
             _ => {}
         }
     }
@@ -297,9 +298,13 @@ fn dry_run_pair_gate() {
         "artwork adds must equal the computed host-cover ∩ no-thumbnail set"
     );
     assert_eq!(
-        report.artwork_removes.len() as u32,
-        expected_removes,
-        "artwork removals must equal the computed host-artless ∩ thumbnail set"
+        report.artwork_orphaned.len() as u32,
+        expected_orphaned,
+        "host-artless ∩ thumbnail entries must be informational"
+    );
+    assert!(
+        report.artwork_removes.is_empty(),
+        "artwork removals can never be planned — append-only"
     );
 
     // Capacity: the estimate must be exactly the sum of the 11 pinned

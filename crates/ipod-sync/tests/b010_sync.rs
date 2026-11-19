@@ -309,12 +309,9 @@ fn sync_pair_gate() {
     let tree_before = hash_tree(&tree);
 
     let (host, plan) = approved_plan(&itl_copy, &media_root, &device_root, &backend);
-    let pdfs = host
-        .tracks
-        .iter()
-        .filter(|track| track.metadata.file_extension.as_deref() == Some("pdf"))
-        .count();
-    let expected_adds = plan.file_adds.len().saturating_sub(pdfs);
+    // The dry run excludes PDF booklets from `file_adds` entirely
+    // (b015_fixes F4) — the executor copies every planned add.
+    let expected_adds = plan.file_adds.len();
     let options = gate_options();
     let host_write = HostWriteContext {
         library_path: itl_copy.clone(),
