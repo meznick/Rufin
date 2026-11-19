@@ -120,6 +120,54 @@ snapshot), 2 playlist updates («Последние добавленные» +3,
 +33/−3), 220 stat updates (rating 16 / play count 99 / play date 105),
 0 creates/removes/repairs/covers, fits (~330 MB needed).
 
+## Step 0 result (2026-11-19) — four engine bugs found, fixed, pinned
+
+The owner's app run reported success, but the verification re-read
+caught four real-write bugs the fixture gates had never seen. All
+fixed in `ec6ee39` + `db5c43f`; the pair gate now re-runs the dry run
+on the synced pair and asserts emptiness, so each is a permanent
+regression pin.
+
+1. **Play-date double timezone shift.** The merge and `create_track`
+   converted the host raw value as `raw − epoch` only, leaving the
+   envelope +3h in a value libgpod shifts again at the write boundary
+   — every written play date re-read 3 hours ahead (3384 uniform
+   −10800 diffs). `merge_stats` now takes `tz_offset_seconds` and
+   converts host raw and pending mac with it; both sides of the merge
+   live in the same offset-stripped space the dry run compares in.
+2. **Smart-playlist updates were silently skipped.** The executor
+   hard-`continue`d every smart update, even with Equal criteria, so
+   the reviewed member updates were never written (the re-read still
+   showed «Последние добавленные» +3 and «Хай рейт» +33/−3). Equal-
+   criteria smart playlists now write their materialized members like
+   static ones — iTunes itself materializes smart members; criteria
+   translation stays deferred (B-023).
+3. **Dangling playlist members.** The first member write then refused:
+   a host member whose track has no device record (a
+   purchased-not-downloaded track, Laura Welsh «Break The Fall
+   (Remixes)») cannot be materialized. The dry run now filters playlist
+   members to the device-plus-adds set (creates too), and the executor
+   mirrors the guard at write time. iTunes has the same semantics.
+4. **Adds carried no artwork.** The artwork section only planned
+   matched tracks, so new tracks stayed cover-less and a second dry run
+   surfaced them as covers-to-add (4 on this pair). Adds with host
+   covers now carry `ArtworkAdd` entries; the pair gate got a real
+   embedded-cover provider (lofty on the host file) so the engine path
+   is proven even though the production boundary's provider is still
+   the known follow-up.
+
+**Incident (fixed in `db5c43f`):** the same app run deleted two live
+library files — Snoop Dogg «Sensual Seduction» and Laura Welsh «Break
+the Fall» (the add loop's staging cleanup ran `remove_file` on the
+host source for direct copies; the source IS the host file when no
+transcode is involved). The files were copied to the device first, and
+the real pod holds both tracks, so recovery = plug in the pod and copy
+them back to the media root. The add path now deletes only the
+transcode staging file, and the pair gate records every add source's
+bytes before the sync and asserts them byte-identical after — a
+host-media regression fails the fixture gate instead of eating the
+library.
+
 ## 5. Phase A — device acceptance on the Video 5.5g
 
 Prep: full backup of `iPod_Control/` (DBs + `Music/` + `iTunes/`) to
