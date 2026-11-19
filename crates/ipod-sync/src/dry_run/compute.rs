@@ -78,7 +78,6 @@ pub fn compute(host: &HostInputs, device: &DeviceInputs, opts: &SyncOptions) -> 
     let host_by_itl: HashMap<u32, _> = host.tracks.iter().map(|t| (t.itl_id, t)).collect();
     let device_by_dbid: HashMap<u64, _> = device.tracks.iter().map(|t| (t.dbid, t)).collect();
     let tz_offset = library.tz_offset_seconds;
-    let mut host_side_skips = 0u32;
 
     for m in &track_mapping.matches {
         let Some(track) = host_by_itl.get(&m.itl_id) else {
@@ -91,13 +90,6 @@ pub fn compute(host: &HostInputs, device: &DeviceInputs, opts: &SyncOptions) -> 
                 };
                 for diff in stat_diffs(track, device_track, tz_offset) {
                     report.stat_diffs.push(diff);
-                }
-                // Host-side skips are never syncable: iTunes never
-                // pushes skip counts to the device, and neither does
-                // the sync (b015_fixes F3) — counted once as a
-                // diagnostic, never as an action.
-                if track.stats.skip_count > device_track.skipcount {
-                    host_side_skips += 1;
                 }
                 // File repair: the database lists the track, the file is gone.
                 let file_present = device
@@ -139,15 +131,12 @@ pub fn compute(host: &HostInputs, device: &DeviceInputs, opts: &SyncOptions) -> 
             TrackOutcome::MissingOnDevice => match &track.location {
                 HostLocation::Mapped(path) => {
                     if track.metadata.file_extension.as_deref() == Some("pdf") {
-                        // iTunes never copies PDF Digital Booklets —
-                        // the executor skips them too (`transcode.rs`
-                        // NeverCopy), the review must agree
-                        // (b015_fixes F4).
-                        report.diagnostics.push(format!(
-                            "track #{}: PDF booklet — iTunes never copies it",
-                            track.itl_id
-                        ));
-                    } else if host_file_present(host, track.itl_id) {
+                        // iTunes never copies PDF Digital Booklets — the
+                        // executor skips them too (`transcode.rs`
+                        // NeverCopy). Silently excluded (b015_fixes F4).
+                        continue;
+                    }
+                    if host_file_present(host, track.itl_id) {
                         let mode = copy_mode(opts);
                         report.file_adds.push(FileAdd {
                             itl_id: track.itl_id,
@@ -180,13 +169,6 @@ pub fn compute(host: &HostInputs, device: &DeviceInputs, opts: &SyncOptions) -> 
         }
     }
 
-    if host_side_skips > 0 {
-        report.diagnostics.push(format!(
-            "{host_side_skips} skip-count differences are host-side only — iTunes never \
-             pushes skips to the device, and neither does the sync"
-        ));
-    }
-
     for dbid in &track_mapping.device_only_dbids {
         match opts.device_only {
             DeviceOnlyPolicy::Remove => report.file_removes.push(FileRemove {
@@ -213,23 +195,13 @@ pub fn compute(host: &HostInputs, device: &DeviceInputs, opts: &SyncOptions) -> 
         }
         match &m.outcome {
             PlaylistOutcome::MissingOnDevice => {
-                // Built-in iTunes views and folders are never syncable
-                // (b015_fixes F5), and empty playlists have nothing to
-                // carry — both are diagnostics, never creates. Matching
-                // upstream is unaffected, so a device playlist that
-                // corresponds to a host built-in (e.g. Purchased
+                // Built-in iTunes views and folders are never syncable,
+                // and empty playlists have nothing to carry — both are
+                // silently excluded from creates (b015_fixes F5).
+                // Matching upstream is unaffected, so a device playlist
+                // that corresponds to a host built-in (e.g. Purchased
                 // Music, kind 19) stays matched, never a removal.
-                if is_builtin_playlist(host_pl) {
-                    report.diagnostics.push(format!(
-                        "playlist {:?}: built-in iTunes view (distinguished kind {}) — not synced",
-                        host_pl.name, host_pl.distinguished_kind
-                    ));
-                    continue;
-                }
-                if host_pl.member_itl_ids.is_empty() {
-                    report
-                        .diagnostics
-                        .push(format!("playlist {:?}: empty — not synced", host_pl.name));
+                if is_builtin_playlist(host_pl) || host_pl.member_itl_ids.is_empty() {
                     continue;
                 }
                 let members = resolve_playlist_members(host_pl, &host.tracks);
@@ -476,8 +448,7 @@ pub fn device_fs_path(ipod_path: Option<&str>) -> PathBuf {
 ///
 /// Skip counts are deliberately absent (b015_fixes F3): iTunes never
 /// pushes them to the device and the merge never writes them, so a
-/// skip diff can never be an action — `compute` reports host-side
-/// skips as a single diagnostic instead.
+/// skip diff can never be an action — it is silently excluded.
 fn stat_diffs(
     host: &crate::mapping::HostTrack,
     device: &ipod::TrackInfo,
@@ -747,7 +718,6 @@ mod tests {
         host.host_file_present.insert(7, true);
         let report = compute(&host, &device_inputs(vec![]), &opts());
         assert!(report.file_adds.is_empty());
-        assert!(report.diagnostics.iter().any(|d| d.contains("PDF booklet")));
     }
 
     #[test]
@@ -761,12 +731,6 @@ mod tests {
         host.playlists = vec![playlist];
         let report = compute(&host, &device_inputs(vec![]), &opts());
         assert!(report.playlist_creates.is_empty());
-        assert!(
-            report
-                .diagnostics
-                .iter()
-                .any(|d| d.contains("built-in iTunes view"))
-        );
 
         // Purchased Music (19) is deliberately syncable — the owner
         // syncs it to the pod.
@@ -787,12 +751,6 @@ mod tests {
         host.playlists = vec![host_playlist(10, "Пусто", None)];
         let report = compute(&host, &device_inputs(vec![]), &opts());
         assert!(report.playlist_creates.is_empty());
-        assert!(
-            report
-                .diagnostics
-                .iter()
-                .any(|d| d.contains("empty — not synced"))
-        );
     }
 
     #[test]
@@ -937,13 +895,6 @@ mod tests {
         assert_eq!(report.stat_counts.rating, 1);
         assert_eq!(report.stat_counts.play_date, 1);
         assert_eq!(report.stat_counts.skip_count, 0, "skips never count");
-        assert!(
-            report
-                .diagnostics
-                .iter()
-                .any(|d| d.contains("skip-count differences are host-side only")),
-            "host-side skips surface as one diagnostic"
-        );
     }
 
     #[test]
