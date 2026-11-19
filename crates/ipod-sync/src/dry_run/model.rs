@@ -287,6 +287,10 @@ pub struct DryRunReport {
     /// Informational device-only playlists under `Keep`.
     pub device_only_playlists: Vec<PlaylistRemove>,
     /// Destructive: device thumbnails the host lacks, under `Remove`.
+    /// **Never populated** (b015_fixes F1, decision #6): artwork is
+    /// append-only — iTunes never deletes individual thumbnails, and
+    /// neither does the executor. Such entries live in
+    /// `artwork_orphaned` under every policy.
     pub artwork_removes: Vec<ArtworkRemove>,
     /// Informational orphaned thumbnails under `Keep`.
     pub artwork_orphaned: Vec<ArtworkRemove>,

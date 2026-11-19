@@ -12,7 +12,7 @@ publish.workspace = true
 
 [dependencies]
 ipod.workspace = true
-itl-core = "0.1.1"
+itl-core = "0.1.2"
 itl-sync = "0.1.0"
 libc.workspace = true
 tracing.workspace = true

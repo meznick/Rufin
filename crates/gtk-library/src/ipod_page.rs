@@ -587,7 +587,8 @@ fn review_body(summary: &crate::ipod_sync_service::ReviewSummary) -> String {
     push("{count} playlists to update", summary.playlists_updated);
     push("{count} playlists to remove", summary.playlists_removed);
     push("{count} covers to add", summary.artwork_adds);
-    push("{count} covers to remove", summary.artwork_removes);
+    // No "covers to remove" line — artwork is append-only (decision
+    // #6, b015_fixes F1): the report never plans a cover removal.
     if summary.stat_updates > 0 {
         lines.push(tr_with(
             "{count} statistic updates",
@@ -605,6 +606,12 @@ fn review_body(summary: &crate::ipod_sync_service::ReviewSummary) -> String {
                 ("free", &unit_gb_text(&format_gb(summary.free_bytes))),
             ],
         ));
+    }
+    // The report's own findings, verbatim (the B-013 convention) — a
+    // phantom diff names its own reason instead of asking for a
+    // diagnosis session (b015_fixes F6).
+    for diagnostic in &summary.diagnostics {
+        lines.push(diagnostic.clone());
     }
     lines.join("\n")
 }

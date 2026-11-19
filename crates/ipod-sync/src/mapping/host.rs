@@ -130,6 +130,12 @@ pub struct HostPlaylist {
     /// *candidate*, not an assertion: the device master is identified by
     /// `is_mpl` on the device side.
     pub is_master_candidate: bool,
+    /// iTunes' distinguished kind (`miph` @0x239, itl-core 0.1.2): the
+    /// built-in library views and folders (Music, Movies, TV Shows,
+    /// Podcasts, Audiobooks, Genius, Downloaded, the Videos/Home
+    /// Videos/TV & Films/Rentals containers) are never syncable user
+    /// playlists — `0` for user-authored ones (b015_fixes F5).
+    pub distinguished_kind: u32,
 }
 
 /// Build the library-level facts. `None` when the library has no media
@@ -143,9 +149,33 @@ pub fn host_library(itl: &ItlFile, media_root: &Path) -> Option<HostLibrary> {
     })
 }
 
+/// The effective rating for one track (b015_fixes F2): a raw `mith`
+/// rating of 0 means "inherit the album rating" — the XML fills it
+/// down and iTunes materializes the album value on device tracks, so
+/// every comparison and every host-wins rating push must use the
+/// filled-down value. The raw value itself is never written back.
+pub fn effective_rating(track_rating: u8, album_rating: Option<u8>) -> u8 {
+    if track_rating == 0 {
+        album_rating.unwrap_or(0)
+    } else {
+        track_rating
+    }
+}
+
 /// All host tracks: `unique_tracks` dedupe (the located record wins),
-/// media-mapped locations, raw stats, and the verified track PID.
+/// media-mapped locations, raw stats, and the verified track PID. The
+/// rating carried in `stats` is the **effective** rating (b015_fixes
+/// F2): a raw `mith` rating of 0 means "inherit the album rating" —
+/// the XML fills it down and iTunes materializes the album value on
+/// device tracks, so every comparison must use the filled-down value
+/// or a host-wins rating push would wipe device ratings. The raw value
+/// is never written back anywhere.
 pub fn host_tracks(itl: &ItlFile, mapping: &MediaMapping, library_pid: u64) -> Vec<HostTrack> {
+    let album_ratings: std::collections::HashMap<u64, u8> = itl
+        .albums()
+        .iter()
+        .map(|album| (album.persistent_id(), album.rating()))
+        .collect();
     itl_sync::survey::unique_tracks(itl)
         .into_iter()
         .map(|track| {
@@ -185,7 +215,10 @@ pub fn host_tracks(itl: &ItlFile, mapping: &MediaMapping, library_pid: u64) -> V
                     bpm: track.bpm(),
                 },
                 stats: HostStats {
-                    rating: track.rating(),
+                    rating: effective_rating(
+                        track.rating(),
+                        album_ratings.get(&track.album_persistent_id()).copied(),
+                    ),
                     play_count: track.play_count(),
                     skip_count: track.skip_count(),
                     play_date_raw: track.play_date_raw(),
@@ -214,6 +247,7 @@ pub fn host_playlists(itl: &ItlFile) -> Vec<HostPlaylist> {
                 smart,
                 member_itl_ids: playlist.track_ids(),
                 is_master_candidate: first,
+                distinguished_kind: playlist.distinguished_kind(),
             };
             first = false;
             record
@@ -236,4 +270,21 @@ pub fn resolve_playlist_members(playlist: &HostPlaylist, tracks: &[HostTrack]) -
         .iter()
         .map(|id| by_id.get(id).copied())
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::effective_rating;
+
+    #[test]
+    fn effective_rating_fills_down_album_ratings() {
+        // A raw 0 inherits the album rating (b015_fixes F2) — the XML
+        // fills it down and iTunes materializes it on device tracks.
+        assert_eq!(effective_rating(0, Some(80)), 80);
+        // An explicit track rating always wins.
+        assert_eq!(effective_rating(60, Some(80)), 60);
+        // No album (or an unrated one) stays 0.
+        assert_eq!(effective_rating(0, None), 0);
+        assert_eq!(effective_rating(0, Some(0)), 0);
+    }
 }

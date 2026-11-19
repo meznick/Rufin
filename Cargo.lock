@@ -1706,7 +1706,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ccc2776f0c61eca1ca32528f85548abd1a4be8fb53d1b21c013e4f18da1e7090"
 dependencies = [
  "data-encoding",
- "syn 2.0.119",
+ "syn 1.0.109",
 ]
 
 [[package]]
@@ -4492,9 +4492,9 @@ dependencies = [
 
 [[package]]
 name = "itl-core"
-version = "0.1.1"
+version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4a2e5d3f512b2217551d9b764a5c77e504b9f97f227d4473c916f82e1e4cb193"
+checksum = "5839556918f3cd4888936403fd3894c0b5d799930987c5e559e72d5fbe738e29"
 dependencies = [
  "aes 0.8.4",
  "flate2",

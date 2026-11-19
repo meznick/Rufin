@@ -345,6 +345,7 @@ mod tests {
             }),
             member_itl_ids: Vec::new(),
             is_master_candidate: false,
+            distinguished_kind: 0,
         }
     }
 
@@ -501,6 +502,7 @@ mod tests {
             smart: None,
             member_itl_ids: vec![1, 2, 1, 42],
             is_master_candidate: false,
+            distinguished_kind: 0,
         };
         let resolved = resolve_playlist_members(&playlist, &tracks);
         assert_eq!(
