@@ -8,7 +8,7 @@
 //! Isolation by construction: nothing in this module can touch the device
 //! or the host `.itl`; the env-gated gate proves zero mutation end to end.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use crate::mapping::{
@@ -185,6 +185,18 @@ pub fn compute(host: &HostInputs, device: &DeviceInputs, opts: &SyncOptions) -> 
 
     // Playlists: `playlist_mapping.matches` is in host order — zip with the
     // host records.
+    // Members whose tracks don't exist on the device and aren't among the
+    // planned adds can never be materialized — iTunes skips them too (a
+    // purchased-not-downloaded member has no device track; the B-017
+    // step-0 finding: the executor's member write refused a dangling
+    // dbid). The writable set filters both creates and updates so the
+    // review always matches what the executor can write.
+    let writable: HashSet<u64> = device
+        .tracks
+        .iter()
+        .map(|track| track.dbid)
+        .chain(report.file_adds.iter().map(|add| add.pid))
+        .collect();
     for (host_pl, m) in host.playlists.iter().zip(playlist_mapping.matches.iter()) {
         // The host master (first `miph`, Master-flagged) is represented on
         // the device by the device master (`is_mpl`) — its name is the
@@ -204,12 +216,15 @@ pub fn compute(host: &HostInputs, device: &DeviceInputs, opts: &SyncOptions) -> 
                 if is_builtin_playlist(host_pl) || host_pl.member_itl_ids.is_empty() {
                     continue;
                 }
-                let members = resolve_playlist_members(host_pl, &host.tracks);
+                let members: Vec<Option<u64>> = resolve_playlist_members(host_pl, &host.tracks)
+                    .into_iter()
+                    .map(|member| member.filter(|pid| writable.contains(pid)))
+                    .collect();
                 let unresolved = members.iter().filter(|m| m.is_none()).count();
                 if unresolved > 0 {
                     report.diagnostics.push(format!(
-                        "playlist {:?}: {unresolved} unresolvable members (excluded from the \
-                         planned create)",
+                        "playlist {:?}: {unresolved} members excluded from the planned create \
+                         (unresolved or their tracks are not on the device)",
                         host_pl.name
                     ));
                 }
@@ -247,6 +262,10 @@ pub fn compute(host: &HostInputs, device: &DeviceInputs, opts: &SyncOptions) -> 
                     ));
                 }
                 let host_members: Vec<u64> = resolved.iter().flatten().copied().collect();
+                let host_members: Vec<u64> = host_members
+                    .into_iter()
+                    .filter(|pid| writable.contains(pid))
+                    .collect();
                 let members_add = multiset_difference(&host_members, &device_pl.member_dbids);
                 let members_remove = multiset_difference(&device_pl.member_dbids, &host_members);
                 // Order is user data for static playlists only: iTunes
@@ -339,6 +358,17 @@ pub fn compute(host: &HostInputs, device: &DeviceInputs, opts: &SyncOptions) -> 
                     }
                 }
                 Some(CoverEvidence::Unknown) | None => report.artwork_unknown += 1,
+            }
+        }
+        // Adds carry their cover at creation time (iTunes attaches the
+        // artwork with the track, not at the next sync — the B-017
+        // step-0 finding: the old plan skipped adds in the artwork
+        // section, so new tracks stayed cover-less and a second dry run
+        // surfaced them as covers-to-add). The executor writes artwork
+        // after the adds land, so the ordering holds.
+        for add in &report.file_adds {
+            if let Some(CoverEvidence::Present { .. }) = host.artwork.get(&add.pid) {
+                report.artwork_adds.push(ArtworkAdd { pid: add.pid });
             }
         }
     } else {
@@ -727,6 +757,27 @@ mod tests {
     }
 
     #[test]
+    fn adds_carry_their_artwork_in_the_plan() {
+        // B-017 step-0 finding: adds were skipped by the artwork section,
+        // so new tracks stayed cover-less until a second sync surfaced
+        // them. An add whose host cover is Present must carry an
+        // ArtworkAdd; Absent adds must not.
+        let mut host = host_inputs(vec![mapped_track(7, 0xA1), mapped_track(8, 0xA2)]);
+        host.host_file_present.insert(7, true);
+        host.host_file_present.insert(8, true);
+        host.artwork.insert(
+            0xA1,
+            crate::dry_run::CoverEvidence::Present { bytes: 10_000 },
+        );
+        host.artwork
+            .insert(0xA2, crate::dry_run::CoverEvidence::Absent);
+        let report = compute(&host, &device_inputs(vec![]), &opts());
+        assert_eq!(report.file_adds.len(), 2);
+        let planned: Vec<u64> = report.artwork_adds.iter().map(|a| a.pid).collect();
+        assert_eq!(planned, vec![0xA1], "only the Present add is planned");
+    }
+
+    #[test]
     fn builtin_playlists_are_never_creates() {
         // b015_fixes F5: iTunes' distinguished views (here Music, kind
         // 4) are never syncable user playlists.
@@ -1081,7 +1132,7 @@ mod tests {
             report
                 .diagnostics
                 .iter()
-                .any(|d| d.contains("unresolvable members"))
+                .any(|d| d.contains("members excluded"))
         );
     }
 

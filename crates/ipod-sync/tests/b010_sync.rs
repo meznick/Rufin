@@ -229,6 +229,7 @@ fn context<'a>(
     plan: &'a ExecutionPlan,
     fail_after: &'a dyn Fn(&str) -> bool,
     reporter: &'a (dyn Fn(ProgressEvent) + Send + Sync),
+    artwork: &'a dyn Fn(u64) -> Option<ipod::ArtworkInput>,
 ) -> SyncContext<'a> {
     context_with(
         device_root,
@@ -241,6 +242,7 @@ fn context<'a>(
         fail_after,
         reporter,
         &|| false,
+        artwork,
     )
 }
 
@@ -261,6 +263,7 @@ fn context_with<'a>(
     fail_after: &'a dyn Fn(&str) -> bool,
     reporter: &'a (dyn Fn(ProgressEvent) + Send + Sync),
     cancelled: &'a dyn Fn() -> bool,
+    artwork: &'a dyn Fn(u64) -> Option<ipod::ArtworkInput>,
 ) -> SyncContext<'a> {
     SyncContext {
         mount: device_root,
@@ -279,10 +282,38 @@ fn context_with<'a>(
                 || false,
             )
         },
-        artwork: &|_| None,
+        artwork,
         cancelled,
         fail_after,
         reporter,
+    }
+}
+
+/// The pair gate's artwork provider: read the embedded cover straight
+/// from the host file (the production boundary returns `None` until the
+/// runtime-catalog mapping lands, so the gate owns the engine-side
+/// proof — the B-017 step-0 finding: without a provider, planned covers
+/// for adds are skipped and the re-run never empties).
+fn embedded_cover_provider(host: &HostInputs) -> impl Fn(u64) -> Option<ipod::ArtworkInput> + '_ {
+    move |pid| {
+        let path = host
+            .tracks
+            .iter()
+            .find(|track| track.track_pid == pid)
+            .and_then(|track| match &track.location {
+                ipod_sync::mapping::HostLocation::Mapped(path) => Some(path.clone()),
+                _ => None,
+            })?;
+        use lofty::file::TaggedFileExt;
+        let file = lofty::read_from_path(&path).ok()?;
+        let tag = file
+            .tag(file.primary_tag_type())
+            .or_else(|| file.tags().first())?;
+        let picture = tag.pictures().first()?;
+        Some(ipod::ArtworkInput {
+            encoded: picture.data().to_vec(),
+            rotation: 0,
+        })
     }
 }
 
@@ -325,6 +356,7 @@ fn sync_pair_gate() {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_secs() as i64;
+    let artwork = embedded_cover_provider(&host);
     let ctx = context(
         &device_root,
         "gate-pair",
@@ -335,6 +367,7 @@ fn sync_pair_gate() {
         &plan,
         &|_| false,
         &reporter,
+        &artwork,
     );
     let result = run_sync(&ctx);
     let finished = SystemTime::now()
@@ -449,6 +482,42 @@ fn sync_pair_gate() {
     );
     drop(session);
 
+    // B-017 step-0 hardening: a second dry run over the synced pair must
+    // be empty — a run that reports success while the re-read still shows
+    // deltas is a lie (the step-0 app run left 3384 shifted play dates,
+    // two unapplied smart-member updates, and new-track covers behind).
+    let itl_file = ItlFile::open(&itl_copy).unwrap();
+    let host_after = collect_host(&itl_file, &media_root, &LoftyProbe);
+    let session = ipod::DeviceSession::open(&backend, &device_root).unwrap();
+    let facts = ipod_sync::retrieval::collect(&session, &device_root).unwrap();
+    let device_after = collect_device(&session, &device_root, &facts).unwrap();
+    drop(session);
+    let report_after = compute(&host_after, &device_after, &options);
+    assert_eq!(report_after.file_adds.len(), 0, "no adds remain");
+    assert_eq!(report_after.file_repairs.len(), 0, "no repairs remain");
+    assert_eq!(report_after.file_removes.len(), 0, "no removes remain");
+    assert_eq!(report_after.playlist_creates.len(), 0);
+    assert_eq!(report_after.playlist_removes.len(), 0);
+    assert_eq!(report_after.artwork_adds.len(), 0, "no covers remain");
+    assert_eq!(
+        report_after.stat_counts.rating, 0,
+        "rating diffs gone: {report_after:?}"
+    );
+    assert_eq!(
+        report_after.stat_counts.play_count, 0,
+        "play-count diffs gone: {report_after:?}"
+    );
+    assert_eq!(
+        report_after.stat_counts.play_date, 0,
+        "play-date diffs gone (the tz double-shift regression): {report_after:?}"
+    );
+    for update in &report_after.playlist_updates {
+        assert!(
+            update.is_spl && update.criteria == ipod_sync::dry_run::CriteriaState::Differ,
+            "only deferred smart-criteria updates may survive: {update:?}"
+        );
+    }
+
     // The journal holds the completion marker, no active record.
     let journal = Journal::open(&device_root).unwrap();
     assert!(journal.load_active().unwrap().is_none());
@@ -541,6 +610,7 @@ fn sync_failure_battery() {
         &plan,
         &|_| false,
         &|_| {},
+        &|_| None,
     );
     let result = run_sync(&bad_context);
     let SyncStatus::Failed { step, diagnostic } = &result.status else {
@@ -607,6 +677,7 @@ fn sync_failure_battery() {
             &plan,
             &injection,
             &reporter,
+            &|_| None,
         );
         let result = run_sync(&ctx);
         if *injected == STEP_VERIFY {
@@ -720,6 +791,7 @@ fn sync_failure_battery() {
         &plan,
         &|_| false,
         &|_| {},
+        &|_| None,
     );
     let result = run_sync(&ctx);
     let SyncStatus::Failed { step, diagnostic } = &result.status else {
@@ -770,6 +842,7 @@ fn sync_reporting_resumes_from_the_committed_prefix() {
         &plan,
         &crash,
         &|_| {},
+        &|_| None,
     );
     let result = run_sync(&ctx);
     assert_eq!(
@@ -804,6 +877,7 @@ fn sync_reporting_resumes_from_the_committed_prefix() {
         &plan,
         &|_| false,
         &reporter,
+        &|_| None,
     );
     let result = run_sync(&ctx);
     assert_eq!(result.status, SyncStatus::Completed);
@@ -895,6 +969,7 @@ fn sync_reporting_restores_a_broken_database() {
         &plan,
         &crash,
         &|_| {},
+        &|_| None,
     );
     let result = run_sync(&ctx);
     assert_eq!(
@@ -923,6 +998,7 @@ fn sync_reporting_restores_a_broken_database() {
         &plan,
         &|_| false,
         &reporter,
+        &|_| None,
     );
     let result = run_sync(&ctx);
     let SyncStatus::Partial {
@@ -1019,6 +1095,7 @@ fn sync_reporting_cancellation_is_a_resumable_failure() {
         &|_| false,
         &reporter,
         &cancelled_flag,
+        &|_| None,
     );
     let result = run_sync(&ctx);
     let SyncStatus::Failed { step, diagnostic } = &result.status else {

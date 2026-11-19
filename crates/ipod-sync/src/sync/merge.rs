@@ -9,10 +9,17 @@
 //!   pending, where baseline = max(host, stored device value) guards an
 //!   out-of-band device drift without double-counting (the pending delta
 //!   is part of the observed device total exactly once).
-//! - **play date — newest wins** in unix-local wall-clock space (host raw
-//!   Apple-epoch − 2082844800 == the device's unix-local; both are the
-//!   same machine's wall clock, so no tz offset participates in the
-//!   comparison).
+//! - **play date — newest wins** in unix-local wall-clock space. The host
+//!   raw value is Apple-epoch **plus** the `.itl` envelope tz offset
+//!   (wall-clock local), so the conversion is raw − 2082844800 −
+//!   `tz_offset_seconds` — the exact inverse of the dry-run comparison
+//!   (`compute.rs`). The device value is libgpod's already-converted
+//!   unix-local; pending-store mac times are the device firmware's
+//!   wall-clock local, the same conversion. Writing the offset-stripped
+//!   value matters: libgpod adds the pod's own timezone shift at the
+//!   write boundary, so a value that still carries the host offset comes
+//!   back shifted (the B-017 step-0 finding: 3384 uniform +3h play-date
+//!   diffs after the first real sync).
 //! - **rating — host-wins push** (Video/Classic firmware cannot author
 //!   ratings); pending-entry ratings are ignored with a diagnostic.
 //! - volume and skip date are out of scope (itl-sync has no patch fields;
@@ -78,7 +85,14 @@ pub struct StatMerge {
 }
 
 /// Compute the merge over the matched pairs.
-pub fn merge_stats(pairs: &[StatPair]) -> StatMerge {
+///
+/// `tz_offset_seconds` is the `.itl` envelope offset (the value the dry
+/// run compares with): the host raw play date is wall-clock local, so it
+/// converts with the offset; the pending-store mac times are the device
+/// firmware's wall-clock local and share the conversion. Everything the
+/// merge emits is offset-stripped unix-local — the shape libgpod's write
+/// boundary and itl-sync's host write both expect.
+pub fn merge_stats(pairs: &[StatPair], tz_offset_seconds: i32) -> StatMerge {
     let mut merge = StatMerge::default();
     for pair in pairs {
         if pair.pending.rating_entries > 0 {
@@ -98,12 +112,15 @@ pub fn merge_stats(pairs: &[StatPair]) -> StatMerge {
         let merged_plays = baseline_plays.saturating_add(pair.pending.plays);
         let merged_skips = baseline_skips.saturating_add(pair.pending.skips);
 
-        // Play date: newest in unix-local space; the pending entries are
-        // Mac-epoch, the same wall clock minus the fixed epoch delta.
-        let host_played_unix = i64::from(pair.host.play_date_raw) - APPLE_UNIX_DELTA;
+        // Play date: newest in unix-local space; the host raw value and
+        // the pending-store mac times are wall-clock local (Apple epoch +
+        // the envelope offset), the device value is libgpod's converted
+        // unix-local — the offset strips the first two to the same space.
+        let host_played_unix =
+            i64::from(pair.host.play_date_raw) - APPLE_UNIX_DELTA - i64::from(tz_offset_seconds);
         let mut newest = host_played_unix.max(pair.device.time_played);
         if let Some(mac) = pair.pending.played_at_mac {
-            newest = newest.max(i64::from(mac) - APPLE_UNIX_DELTA);
+            newest = newest.max(i64::from(mac) - APPLE_UNIX_DELTA - i64::from(tz_offset_seconds));
         }
 
         let host_patch = HostStatPatch {
@@ -185,16 +202,19 @@ mod tests {
 
     #[test]
     fn pending_plays_are_added_and_baseline_reset() {
-        let merge = merge_stats(&[pair(
-            1,
-            0xA1,
-            host_stats(80, 100, 10, 0),
-            device_track(102, 100, 10, 0, 80),
-            PendingTotals {
-                plays: 2,
-                ..Default::default()
-            },
-        )]);
+        let merge = merge_stats(
+            &[pair(
+                1,
+                0xA1,
+                host_stats(80, 100, 10, 0),
+                device_track(102, 100, 10, 0, 80),
+                PendingTotals {
+                    plays: 2,
+                    ..Default::default()
+                },
+            )],
+            0,
+        );
         assert_eq!(merge.diagnostics.len(), 0);
         assert_eq!(merge.host_patches.len(), 1);
         assert_eq!(merge.host_patches[0].play_count, Some(102));
@@ -210,16 +230,19 @@ mod tests {
     #[test]
     fn host_plays_and_pending_plays_sum() {
         // Host advanced 100→103 in Rufin; two pending device plays.
-        let merge = merge_stats(&[pair(
-            1,
-            0xA1,
-            host_stats(80, 103, 0, 0),
-            device_track(102, 100, 0, 0, 80),
-            PendingTotals {
-                plays: 2,
-                ..Default::default()
-            },
-        )]);
+        let merge = merge_stats(
+            &[pair(
+                1,
+                0xA1,
+                host_stats(80, 103, 0, 0),
+                device_track(102, 100, 0, 0, 80),
+                PendingTotals {
+                    plays: 2,
+                    ..Default::default()
+                },
+            )],
+            0,
+        );
         assert_eq!(merge.host_patches[0].play_count, Some(105));
         assert_eq!(merge.device_patches[0].playcount, 105);
     }
@@ -229,13 +252,16 @@ mod tests {
         // The device holds more than the host even without pending plays
         // (e.g. an iTunes sync the host never saw): the device total is
         // truth and the host catches up; the device itself needs no write.
-        let merge = merge_stats(&[pair(
-            1,
-            0xA1,
-            host_stats(80, 90, 0, 0),
-            device_track(100, 100, 0, 0, 80),
-            PendingTotals::default(),
-        )]);
+        let merge = merge_stats(
+            &[pair(
+                1,
+                0xA1,
+                host_stats(80, 90, 0, 0),
+                device_track(100, 100, 0, 0, 80),
+                PendingTotals::default(),
+            )],
+            0,
+        );
         assert_eq!(merge.host_patches[0].play_count, Some(100));
         assert!(
             merge.device_patches.is_empty(),
@@ -249,16 +275,19 @@ mod tests {
         // delta participates exactly once even though the observed total
         // (108) already includes it — and the device already holds 108,
         // so only the host moves.
-        let merge = merge_stats(&[pair(
-            1,
-            0xA1,
-            host_stats(80, 100, 0, 0),
-            device_track(108, 105, 0, 0, 80),
-            PendingTotals {
-                plays: 3,
-                ..Default::default()
-            },
-        )]);
+        let merge = merge_stats(
+            &[pair(
+                1,
+                0xA1,
+                host_stats(80, 100, 0, 0),
+                device_track(108, 105, 0, 0, 80),
+                PendingTotals {
+                    plays: 3,
+                    ..Default::default()
+                },
+            )],
+            0,
+        );
         assert_eq!(merge.host_patches[0].play_count, Some(108));
         // The device already holds the merged playcount, but its baseline
         // (playcount2 = 105) must reset to the merged total — that IS the
@@ -270,16 +299,19 @@ mod tests {
 
     #[test]
     fn skips_are_additive_too() {
-        let merge = merge_stats(&[pair(
-            1,
-            0xA1,
-            host_stats(80, 10, 5, 0),
-            device_track(10, 10, 8, 0, 80),
-            PendingTotals {
-                skips: 3,
-                ..Default::default()
-            },
-        )]);
+        let merge = merge_stats(
+            &[pair(
+                1,
+                0xA1,
+                host_stats(80, 10, 5, 0),
+                device_track(10, 10, 8, 0, 80),
+                PendingTotals {
+                    skips: 3,
+                    ..Default::default()
+                },
+            )],
+            0,
+        );
         assert_eq!(merge.host_patches[0].skip_count, Some(8));
         assert!(
             merge.device_patches.is_empty(),
@@ -290,59 +322,71 @@ mod tests {
     #[test]
     fn play_date_newest_wins_in_all_directions() {
         let raw = |unix: i64| (unix + APPLE_UNIX_DELTA) as u32;
-        let host_newer = merge_stats(&[pair(
-            1,
-            0xA1,
-            host_stats(80, 0, 0, raw(500)),
-            device_track(0, 0, 0, 400, 80),
-            PendingTotals::default(),
-        )]);
+        let host_newer = merge_stats(
+            &[pair(
+                1,
+                0xA1,
+                host_stats(80, 0, 0, raw(500)),
+                device_track(0, 0, 0, 400, 80),
+                PendingTotals::default(),
+            )],
+            0,
+        );
         assert_eq!(host_newer.host_patches[0].play_date_unix, None);
         assert_eq!(
             host_newer.device_patches[0].time_played, 500,
             "device gets the host date"
         );
 
-        let device_newer = merge_stats(&[pair(
-            1,
-            0xA1,
-            host_stats(80, 0, 0, 0),
-            device_track(0, 0, 0, 600, 80),
-            PendingTotals::default(),
-        )]);
+        let device_newer = merge_stats(
+            &[pair(
+                1,
+                0xA1,
+                host_stats(80, 0, 0, 0),
+                device_track(0, 0, 0, 600, 80),
+                PendingTotals::default(),
+            )],
+            0,
+        );
         assert_eq!(device_newer.host_patches[0].play_date_unix, Some(600));
         assert!(
             device_newer.device_patches.is_empty(),
             "the device already holds the newest date"
         );
 
-        let pending_newest = merge_stats(&[pair(
-            1,
-            0xA1,
-            host_stats(80, 0, 0, 0),
-            device_track(0, 0, 0, 0, 80),
-            PendingTotals {
-                plays: 1,
-                played_at_mac: Some(raw(700)),
-                ..Default::default()
-            },
-        )]);
+        let pending_newest = merge_stats(
+            &[pair(
+                1,
+                0xA1,
+                host_stats(80, 0, 0, 0),
+                device_track(0, 0, 0, 0, 80),
+                PendingTotals {
+                    plays: 1,
+                    played_at_mac: Some(raw(700)),
+                    ..Default::default()
+                },
+            )],
+            0,
+        );
         assert_eq!(pending_newest.host_patches[0].play_date_unix, Some(700));
         assert_eq!(pending_newest.device_patches[0].time_played, 700);
     }
 
     #[test]
     fn rating_is_host_wins_and_pending_ratings_are_diagnosed() {
-        let merge = merge_stats(&[pair(
-            1,
-            0xA1,
-            host_stats(40, 0, 0, 0),
-            device_track(0, 0, 0, 0, 100),
-            PendingTotals {
-                rating_entries: 2,
-                ..Default::default()
-            },
-        )]);
+        let merge = merge_stats(
+            &[pair(
+                1,
+                0xA1,
+                host_stats(40, 0, 0, 0),
+                device_track(0, 0, 0, 0, 100),
+                PendingTotals {
+                    rating_entries: 2,
+                    ..Default::default()
+                },
+            )],
+            0,
+        );
         assert_eq!(
             merge.host_patches[0].play_count, None,
             "rating never patches the host"
@@ -355,13 +399,16 @@ mod tests {
     #[test]
     fn an_already_merged_pair_is_a_no_op() {
         let raw = |unix: i64| (unix + APPLE_UNIX_DELTA) as u32;
-        let merge = merge_stats(&[pair(
-            1,
-            0xA1,
-            host_stats(80, 100, 10, raw(100)),
-            device_track(100, 100, 10, 100, 80),
-            PendingTotals::default(),
-        )]);
+        let merge = merge_stats(
+            &[pair(
+                1,
+                0xA1,
+                host_stats(80, 100, 10, raw(100)),
+                device_track(100, 100, 10, 100, 80),
+                PendingTotals::default(),
+            )],
+            0,
+        );
         assert!(merge.host_patches[0].play_count.is_none());
         assert!(merge.host_patches[0].skip_count.is_none());
         assert!(merge.host_patches[0].play_date_unix.is_none());
@@ -373,17 +420,77 @@ mod tests {
     }
 
     #[test]
+    fn the_envelope_tz_offset_strips_from_the_host_play_date() {
+        // The B-017 step-0 finding: the raw `.itl` play date is wall-clock
+        // local (Apple epoch + the envelope offset). Without stripping the
+        // offset, the value handed to libgpod carries +3h, libgpod adds
+        // the pod's own +3h at the write boundary, and every re-read
+        // lands 3 hours ahead.
+        let tz = 3 * 3600;
+        let raw = |unix: i64| (unix + APPLE_UNIX_DELTA + i64::from(tz)) as u32;
+        let host_newer = merge_stats(
+            &[pair(
+                1,
+                0xA1,
+                host_stats(80, 0, 0, raw(500)),
+                device_track(0, 0, 0, 400, 80),
+                PendingTotals::default(),
+            )],
+            tz,
+        );
+        assert_eq!(
+            host_newer.device_patches[0].time_played, 500,
+            "the device patch is offset-stripped unix, not local wall clock"
+        );
+
+        // An in-sync pair under the offset is a no-op on both sides.
+        let merged = merge_stats(
+            &[pair(
+                1,
+                0xA1,
+                host_stats(80, 100, 10, raw(100)),
+                device_track(100, 100, 10, 100, 80),
+                PendingTotals::default(),
+            )],
+            tz,
+        );
+        assert!(merged.host_patches[0].play_date_unix.is_none());
+        assert!(merged.device_patches.is_empty());
+
+        // Pending-store mac times share the conversion.
+        let pending = merge_stats(
+            &[pair(
+                1,
+                0xA1,
+                host_stats(80, 0, 0, 0),
+                device_track(0, 0, 0, 0, 80),
+                PendingTotals {
+                    plays: 1,
+                    played_at_mac: Some(raw(700)),
+                    ..Default::default()
+                },
+            )],
+            tz,
+        );
+        assert_eq!(pending.device_patches[0].time_played, 700);
+        assert_eq!(pending.host_patches[0].play_date_unix, Some(700));
+    }
+
+    #[test]
     fn saturation_never_wraps() {
-        let merge = merge_stats(&[pair(
-            1,
-            0xA1,
-            host_stats(80, u32::MAX, 0, 0),
-            device_track(u32::MAX - 1, u32::MAX - 1, 0, 0, 80),
-            PendingTotals {
-                plays: 5,
-                ..Default::default()
-            },
-        )]);
+        let merge = merge_stats(
+            &[pair(
+                1,
+                0xA1,
+                host_stats(80, u32::MAX, 0, 0),
+                device_track(u32::MAX - 1, u32::MAX - 1, 0, 0, 80),
+                PendingTotals {
+                    plays: 5,
+                    ..Default::default()
+                },
+            )],
+            0,
+        );
         assert_eq!(
             merge.host_patches[0].play_count, None,
             "the host is already at the saturated maximum"
