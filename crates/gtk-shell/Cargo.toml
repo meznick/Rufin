@@ -10,6 +10,13 @@ repository.workspace = true
 readme.workspace = true
 publish.workspace = true
 
+[features]
+# Forwards the ipod crate's write-surface gate (b017_plan §4, step 0):
+# `cargo build -p rufin -F gtk-shell/sync-writes` compiles the whole
+# graph with real device writes enabled. Stays opt-in until B-017's
+# gate flip (D-3) makes it default-on.
+sync-writes = ["ipod/sync-writes"]
+
 [dependencies]
 gtk-preferences.workspace = true
 web.workspace = true
