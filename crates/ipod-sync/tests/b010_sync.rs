@@ -343,6 +343,23 @@ fn sync_pair_gate() {
     // The dry run excludes PDF booklets from `file_adds` entirely
     // (b015_fixes F4) — the executor copies every planned add.
     let expected_adds = plan.file_adds.len();
+    // Host media is read-only input: every add source must be
+    // byte-identical after the sync — the B-017 step-0 incident deleted
+    // two live library files (the old cleanup ran `remove_file` on the
+    // host source for direct copies). This pin makes that impossible to
+    // regress silently.
+    let add_sources: Vec<(PathBuf, Vec<u8>)> = plan
+        .file_adds
+        .iter()
+        .map(|add| {
+            (
+                add.host_path.clone(),
+                std::fs::read(&add.host_path).unwrap_or_else(|error| {
+                    panic!("add source unreadable ({:?}): {error}", add.host_path)
+                }),
+            )
+        })
+        .collect();
     let options = gate_options();
     let host_write = HostWriteContext {
         library_path: itl_copy.clone(),
@@ -380,6 +397,14 @@ fn sync_pair_gate() {
         "all adds minus the PDF booklets: {:?}",
         result.diagnostics
     );
+    for (path, before) in &add_sources {
+        assert_eq!(
+            std::fs::read(path).unwrap(),
+            *before,
+            "the sync must never modify host media ({})",
+            path.display()
+        );
+    }
     assert_eq!(
         result.recovery, None,
         "a completed run holds no pending recovery"

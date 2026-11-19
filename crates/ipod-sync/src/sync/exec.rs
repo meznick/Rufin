@@ -736,23 +736,34 @@ fn apply_device_ops(
             .map_err(|error| {
                 sync_err(STEP_FILE_OPS, format!("create_track {}: {error}", add.pid))
             })?;
-        let source: PathBuf = if decision.mode == FileWriteMode::TranscodeToAac256 {
-            let staging_root =
-                crate::sync::transcode::staging_root(&std::env::temp_dir(), ctx.device_identity);
-            crate::sync::transcode::create_staging_dir(&staging_root)
-                .map_err(|error| sync_err(STEP_FILE_OPS, format!("staging: {error}")))?;
-            let staged = crate::sync::transcode::staging_path_for(&staging_root, add.pid);
-            (ctx.transcode)(&add.host_path, &staged).map_err(|error| {
-                sync_err(STEP_FILE_OPS, format!("transcode {}: {error}", add.pid))
-            })?;
-            staged
-        } else {
-            add.host_path.clone()
+        // Transcode adds stage into /tmp and the staging file is
+        // disposable; direct copies read the host file itself — which is
+        // NEVER deleted (the B-017 step-0 incident: the old cleanup ran
+        // `remove_file` on the host source for direct copies and deleted
+        // two live library files).
+        let staged: Option<PathBuf> = match decision.mode {
+            FileWriteMode::TranscodeToAac256 => {
+                let staging_root = crate::sync::transcode::staging_root(
+                    &std::env::temp_dir(),
+                    ctx.device_identity,
+                );
+                crate::sync::transcode::create_staging_dir(&staging_root)
+                    .map_err(|error| sync_err(STEP_FILE_OPS, format!("staging: {error}")))?;
+                let path = crate::sync::transcode::staging_path_for(&staging_root, add.pid);
+                (ctx.transcode)(&add.host_path, &path).map_err(|error| {
+                    sync_err(STEP_FILE_OPS, format!("transcode {}: {error}", add.pid))
+                })?;
+                Some(path)
+            }
+            _ => None,
         };
+        let source = staged.as_deref().unwrap_or(&add.host_path);
         session
-            .copy_track(dbid, &source)
+            .copy_track(dbid, source)
             .map_err(|error| sync_err(STEP_FILE_OPS, format!("copy {}: {error}", add.pid)))?;
-        let _ = std::fs::remove_file(&source);
+        if let Some(staged) = &staged {
+            let _ = std::fs::remove_file(staged);
+        }
         outcome.changes.files_added += 1;
     }
 
