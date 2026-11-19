@@ -344,9 +344,13 @@ pub fn capacity_fraction(device: &DeviceInfo) -> Option<f64> {
 pub fn support_warning(device: &DeviceInfo) -> Option<&'static str> {
     if !device.model_supported {
         Some(msgid(
-            "This model is not in the supported set (Video 5/5.5G, Classic 6/7G).",
+            "This model is not in the supported set (Video 5/5.5G).",
         ))
     } else if !device.checksum_possible {
+        // Dormant while the supported set is Video-only (B-017 D-1):
+        // Video never needs a checksum, and unsupported models take the
+        // arm above. Becomes reachable the day a Classic re-opens the
+        // set.
         Some(msgid(
             "No FireWire ID — the device database checksum cannot be generated for this Classic.",
         ))
@@ -1006,7 +1010,7 @@ mod tests {
         assert_eq!(
             support_warning(&unsupported),
             Some(msgid(
-                "This model is not in the supported set (Video 5/5.5G, Classic 6/7G)."
+                "This model is not in the supported set (Video 5/5.5G)."
             ))
         );
 

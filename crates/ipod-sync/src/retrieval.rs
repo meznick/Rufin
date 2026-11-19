@@ -100,11 +100,12 @@ pub struct DeviceFacts {
     /// The device serial (`SysInfo` `SerialNumber` key), when present.
     /// Display-only (B-014); absent when `SysInfo` has no such entry.
     pub serial_number: Option<String>,
-    /// Whether the resolved model is inside the supported set
-    /// (Video 5/5.5G, Classic 6/6.5/7G — the B-001 scope). `false` for an
-    /// unresolved or out-of-scope model. Informational, never a refusal:
-    /// the 2026-11-10 model policy (b006 delta decision 12) gates sync
-    /// functions in the UI.
+    /// Whether the resolved model is inside the supported set — the Video
+    /// family only (5g/5.5g, B-017 D-1: accepted on the owner's 5.5g;
+    /// Video 1 by format-family proximity; Classics unverified until a
+    /// device re-opens the set). `false` for an unresolved or out-of-scope
+    /// model. Informational, never a refusal: the 2026-11-10 model policy
+    /// (b006 delta decision 12) gates sync functions in the UI.
     pub model_supported: bool,
     /// Whether the database checksum can be generated: Video needs none,
     /// Classic requires its FireWire GUID. `false` limits write sync;

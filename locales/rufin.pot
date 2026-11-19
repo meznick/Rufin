@@ -4191,7 +4191,7 @@ msgstr ""
 msgid "This isn't available"
 msgstr ""
 
-msgid "This model is not in the supported set (Video 5/5.5G, Classic 6/7G)."
+msgid "This model is not in the supported set (Video 5/5.5G)."
 msgstr ""
 
 #, rust-format

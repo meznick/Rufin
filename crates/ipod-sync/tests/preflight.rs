@@ -179,17 +179,22 @@ fn fresh_video_fixture_passes() {
 }
 
 /// A fresh Classic fixture without SysInfoExtended: preflight passes (the
-/// model policy) and the verdict marks the write path limited — no
-/// FireWire GUID means the HASH58 checksum cannot be generated.
+/// model policy) and the verdict marks the model unsupported (B-017 D-1 —
+/// Classics are unverified until a device re-opens the set) with the
+/// checksum also limited — no FireWire GUID means the HASH58 checksum
+/// cannot be generated.
 #[test]
-fn classic_without_firewire_passes_with_limited_checksum() {
+fn classic_without_firewire_is_unsupported_with_limited_checksum() {
     let Some(backend) = backend_or_skip() else {
         return;
     };
     let dir = fixture(&backend, "MB029");
     preflight(&backend, dir.path()).unwrap();
     let facts = facts(&backend, dir.path());
-    assert!(facts.model_supported, "Classic is inside the supported set");
+    assert!(
+        !facts.model_supported,
+        "Classic is outside the supported set until B-017 reopens it"
+    );
     assert!(
         !facts.checksum_possible,
         "the checksum verdict must be false without the GUID"
@@ -197,9 +202,11 @@ fn classic_without_firewire_passes_with_limited_checksum() {
 }
 
 /// The same Classic with a SysInfoExtended plist (Classic serial + FireWire
-/// GUID): the checksum verdict recovers.
+/// GUID): still unsupported per D-1, but the checksum verdict recovers —
+/// the FireWire requirement stays modeled for the day a Classic re-opens
+/// the set.
 #[test]
-fn classic_with_firewire_passes_with_full_checksum() {
+fn classic_with_firewire_is_unsupported_with_full_checksum() {
     let Some(backend) = backend_or_skip() else {
         return;
     };
@@ -207,7 +214,7 @@ fn classic_with_firewire_passes_with_full_checksum() {
     seed_classic_sysinfo_extended(dir.path(), "YM6312345Y5N", "000A27001DB3C2D6");
     preflight(&backend, dir.path()).unwrap();
     let facts = facts(&backend, dir.path());
-    assert!(facts.model_supported);
+    assert!(!facts.model_supported);
     assert!(facts.checksum_possible, "the GUID enables the checksum");
 }
 
@@ -234,7 +241,7 @@ fn unknown_model_passes_with_limited_verdicts() {
     assert_eq!(facts.model, "", "no fabricated model name");
 }
 
-/// A Nano fixture (MA350 → Nano 1G): outside the Video/Classic scope —
+/// A Nano fixture (MA350 → Nano 1G): outside the supported Video scope —
 /// preflight passes under the model policy, the verdict marks it
 /// unsupported for the UI to gate on.
 #[test]
