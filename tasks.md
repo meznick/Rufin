@@ -124,9 +124,10 @@ Tasks are listed in dependency order; IDs stay stable, so B-007 precedes discove
   - Depends on: B-013
 - [ ] **B-015: Implement Sync button with Dry Run checkbox**
   - Spec reference: R-04, S-07, S-08, S-11
-  - Plan reference: Phase 3
+  - Plan reference: Phase 3, `deltas/b015_plan.md`, fixes in `deltas/b015_fixes.md`
   - Verification: Sync is disabled outside Ready, readiness is rechecked before writes, and Dry Run is available and nonmutating in dev builds only — release builds omit the option (S-08 MODIFIED, owner 2026-11-17, `deltas/b015_delta.md`).
   - Depends on: B-014
+  - Result (2026-11-19, ветка `feature/ipod-page-task-B-015-fixes`): UI-приёмка закрыла три раунда правок (закреплённая нижняя панель, dry-run ревью без пути выполнения, видимые причины ошибок в результате и консоли). Диагностика живой пары после реального iTunes-синка доказала идеальную идентичность (3382/3382 dbid↔PID, 0 device-only, 8/8 device-id плейлистов = XML playlist pid) и разложила «большой дифф» на пять причин — F1–F6 закрыты (append-only обложки, fill-down рейтингов, скипы вне действий, PDF вне adds, исключение встроенных плейлистов по `miph` @0x239 через itl-core 0.1.2, диагностики в ревью). Ожидаемое ревью: 2 adds (Die Antwoord), 1 update (Хай рейт), 0 остального; живая приёмка и FF в `feature/ipod-page` — при подключённом плеере.
 - [ ] **B-016: Connect UI state to DeviceManager**
   - Spec reference: R-02, S-05, R-04, S-09, S-10, S-12, R-05, S-13
   - Plan reference: Phase 3, Connection FSM
