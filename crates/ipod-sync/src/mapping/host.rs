@@ -170,11 +170,31 @@ pub fn effective_rating(track_rating: u8, album_rating: Option<u8>) -> u8 {
 /// device tracks, so every comparison must use the filled-down value
 /// or a host-wins rating push would wipe device ratings. The raw value
 /// is never written back anywhere.
+///
+/// **Explicit-only** (VERIFIED on the live pair, 2026-11-19): iTunes
+/// materializes the album rating onto device tracks only when the
+/// album rating is explicit (`miah` flag 0x01) — computed album
+/// ratings (0x20) never reach the device (236/236 explicit matches,
+/// 540/540 computed non-materialized). Computed albums therefore
+/// fill down to 0 here, mirroring the device exactly.
+///
+/// Albums are keyed by the lowercase (name, album artist) pair — the
+/// `mith` album id is absent on most tracks and `album_persistent_id`
+/// reads the date-added bytes, so the string pair is the only usable
+/// identity (the sources catalog groups the same way).
 pub fn host_tracks(itl: &ItlFile, mapping: &MediaMapping, library_pid: u64) -> Vec<HostTrack> {
-    let album_ratings: std::collections::HashMap<u64, u8> = itl
+    let album_ratings: std::collections::HashMap<(String, String), (u8, u8)> = itl
         .albums()
         .iter()
-        .map(|album| (album.persistent_id(), album.rating()))
+        .filter_map(|album| {
+            Some((
+                (
+                    album.name()?.to_lowercase(),
+                    album.album_artist()?.to_lowercase(),
+                ),
+                (album.rating(), album.rating_flags()),
+            ))
+        })
         .collect();
     itl_sync::survey::unique_tracks(itl)
         .into_iter()
@@ -217,7 +237,17 @@ pub fn host_tracks(itl: &ItlFile, mapping: &MediaMapping, library_pid: u64) -> V
                 stats: HostStats {
                     rating: effective_rating(
                         track.rating(),
-                        album_ratings.get(&track.album_persistent_id()).copied(),
+                        track.album().and_then(|name| {
+                            let artist = track
+                                .album_artist()
+                                .or_else(|| track.artist())
+                                .unwrap_or("");
+                            let (rating, flags) =
+                                album_ratings.get(&(name.to_lowercase(), artist.to_lowercase()))?;
+                            // Explicit album ratings only — computed
+                            // (0x20) never materialize on the device.
+                            (flags & 0x01 != 0).then_some(*rating)
+                        }),
                     ),
                     play_count: track.play_count(),
                     skip_count: track.skip_count(),
