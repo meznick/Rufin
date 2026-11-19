@@ -81,20 +81,20 @@ track with explicit rating unaffected; no-album track stays 0.
 `dry_run/compute.rs` `stat_diffs`: drop the `SkipCount` arm — a
 skip diff is never a stat patch (the merge already never writes
 skips; the device→host import rides `Play Counts`, not this report).
-One diagnostic line when host-side skips exist ("N skip-count
-differences are host-side only — iTunes never pushes skips to the
-device"). `StatField::SkipCount` / `StatCounts.skip_count` remain in
-the model for compatibility; `review_summary` never counted them into
-`stat_updates` again. Tests: the `stat_diffs_cover_all_fields` gate
-drops SkipCount; a new gate pins skip-diff emission off.
+Silent — no diagnostic, no count (owner review 2026-11-19: the
+exclusion is routine, not a finding). `StatField::SkipCount` /
+`StatCounts.skip_count` remain in the model for compatibility;
+`review_summary` never counts them into `stat_updates`. Tests: the
+`stat_diffs_cover_all_fields` gate drops SkipCount; a new gate pins
+skip-diff emission off.
 
 ### F4 — PDF booklets leave the adds count
 
 `dry_run/compute.rs` `MissingOnDevice` arm: host file with extension
-`pdf` → diagnostic ("PDF booklet — iTunes never copies it"), never a
-`FileAdd`. Mirrors `transcode.rs` `NeverCopy` so the review and the
-executor finally agree (4 → 2 on the live pair). Test: fixture booklet
-adds a diagnostic, not an add.
+`pdf` is silently skipped — never a `FileAdd` (owner review: no text,
+just don't count them). Mirrors `transcode.rs` `NeverCopy` so the
+review and the executor agree (4 → 2 on the live pair). Test: fixture
+booklet adds nothing, no add.
 
 ### F5 — built-in playlists never become creates (owner: host trash)
 
@@ -106,8 +106,9 @@ adds a diagnostic, not an add.
 - `mapping/host.rs`: `HostPlaylist` gains `distinguished_kind`.
 - `dry_run/compute.rs`: a `MissingOnDevice` playlist with
   `distinguished_kind` in the built-in set {2,3,4,5,7,10,26,47,48,64,
-  65,66,67}, or with zero members, is skipped with a diagnostic —
-  never a `PlaylistCreate`. **Kept:** `19` (Purchased Music — the
+  65,66,67}, or with zero members, is silently skipped — never a
+  `PlaylistCreate` (owner review 2026-11-19: no per-playlist notes,
+  just exclude). **Kept:** `19` (Purchased Music — the
   owner's Покупки is deliberately synced to the pod) and the owner's
   own smart playlists (kind 0).
 - Matching and device-only classification use the **full** host list,
