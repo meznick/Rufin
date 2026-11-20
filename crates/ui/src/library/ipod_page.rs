@@ -12,8 +12,10 @@
 //! (the S-06 info box + the greyed Параметры box), and the bottom bar
 //! (storage + Sync). B-015 makes the Sync real: the pure
 //! [`sync_controls`] gating, the Dry Run checkbox (dev builds — the
-//! S-08 delta), and the [`IpodSyncService`] behind the review/result
-//! dialogs (b015_plan §3.2–3.4).
+//! S-08 delta), and the [`IpodSyncService`] behind the page's sync
+//! sheet (b015_plan §3.2–3.4): one morphing card above the bottom bar
+//! that shows the review diff, the running progress, and the result —
+//! the B-016 design that replaced the review/result dialogs.
 //!
 //! All state logic lives in the pure [`decide`] — display-free testable.
 //! No test in this workspace constructs GTK widgets (class init asserts
@@ -74,6 +76,22 @@ gtk_widgets::composite_box!(
         dry_run_check: gtk::CheckButton,
         running_spinner: gtk::Spinner,
         sync_button: gtk::Button,
+        sync_sheet_revealer: gtk::Revealer,
+        sync_sheet_header: gtk::Box,
+        sync_sheet_spinner: gtk::Spinner,
+        sync_sheet_heading: gtk::Label,
+        sync_sheet_summary: gtk::Label,
+        sync_sheet_running: gtk::Box,
+        sync_sheet_action: gtk::Label,
+        sync_progress_bar: gtk::ProgressBar,
+        sync_step_label: gtk::Label,
+        sync_step_fraction: gtk::Label,
+        sync_sheet_body_scroll: gtk::ScrolledWindow,
+        sync_sheet_body: gtk::Box,
+        sync_sheet_footer: gtk::Box,
+        sync_sheet_cancel: gtk::Button,
+        sync_sheet_apply: gtk::Button,
+        sync_sheet_close: gtk::Button,
         error_heading: gtk::Label,
         error_diagnostic: gtk::Label,
         error_retry_button: gtk::Button,
@@ -569,39 +587,30 @@ impl IpodPageView {
         }
     }
 }
-
-/// The dialog body for a reviewed dry run — plain lines, the pure
-/// [`ReviewSummary`] counts composed with the translatable templates.
-fn review_body(summary: &crate::ipod_sync_service::ReviewSummary) -> String {
+/// The review sheet's one-line summary — the counts joined with the
+/// capacity verdict (the widget layer translates; the pure counts live
+/// in the service).
+fn review_summary_line(summary: &crate::ipod_sync_service::ReviewSummary) -> String {
     if summary.nothing_to_do {
         return tr(msgid(
             "Nothing to sync — the device already matches the library.",
         ));
     }
-    let mut lines = Vec::new();
+    let mut parts = Vec::new();
     let mut push = |template: &str, count: usize| {
         if count > 0 {
-            lines.push(tr_with(template, &[("count", &count.to_string())]));
+            parts.push(tr_with(template, &[("count", &count.to_string())]));
         }
     };
-    push("{count} files to add", summary.files_added);
-    push("{count} files to repair", summary.files_repaired);
-    push("{count} files to remove", summary.files_removed);
-    push("{count} playlists to create", summary.playlists_created);
+    push("{count} tracks to add", summary.files_added);
+    push("{count} tracks to update", summary.stat_updates as usize);
     push("{count} playlists to update", summary.playlists_updated);
+    push("{count} playlists to create", summary.playlists_created);
     push("{count} playlists to remove", summary.playlists_removed);
-    push("{count} covers to add", summary.artwork_adds);
-    // No "covers to remove" line — artwork is append-only (decision
-    // #6, b015_fixes F1): the report never plans a cover removal.
-    if summary.stat_updates > 0 {
-        lines.push(tr_with(
-            "{count} statistic updates",
-            &[("count", &summary.stat_updates.to_string())],
-        ));
-    }
-    if !summary.would_fit {
-        lines.push(tr_with(
-            "Needs {estimate} — only {free} free",
+    push("{count} tracks to remove", summary.files_removed);
+    let verdict = if summary.would_fit {
+        tr_with(
+            "Fits — uses ~{estimate} of {free} free",
             &[
                 (
                     "estimate",
@@ -609,106 +618,518 @@ fn review_body(summary: &crate::ipod_sync_service::ReviewSummary) -> String {
                 ),
                 ("free", &unit_gb_text(&format_gb(summary.free_bytes))),
             ],
-        ));
-    }
-    // The report's own findings, verbatim (the B-013 convention) — a
-    // phantom diff names its own reason instead of asking for a
-    // diagnosis session (b015_fixes F6).
-    for diagnostic in &summary.diagnostics {
-        lines.push(diagnostic.clone());
-    }
-    lines.join("\n")
+        )
+    } else {
+        tr_with(
+            "Does not fit — needs {estimate}, only {free} free",
+            &[
+                (
+                    "estimate",
+                    &unit_gb_text(&format_gb(summary.estimate_bytes)),
+                ),
+                ("free", &unit_gb_text(&format_gb(summary.free_bytes))),
+            ],
+        )
+    };
+    parts.push(verdict);
+    parts.join(" · ")
 }
 
-/// The review dialog (dev builds): for a dry run it is the S-08
-/// deliverable — Close only, no approval path. For a real run it offers
-/// Sync (approve the reviewed plan) and Close (discard) — b015_plan
-/// §3.4.
-fn present_review_dialog(
+/// Clear every child of a dynamically-filled box.
+fn clear_box(box_: &gtk::Box) {
+    while let Some(child) = box_.first_child() {
+        box_.remove(&child);
+    }
+}
+
+/// The initials tile's two glyphs from a title.
+fn initials(title: &str) -> String {
+    title
+        .split_whitespace()
+        .filter_map(|word| word.chars().next())
+        .take(2)
+        .collect::<String>()
+        .to_uppercase()
+}
+
+fn subtitle_line(artist: &str, album: &str) -> String {
+    match (artist.is_empty(), album.is_empty()) {
+        (false, false) => format!("{artist} · {album}"),
+        (false, true) => artist.to_string(),
+        (true, false) => album.to_string(),
+        (true, true) => String::new(),
+    }
+}
+
+/// One decimal megabyte, the diff rows' size unit.
+fn format_mb(bytes: u64) -> String {
+    format!("{:.1} MB", bytes as f64 / 1_000_000.0)
+}
+
+/// One diff row: initials tile, title over artist · album, the
+/// right-aligned size or transcode chip.
+fn diff_track_row(track: &crate::ipod_sync_service::DiffTrack) -> gtk::Widget {
+    let row = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+    row.add_css_class("ipod-diff-row");
+
+    let tile = gtk::Label::new(Some(&initials(&track.title)));
+    tile.add_css_class("ipod-diff-tile");
+    row.append(&tile);
+
+    let info = gtk::Box::new(gtk::Orientation::Vertical, 2);
+    info.set_hexpand(true);
+    let title = gtk::Label::new(Some(&track.title));
+    title.set_xalign(0.0);
+    title.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    title.set_single_line_mode(true);
+    info.append(&title);
+    let subtitle = subtitle_line(&track.artist, &track.album);
+    if !subtitle.is_empty() {
+        let label = gtk::Label::new(Some(&subtitle));
+        label.set_xalign(0.0);
+        label.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        label.set_single_line_mode(true);
+        label.add_css_class("muted");
+        info.append(&label);
+    }
+    row.append(&info);
+
+    if let Some(size) = track.size_bytes {
+        let size_label = gtk::Label::new(Some(&format_mb(size)));
+        size_label.add_css_class("muted");
+        row.append(&size_label);
+    } else if track.transcodes {
+        let chip = gtk::Label::new(Some(&tr(msgid("AAC 256"))));
+        chip.add_css_class("ipod-delta-chip");
+        row.append(&chip);
+    }
+    row.upcast()
+}
+
+/// One stat-update row: title/artist and a chip per changed field.
+fn stat_track_row(track: &crate::ipod_sync_service::StatTrack) -> gtk::Widget {
+    let row = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+    row.add_css_class("ipod-diff-row");
+
+    let info = gtk::Box::new(gtk::Orientation::Vertical, 2);
+    info.set_hexpand(true);
+    let title = gtk::Label::new(Some(&track.title));
+    title.set_xalign(0.0);
+    title.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    title.set_single_line_mode(true);
+    info.append(&title);
+    if !track.artist.is_empty() {
+        let artist = gtk::Label::new(Some(&track.artist));
+        artist.set_xalign(0.0);
+        artist.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        artist.set_single_line_mode(true);
+        artist.add_css_class("muted");
+        info.append(&artist);
+    }
+    row.append(&info);
+
+    let chips = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    chips.set_halign(gtk::Align::End);
+    for delta in &track.deltas {
+        let old = delta.device.to_string();
+        let new = delta.host.to_string();
+        let text = match delta.field {
+            ipod_sync::dry_run::StatField::Rating => {
+                tr_with("rating {old} → {new}", &[("old", &old), ("new", &new)])
+            }
+            ipod_sync::dry_run::StatField::PlayCount => {
+                tr_with("plays {old} → {new}", &[("old", &old), ("new", &new)])
+            }
+            ipod_sync::dry_run::StatField::SkipCount => {
+                tr_with("skips {old} → {new}", &[("old", &old), ("new", &new)])
+            }
+            ipod_sync::dry_run::StatField::PlayDate => tr(msgid("played date → newer")),
+            ipod_sync::dry_run::StatField::VolumeAdjustment => {
+                tr_with("volume {old} → {new}", &[("old", &old), ("new", &new)])
+            }
+        };
+        let chip = gtk::Label::new(Some(&text));
+        chip.add_css_class("ipod-delta-chip");
+        chips.append(&chip);
+    }
+    row.append(&chips);
+    row.upcast()
+}
+
+/// A diff section: an expander with a count chip and its rows.
+fn diff_section(title: &str, count: usize, rows: Vec<gtk::Widget>, collapsed: bool) -> gtk::Widget {
+    let expander = adw::ExpanderRow::builder()
+        .title(title)
+        .expanded(!collapsed)
+        .build();
+    let chip = gtk::Label::new(Some(&count.to_string()));
+    chip.add_css_class("ipod-count-chip");
+    expander.add_suffix(&chip);
+    for row in rows {
+        expander.add_row(&row);
+    }
+    expander.upcast()
+}
+
+/// A nested member line: a colored +/− prefix over the track name.
+fn member_row(
+    prefix: &str,
+    track: &crate::ipod_sync_service::DiffTrack,
+    class: &str,
+) -> gtk::Widget {
+    let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    row.add_css_class("ipod-sheet-member");
+    let sign = gtk::Label::new(Some(prefix));
+    sign.add_css_class(class);
+    row.append(&sign);
+    let name = gtk::Label::new(Some(&format!(
+        "{}{}",
+        track.title,
+        if track.artist.is_empty() {
+            String::new()
+        } else {
+            format!(" — {}", track.artist)
+        }
+    )));
+    name.set_xalign(0.0);
+    name.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    name.set_single_line_mode(true);
+    name.set_hexpand(true);
+    row.append(&name);
+    row.upcast()
+}
+
+/// One playlist diff row: the name, a delta chip, and the expandable
+/// member list. Deferred smart lists render a plain row with a chip.
+fn playlist_diff_row(playlist: &crate::ipod_sync_service::DiffPlaylist) -> gtk::Widget {
+    if playlist.deferred {
+        let row = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+        row.add_css_class("ipod-diff-row");
+        let name = gtk::Label::new(Some(&playlist.name));
+        name.set_xalign(0.0);
+        name.set_hexpand(true);
+        name.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        name.set_single_line_mode(true);
+        row.append(&name);
+        let chip = gtk::Label::new(Some(&tr(msgid("deferred"))));
+        chip.add_css_class("ipod-delta-chip");
+        row.append(&chip);
+        return row.upcast();
+    }
+
+    let expander = adw::ExpanderRow::builder()
+        .title(&playlist.name)
+        .expanded(true)
+        .build();
+    let mut delta = String::new();
+    if !playlist.adds.is_empty() {
+        delta.push_str(&tr_with(
+            "+{count}",
+            &[("count", &playlist.adds.len().to_string())],
+        ));
+    }
+    if !playlist.removes.is_empty() {
+        if !delta.is_empty() {
+            delta.push(' ');
+        }
+        delta.push_str(&tr_with(
+            "−{count}",
+            &[("count", &playlist.removes.len().to_string())],
+        ));
+    }
+    if playlist.reorder {
+        delta.push_str(&format!(" · {}", tr(msgid("order changed"))));
+    }
+    if !delta.is_empty() {
+        let chip = gtk::Label::new(Some(&delta));
+        chip.add_css_class("ipod-delta-chip");
+        expander.add_suffix(&chip);
+    }
+    for add in &playlist.adds {
+        expander.add_row(&member_row("+", add, "ipod-delta-add"));
+    }
+    for remove in &playlist.removes {
+        expander.add_row(&member_row("−", remove, "ipod-delta-rem"));
+    }
+    if playlist.reorder {
+        let note = gtk::Label::new(Some(&tr(msgid("Member order follows the library."))));
+        note.add_css_class("muted");
+        note.set_xalign(0.0);
+        expander.add_row(&note);
+    }
+    expander.upcast()
+}
+
+/// Fill the sheet body with the review sections (or the nothing-to-do
+/// line) and set the review footer buttons.
+fn render_review_sheet(
     view: &IpodPageView,
     summary: &crate::ipod_sync_service::ReviewSummary,
     dry_run: bool,
-    sync: &IpodSyncService,
 ) {
-    let dialog = adw::AlertDialog::builder()
-        .heading(tr(msgid("Sync review")))
-        .body(&review_body(summary))
-        .build();
-    if dry_run {
-        dialog.add_responses(&[("close", &tr(msgid("Close")))]);
+    let imp = view.imp();
+    imp.sync_sheet_heading.set_label(&tr(msgid("Sync review")));
+    imp.sync_sheet_summary
+        .set_label(&review_summary_line(summary));
+    if summary.would_fit {
+        imp.sync_sheet_summary.remove_css_class("error-text");
     } else {
-        dialog.add_responses(&[("close", &tr(msgid("Close"))), ("sync", &tr(msgid("Sync")))]);
+        imp.sync_sheet_summary.add_css_class("error-text");
     }
-    let sync = sync.clone();
-    let parent = view.root().and_downcast::<gtk::Window>();
-    glib::spawn_future_local(async move {
-        let response = dialog.choose_future(parent.as_ref()).await;
-        match response.as_str() {
-            "sync" => sync.approve(),
-            _ => sync.dismiss(),
+    imp.sync_sheet_summary.set_visible(true);
+    imp.sync_sheet_running.set_visible(false);
+    imp.sync_sheet_spinner.set_visible(false);
+
+    clear_box(&imp.sync_sheet_body);
+    if summary.nothing_to_do {
+        imp.sync_sheet_body_scroll.set_visible(false);
+    } else {
+        imp.sync_sheet_body_scroll.set_visible(true);
+        let details = &summary.details;
+        let mut sections: Vec<gtk::Widget> = Vec::new();
+        if !details.adds.is_empty() {
+            let rows = details.adds.iter().map(diff_track_row).collect();
+            sections.push(diff_section(
+                &tr(msgid("Add to device")),
+                details.adds.len(),
+                rows,
+                false,
+            ));
         }
-    });
+        if !details.updates.is_empty() {
+            let rows = details.updates.iter().map(stat_track_row).collect();
+            sections.push(diff_section(
+                &tr(msgid("Update on device")),
+                details.updates.len(),
+                rows,
+                false,
+            ));
+        }
+        if !details.playlists.is_empty() {
+            let rows = details.playlists.iter().map(playlist_diff_row).collect();
+            sections.push(diff_section(
+                &tr(msgid("Playlists")),
+                details.playlists.len(),
+                rows,
+                false,
+            ));
+        }
+        if !details.playlist_creates.is_empty() {
+            let rows = details
+                .playlist_creates
+                .iter()
+                .map(playlist_diff_row)
+                .collect();
+            sections.push(diff_section(
+                &tr(msgid("Playlists to create")),
+                details.playlist_creates.len(),
+                rows,
+                false,
+            ));
+        }
+        if !details.playlist_removes.is_empty() {
+            let rows = details
+                .playlist_removes
+                .iter()
+                .map(|name| {
+                    let label = gtk::Label::new(Some(name));
+                    label.set_xalign(0.0);
+                    let row = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+                    row.add_css_class("ipod-diff-row");
+                    row.append(&label);
+                    row.upcast()
+                })
+                .collect();
+            sections.push(diff_section(
+                &tr(msgid("Playlists to remove")),
+                details.playlist_removes.len(),
+                rows,
+                false,
+            ));
+        }
+        if !details.removals.is_empty() {
+            let rows = details.removals.iter().map(diff_track_row).collect();
+            sections.push(diff_section(
+                &tr(msgid("Remove from device")),
+                details.removals.len(),
+                rows,
+                false,
+            ));
+        }
+        if !details.findings.is_empty() {
+            let rows = details
+                .findings
+                .iter()
+                .map(|finding| {
+                    let label = gtk::Label::new(Some(finding));
+                    label.set_xalign(0.0);
+                    label.set_wrap(true);
+                    label.add_css_class("ipod-finding");
+                    label.upcast()
+                })
+                .collect();
+            sections.push(diff_section(
+                &tr(msgid("Findings")),
+                details.findings.len(),
+                rows,
+                details.findings.len() > 3,
+            ));
+        }
+        for section in sections {
+            imp.sync_sheet_body.append(&section);
+        }
+    }
+
+    // Footer: a dry run (the S-08 deliverable) and a nothing-to-do
+    // review offer Close only; a real review offers Cancel + Apply.
+    let closable = dry_run || summary.nothing_to_do;
+    imp.sync_sheet_close.set_visible(closable);
+    imp.sync_sheet_cancel.set_visible(!closable);
+    imp.sync_sheet_apply.set_visible(!closable);
 }
 
-/// The result dialog body: the engine outcome, its diagnostics verbatim
-/// (the B-013 convention).
-fn outcome_body(summary: &crate::ipod_sync_service::SyncOutcomeSummary) -> String {
-    let headline = match &summary.status {
-        ipod_sync::sync::report::SyncStatus::Completed => tr(msgid("Sync completed")),
-        ipod_sync::sync::report::SyncStatus::Partial { .. } => tr(msgid("Sync incomplete")),
-        ipod_sync::sync::report::SyncStatus::Failed { .. } => tr(msgid("Sync failed")),
-    };
-    let mut lines = vec![headline];
-    // The status's own diagnostic first — the reason must never hide
-    // behind the headline (the acceptance finding).
-    if let Some(diagnostic) = crate::ipod_sync_service::outcome_diagnostic(&summary.status) {
-        lines.push(diagnostic);
+/// The running sheet: the action line, the bar and the step labels —
+/// identical in dev and release (the diff is never shown during a run).
+fn render_running_sheet(view: &IpodPageView, progress: &ipod_sync::sync::report::SyncProgress) {
+    let imp = view.imp();
+    imp.sync_sheet_heading.set_label(&tr(msgid("Syncing…")));
+    imp.sync_sheet_spinner.set_visible(true);
+    imp.sync_sheet_spinner.set_spinning(true);
+    imp.sync_sheet_summary.set_visible(false);
+    imp.sync_sheet_running.set_visible(true);
+
+    match &progress.item_label {
+        Some(label) => {
+            imp.sync_sheet_action.set_label(label);
+            imp.sync_sheet_action.set_visible(true);
+        }
+        None => imp.sync_sheet_action.set_visible(false),
     }
-    let changes = &summary.changes;
-    if changes.files_added + changes.files_removed > 0 {
-        lines.push(tr_with(
-            "{count} files written",
-            &[(
-                "count",
-                &(changes.files_added + changes.files_removed).to_string(),
-            )],
+    if progress.item_total > 0 {
+        imp.sync_progress_bar
+            .set_fraction(f64::from(progress.item_current) / f64::from(progress.item_total));
+        imp.sync_step_fraction.set_label(&format!(
+            "{} / {}",
+            progress.item_current, progress.item_total
         ));
+    } else {
+        imp.sync_progress_bar.set_fraction(0.0);
+        imp.sync_step_fraction.set_label("");
     }
-    for diagnostic in &summary.diagnostics {
-        lines.push(format!("• {diagnostic}"));
+    if progress.step_total > 0 {
+        imp.sync_step_label.set_label(&format!(
+            "{} — {}",
+            tr_with(
+                "Step {index} of {total}",
+                &[
+                    ("index", &progress.step_index.to_string()),
+                    ("total", &progress.step_total.to_string()),
+                ],
+            ),
+            progress.step.unwrap_or(""),
+        ));
+    } else {
+        imp.sync_step_label.set_label("");
     }
-    lines.join("\n")
+
+    clear_box(&imp.sync_sheet_body);
+    imp.sync_sheet_body_scroll.set_visible(false);
+    imp.sync_sheet_cancel.set_visible(false);
+    imp.sync_sheet_apply.set_visible(false);
+    imp.sync_sheet_close.set_visible(false);
 }
 
-/// The result dialog: the completed/partial/failed outcome with its
-/// diagnostics (the rich panel is B-016).
-fn present_result_dialog(
+/// The result sheet: the outcome, the failure diagnostic with the
+/// resume hint, and the remaining diagnostics.
+fn render_result_sheet(
     view: &IpodPageView,
     summary: &crate::ipod_sync_service::SyncOutcomeSummary,
-    sync: &IpodSyncService,
 ) {
-    let dialog = adw::AlertDialog::builder()
-        .heading(tr(msgid("Sync result")))
-        .body(&outcome_body(summary))
-        .build();
-    dialog.add_responses(&[("ok", &tr(msgid("OK")))]);
-    let sync = sync.clone();
-    let parent = view.root().and_downcast::<gtk::Window>();
-    glib::spawn_future_local(async move {
-        let _ = dialog.choose_future(parent.as_ref()).await;
-        sync.dismiss();
-    });
+    let imp = view.imp();
+    let failed = !matches!(
+        &summary.status,
+        ipod_sync::sync::report::SyncStatus::Completed
+    );
+    let heading = if failed {
+        tr(msgid("Sync failed"))
+    } else {
+        tr(msgid("Sync completed"))
+    };
+    imp.sync_sheet_heading.set_label(&heading);
+    if failed {
+        imp.sync_sheet_heading.add_css_class("error-text");
+    } else {
+        imp.sync_sheet_heading.remove_css_class("error-text");
+    }
+    imp.sync_sheet_spinner.set_visible(false);
+    imp.sync_sheet_running.set_visible(false);
+
+    let changes = &summary.changes;
+    let mut parts = Vec::new();
+    let mut push = |template: &str, count: usize| {
+        if count > 0 {
+            parts.push(tr_with(template, &[("count", &count.to_string())]));
+        }
+    };
+    push(
+        "{count} files written",
+        changes.files_added + changes.files_removed,
+    );
+    push("{count} playlists updated", changes.playlists_written);
+    push("{count} covers added", changes.artwork_added);
+    push(
+        "{count} stats merged",
+        changes.host_patches_written + changes.device_patches_written,
+    );
+    imp.sync_sheet_summary.set_label(&parts.join(" · "));
+    imp.sync_sheet_summary.set_visible(true);
+
+    clear_box(&imp.sync_sheet_body);
+    if failed {
+        imp.sync_sheet_body_scroll.set_visible(true);
+        if let Some(diagnostic) = crate::ipod_sync_service::outcome_diagnostic(&summary.status) {
+            let label = gtk::Label::new(Some(&diagnostic));
+            label.set_xalign(0.0);
+            label.set_wrap(true);
+            label.add_css_class("error-text");
+            imp.sync_sheet_body.append(&label);
+        }
+        if summary.recovery.is_some() {
+            let hint = gtk::Label::new(Some(&tr(msgid(
+                "The sync can be resumed — reconnect the iPod and sync again.",
+            ))));
+            hint.set_xalign(0.0);
+            hint.set_wrap(true);
+            hint.add_css_class("muted");
+            imp.sync_sheet_body.append(&hint);
+        }
+        if !summary.diagnostics.is_empty() {
+            let details = adw::ExpanderRow::builder()
+                .title(&tr(msgid("Details")))
+                .expanded(false)
+                .build();
+            for diagnostic in &summary.diagnostics {
+                let label = gtk::Label::new(Some(diagnostic));
+                label.set_xalign(0.0);
+                label.set_wrap(true);
+                label.add_css_class("ipod-finding");
+                details.add_row(&label);
+            }
+            imp.sync_sheet_body.append(&details);
+        }
+    } else {
+        imp.sync_sheet_body_scroll.set_visible(false);
+    }
+
+    imp.sync_sheet_cancel.set_visible(false);
+    imp.sync_sheet_apply.set_visible(false);
+    imp.sync_sheet_close.set_visible(true);
 }
 
 /// Apply one sync-service state to the page: the in-flight spinner, the
-/// running lock on the checkbox, and the phase-driven dialogs — the
+/// running lock on the checkbox, and the phase-driven sync sheet — the
 /// thin widget layer over the service's pure machine.
-fn apply_sync_state(
-    view: &IpodPageView,
-    state: &SyncState,
-    policy: ReviewPolicy,
-    sync: &IpodSyncService,
-) {
+fn apply_sync_state(view: &IpodPageView, state: &SyncState, policy: ReviewPolicy) {
     let imp = view.imp();
     let running = matches!(state.phase, SyncPhase::Collecting | SyncPhase::Running);
     imp.running_spinner.set_visible(running);
@@ -716,10 +1137,18 @@ fn apply_sync_state(
     imp.dry_run_check.set_sensitive(!running);
     match &state.phase {
         SyncPhase::Review { summary, dry_run } if policy == ReviewPolicy::Always => {
-            present_review_dialog(view, summary, *dry_run, sync);
+            render_review_sheet(view, summary, *dry_run);
+            imp.sync_sheet_revealer.set_reveal_child(true);
         }
-        SyncPhase::Done(summary) => present_result_dialog(view, summary, sync),
-        _ => {}
+        SyncPhase::Running => {
+            render_running_sheet(view, &state.progress);
+            imp.sync_sheet_revealer.set_reveal_child(true);
+        }
+        SyncPhase::Done(summary) => {
+            render_result_sheet(view, summary);
+            imp.sync_sheet_revealer.set_reveal_child(true);
+        }
+        _ => imp.sync_sheet_revealer.set_reveal_child(false),
     }
 }
 
@@ -784,6 +1213,23 @@ pub fn ipod_route_view(
             }
         });
     }
+    // The sync sheet's footer: Cancel/Close dismiss, Apply approves the
+    // reviewed plan (a dry review refuses approval in the machine).
+    {
+        let sync = sync.clone();
+        imp.sync_sheet_cancel
+            .connect_clicked(move |_| sync.dismiss());
+    }
+    {
+        let sync = sync.clone();
+        imp.sync_sheet_close
+            .connect_clicked(move |_| sync.dismiss());
+    }
+    {
+        let sync = sync.clone();
+        imp.sync_sheet_apply
+            .connect_clicked(move |_| sync.approve());
+    }
 
     // The connection snapshot + the sync running flag drive the Sync
     // button together: both subscriptions re-apply the controls.
@@ -806,10 +1252,9 @@ pub fn ipod_route_view(
         });
     }
     let sync_receiver = sync.subscribe();
-    apply_sync_state(&view, &sync.snapshot(), policy, sync);
+    apply_sync_state(&view, &sync.snapshot(), policy);
     {
         let view = view.clone();
-        let sync = sync.clone();
         let last_snapshot = last_snapshot.clone();
         let running = running.clone();
         glib::spawn_future_local(async move {
@@ -819,7 +1264,7 @@ pub fn ipod_route_view(
                 if let Some(snapshot) = last_snapshot.borrow().as_ref() {
                     view.apply_snapshot(snapshot, is_running);
                 }
-                apply_sync_state(&view, &state, policy, &sync);
+                apply_sync_state(&view, &state, policy);
             }
         });
     }

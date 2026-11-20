@@ -27,21 +27,25 @@
 //! an unverified ABI refuses with the same diagnostic the FSM shows
 //! (`ipod_discovery::ABI_UNVERIFIED_DIAGNOSTIC`).
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
-use ipod::{ArtworkInput, BackendSearch, DeviceSession, IpodBackend};
+use ipod::{ArtworkInput, BackendSearch, DeviceSession, IpodBackend, TrackInfo};
 use ipod_sync::dry_run::{
-    ArtworkProbe, CoverEvidence, DryRunReport, HostInputs, SourceKey, SyncOptions, collect_device,
-    collect_host, compute,
+    ArtworkProbe, CopyMode, CoverEvidence, CriteriaState, DryRunReport, HostInputs, SourceKey,
+    StatField, SyncOptions, collect_device, collect_host, compute,
 };
+use ipod_sync::mapping::{HostLocation, HostTrack};
 use ipod_sync::retrieval::{DeviceFacts, collect};
 use ipod_sync::sync::exec::run_sync;
 use ipod_sync::sync::host::HostWriteContext;
 use ipod_sync::sync::merge::StatMerge;
 use ipod_sync::sync::plan::ExecutionPlan;
-use ipod_sync::sync::report::{ProgressEvent, SyncChanges, SyncResult, SyncStatus};
+use ipod_sync::sync::report::{
+    ProgressEvent, RecoveryState, SyncChanges, SyncProgress, SyncResult, SyncStatus,
+};
 use itl_core::ItlFile;
 
 use crate::ipod_discovery::ABI_UNVERIFIED_DIAGNOSTIC;
@@ -113,6 +117,9 @@ pub struct PreparedSync {
     pub report: DryRunReport,
     /// Host inputs (the `.itl` snapshot + artwork evidence).
     pub host: HostInputs,
+    /// The device tracks with their names — the review sheet resolves
+    /// the diff's dbids to titles (the report itself carries only ids).
+    pub device_tracks: Vec<TrackInfo>,
     /// The engine options this run will use.
     pub options: SyncOptions,
     /// The device facts at prepare time (identity source).
@@ -182,6 +189,7 @@ impl Runner for EngineRunner {
         Ok(PreparedSync {
             report,
             host,
+            device_tracks: device.tracks,
             options,
             facts,
             mount: request.mount.clone(),
@@ -275,9 +283,9 @@ pub enum SyncPhase {
     Idle,
     /// The run thread is collecting (`.itl` + device + compute).
     Collecting,
-    /// The dry run is shown and awaits the user's decision (dev flow).
-    /// `dry_run` marks the S-08 deliverable review — its dialog offers
-    /// no approval, and the machine refuses one.
+    /// The diff is shown in the page's sync sheet and awaits the user's
+    /// decision (dev flow). `dry_run` marks the S-08 deliverable review
+    /// — its sheet offers no approval, and the machine refuses one.
     Review {
         summary: ReviewSummary,
         dry_run: bool,
@@ -300,6 +308,9 @@ pub struct SyncState {
     pub phase: SyncPhase,
     /// The recent progress tail (B-016 renders it; B-015 retains it).
     pub events: Vec<ProgressEvent>,
+    /// The monotone progress snapshot the sheet's bar renders — folded
+    /// from every event, so a dropped event can never rewind it.
+    pub progress: SyncProgress,
 }
 
 /// Whether a real (non-dry) run may proceed straight from prepare
@@ -366,6 +377,10 @@ pub fn advance(
     match (&state.phase, event) {
         (SyncPhase::Idle, SyncEvent::Start { dry_run, mount }) => {
             state.phase = SyncPhase::Collecting;
+            // A fresh run starts with a clean progress surface — the
+            // previous run's tail must not bleed into the next one.
+            state.progress = SyncProgress::default();
+            state.events.clear();
             Some(SyncAction::Prepare { dry_run, mount })
         }
         (
@@ -375,10 +390,10 @@ pub fn advance(
                 result: Ok(prepared),
             },
         ) => {
-            // A dry run always stops at the review: the dialog IS the
+            // A dry run always stops at the review: the sheet IS the
             // deliverable (S-08) — and it carries no approval.
             state.phase = SyncPhase::Review {
-                summary: review_summary(&prepared.report),
+                summary: review_summary(&prepared.report, &prepared.host, &prepared.device_tracks),
                 dry_run: true,
             };
             None
@@ -392,7 +407,11 @@ pub fn advance(
         ) => match policy {
             ReviewPolicy::Always => {
                 state.phase = SyncPhase::Review {
-                    summary: review_summary(&prepared.report),
+                    summary: review_summary(
+                        &prepared.report,
+                        &prepared.host,
+                        &prepared.device_tracks,
+                    ),
                     dry_run: false,
                 };
                 None
@@ -432,11 +451,12 @@ pub fn advance(
             None
         }
         (_, SyncEvent::Progress(event)) => {
-            state.events.push(event);
+            state.events.push(event.clone());
             if state.events.len() > EVENT_RING_CAPACITY {
                 let excess = state.events.len() - EVENT_RING_CAPACITY;
                 state.events.drain(..excess);
             }
+            state.progress.fold(&event);
             None
         }
         // Every other combination is a no-op: a stray start while
@@ -446,8 +466,66 @@ pub fn advance(
     }
 }
 
-/// The review dialog's content, derived from a dry-run report — pure
-/// counts, no wording (the widget layer translates).
+/// One named diff row — a track the sheet shows by title/artist/album
+/// with an optional size and the transcode chip.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DiffTrack {
+    pub title: String,
+    pub artist: String,
+    pub album: String,
+    /// Would-copy size (adds/repairs) or the device record's size
+    /// (removals). `None` renders no size.
+    pub size_bytes: Option<u64>,
+    /// The add plans a transcode-to-AAC write.
+    pub transcodes: bool,
+}
+
+/// One changed statistic on a matched track — the sheet's chip pair.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StatDelta {
+    pub field: StatField,
+    pub host: i64,
+    pub device: i64,
+}
+
+/// One matched track's stat updates, grouped per track.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct StatTrack {
+    pub title: String,
+    pub artist: String,
+    pub deltas: Vec<StatDelta>,
+}
+
+/// One playlist diff — a create, or an update with its named members.
+/// A deferred smart list (criteria differ, B-023 translation) carries
+/// its name only; the sheet says what happens.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DiffPlaylist {
+    pub name: String,
+    pub adds: Vec<DiffTrack>,
+    pub removes: Vec<DiffTrack>,
+    pub reorder: bool,
+    pub deferred: bool,
+}
+
+/// The name-resolved diff the sheet's sections render — the full
+/// report, nothing capped (the dialog capped findings at five; the
+/// sheet has room for all of them).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ReviewDetails {
+    pub adds: Vec<DiffTrack>,
+    pub repairs: Vec<DiffTrack>,
+    pub removals: Vec<DiffTrack>,
+    pub updates: Vec<StatTrack>,
+    pub playlists: Vec<DiffPlaylist>,
+    pub playlist_creates: Vec<DiffPlaylist>,
+    pub playlist_removes: Vec<String>,
+    pub findings: Vec<String>,
+}
+
+/// The review sheet's content, derived from a dry-run report — pure
+/// counts plus the name-resolved [`ReviewDetails`], no wording (the
+/// widget layer translates).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ReviewSummary {
     pub files_added: usize,
@@ -466,10 +544,11 @@ pub struct ReviewSummary {
     pub free_bytes: u64,
     pub would_fit: bool,
     pub diagnostic_count: usize,
-    /// The report's own findings (mapping + dry-run diagnostics),
-    /// capped at the dialog's rendering budget — verbatim, so a
-    /// phantom diff names its own reason (b015_fixes F6).
+    /// The report's own findings, capped at the legacy dialog's budget
+    /// (b015_fixes F6); the sheet renders the full set from `details`.
     pub diagnostics: Vec<String>,
+    /// The name-resolved diff the sheet's sections render.
+    pub details: ReviewDetails,
     /// Nothing at all would change.
     pub nothing_to_do: bool,
 }
@@ -509,6 +588,7 @@ impl ReviewSummary {
                 .take(Self::DIAGNOSTIC_CAP)
                 .cloned()
                 .collect(),
+            details: ReviewDetails::default(),
             nothing_to_do: false,
         };
         Self {
@@ -531,12 +611,218 @@ fn summary_is_empty(summary: &ReviewSummary, report: &DryRunReport) -> bool {
         && report.artwork_unknown == 0
 }
 
-/// The pure derivation the review dialog renders.
-pub fn review_summary(report: &DryRunReport) -> ReviewSummary {
-    ReviewSummary::from_report(report)
+fn file_stem(path: &Path) -> Option<&str> {
+    path.file_stem().and_then(|stem| stem.to_str())
 }
 
-/// The result dialog's content: the engine outcome plus the boundary
+/// The name fallbacks for rows whose records carry none — never a
+/// blank row.
+fn host_names(track: &HostTrack) -> (String, String, String) {
+    let title = track
+        .metadata
+        .title
+        .clone()
+        .or_else(|| match &track.location {
+            HostLocation::Mapped(path) => file_stem(path).map(str::to_string),
+            _ => None,
+        })
+        .unwrap_or_else(|| "Unknown".to_string());
+    (
+        title,
+        track.metadata.artist.clone().unwrap_or_default(),
+        track.metadata.album.clone().unwrap_or_default(),
+    )
+}
+
+fn host_diff_track(track: &HostTrack, size: Option<u64>, transcodes: bool) -> DiffTrack {
+    let (title, artist, album) = host_names(track);
+    DiffTrack {
+        title,
+        artist,
+        album,
+        size_bytes: size,
+        transcodes,
+    }
+}
+
+fn device_diff_track(track: &TrackInfo, size: Option<u64>) -> DiffTrack {
+    DiffTrack {
+        title: track.title.clone().unwrap_or_else(|| "Unknown".to_string()),
+        artist: track.artist.clone().unwrap_or_default(),
+        album: track.album.clone().unwrap_or_default(),
+        size_bytes: size,
+        transcodes: false,
+    }
+}
+
+/// A playlist member dbid resolved to a name — device records first,
+/// then the host catalog (planned adds), then the bare id (should not
+/// happen: the dry run filters members to the writable set).
+fn member_diff_track(
+    dbid: u64,
+    device_by_dbid: &HashMap<u64, &TrackInfo>,
+    host_by_pid: &HashMap<u64, &HostTrack>,
+) -> DiffTrack {
+    if let Some(track) = device_by_dbid.get(&dbid) {
+        return device_diff_track(track, Some(u64::from(track.size)));
+    }
+    if let Some(track) = host_by_pid.get(&dbid) {
+        return host_diff_track(track, None, false);
+    }
+    DiffTrack {
+        title: format!("#{dbid}"),
+        ..DiffTrack::default()
+    }
+}
+
+/// The name-resolved diff behind the sheet's sections.
+fn review_details(
+    report: &DryRunReport,
+    host: &HostInputs,
+    device_tracks: &[TrackInfo],
+) -> ReviewDetails {
+    let host_by_pid: HashMap<u64, &HostTrack> = host
+        .tracks
+        .iter()
+        .map(|track| (track.track_pid, track))
+        .collect();
+    let device_by_dbid: HashMap<u64, &TrackInfo> = device_tracks
+        .iter()
+        .map(|track| (track.dbid, track))
+        .collect();
+
+    let adds = report
+        .file_adds
+        .iter()
+        .filter_map(|add| {
+            let track = host_by_pid.get(&add.pid)?;
+            Some(host_diff_track(
+                track,
+                Some(add.size_estimate),
+                add.mode == CopyMode::TranscodeToAac,
+            ))
+        })
+        .collect();
+
+    let repairs = report
+        .file_repairs
+        .iter()
+        .map(|repair| match device_by_dbid.get(&repair.dbid) {
+            Some(track) => device_diff_track(track, Some(repair.size_estimate)),
+            None => DiffTrack {
+                title: file_stem(&repair.host_path)
+                    .unwrap_or("Unknown")
+                    .to_string(),
+                size_bytes: Some(repair.size_estimate),
+                ..DiffTrack::default()
+            },
+        })
+        .collect();
+
+    let removals = report
+        .file_removes
+        .iter()
+        .filter_map(|remove| device_by_dbid.get(&remove.dbid))
+        .map(|track| device_diff_track(track, Some(u64::from(track.size))))
+        .collect();
+
+    // Stat diffs grouped per track, in the report's (sorted) order.
+    let mut updates: Vec<StatTrack> = Vec::new();
+    let mut update_index: HashMap<u64, usize> = HashMap::new();
+    for diff in &report.stat_diffs {
+        let index = match update_index.get(&diff.pid) {
+            Some(index) => *index,
+            None => {
+                let (title, artist) = match host_by_pid.get(&diff.pid) {
+                    Some(track) => {
+                        let (title, artist, _) = host_names(track);
+                        (title, artist)
+                    }
+                    None => ("Unknown".to_string(), String::new()),
+                };
+                update_index.insert(diff.pid, updates.len());
+                updates.push(StatTrack {
+                    title,
+                    artist,
+                    deltas: Vec::new(),
+                });
+                updates.len() - 1
+            }
+        };
+        updates[index].deltas.push(StatDelta {
+            field: diff.field,
+            host: diff.host_raw,
+            device: diff.device_raw,
+        });
+    }
+
+    let playlists = report
+        .playlist_updates
+        .iter()
+        .map(|update| DiffPlaylist {
+            name: update.name.clone().unwrap_or_else(|| "Unnamed".to_string()),
+            adds: update
+                .members_add
+                .iter()
+                .map(|dbid| member_diff_track(*dbid, &device_by_dbid, &host_by_pid))
+                .collect(),
+            removes: update
+                .members_remove
+                .iter()
+                .map(|dbid| member_diff_track(*dbid, &device_by_dbid, &host_by_pid))
+                .collect(),
+            reorder: update.members_reorder,
+            deferred: update.is_spl && update.criteria != CriteriaState::Equal,
+        })
+        .collect();
+
+    let playlist_creates = report
+        .playlist_creates
+        .iter()
+        .map(|create| DiffPlaylist {
+            name: create.name.clone().unwrap_or_else(|| "Unnamed".to_string()),
+            adds: create
+                .member_pids
+                .iter()
+                .flatten()
+                .map(|pid| member_diff_track(*pid, &device_by_dbid, &host_by_pid))
+                .collect(),
+            ..DiffPlaylist::default()
+        })
+        .collect();
+
+    let playlist_removes = report
+        .playlist_removes
+        .iter()
+        .filter_map(|remove| remove.name.clone())
+        .collect();
+
+    ReviewDetails {
+        adds,
+        repairs,
+        removals,
+        updates,
+        playlists,
+        playlist_creates,
+        playlist_removes,
+        findings: report.diagnostics.clone(),
+    }
+}
+
+/// The pure derivation the review sheet renders — counts plus the
+/// name-resolved diff.
+pub fn review_summary(
+    report: &DryRunReport,
+    host: &HostInputs,
+    device_tracks: &[TrackInfo],
+) -> ReviewSummary {
+    let details = review_details(report, host, device_tracks);
+    let mut summary = ReviewSummary::from_report(report);
+    summary.details = details;
+    summary
+}
+
+/// The result sheet's content: the engine outcome plus the boundary
 /// failure shape (a `Prepare`-step failure that never reached the
 /// engine).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -544,6 +830,9 @@ pub struct SyncOutcomeSummary {
     pub status: SyncStatus,
     pub changes: SyncChanges,
     pub diagnostics: Vec<String>,
+    /// Pending recovery work — the sheet shows the resume hint when
+    /// present (a preflight refusal has none and must not promise one).
+    pub recovery: Option<RecoveryState>,
 }
 
 impl SyncOutcomeSummary {
@@ -552,16 +841,18 @@ impl SyncOutcomeSummary {
             status: SyncStatus::Failed { step, diagnostic },
             changes: SyncChanges::default(),
             diagnostics: Vec::new(),
+            recovery: None,
         }
     }
 }
 
-/// The pure extraction the result dialog renders.
+/// The pure extraction the result sheet renders.
 pub fn outcome_summary(result: &SyncResult) -> SyncOutcomeSummary {
     SyncOutcomeSummary {
         status: result.status.clone(),
         changes: result.changes.clone(),
         diagnostics: result.diagnostics.clone(),
+        recovery: result.recovery.clone(),
     }
 }
 
@@ -818,6 +1109,7 @@ mod tests {
         PreparedSync {
             report: report_with(true),
             host: HostInputs::default(),
+            device_tracks: Vec::new(),
             options: SyncOptions::default(),
             facts: DeviceFacts::default(),
             mount: PathBuf::from("/mnt/ipod"),
@@ -830,7 +1122,7 @@ mod tests {
 
     #[test]
     fn review_summary_maps_the_report_counts() {
-        let summary = review_summary(&report_with(true));
+        let summary = review_summary(&report_with(true), &HostInputs::default(), &[]);
         assert_eq!(summary.files_added, 1);
         assert_eq!(summary.playlists_created, 1);
         assert_eq!(summary.artwork_adds, 1);
@@ -840,8 +1132,101 @@ mod tests {
         assert!(summary.would_fit);
         assert!(!summary.nothing_to_do);
 
-        let empty = review_summary(&report_with(false));
+        let empty = review_summary(&report_with(false), &HostInputs::default(), &[]);
         assert!(empty.nothing_to_do, "no actions anywhere");
+    }
+
+    #[test]
+    fn review_details_resolve_names_and_deltas() {
+        let mut report = report_with(true);
+        report.stat_diffs.push(ipod_sync::dry_run::StatDiff {
+            pid: 100,
+            field: StatField::Rating,
+            host_raw: 80,
+            device_raw: 60,
+        });
+        let mut host = HostInputs::default();
+        host.tracks.push(ipod_sync::mapping::HostTrack {
+            library_pid: 1,
+            track_pid: 100,
+            itl_id: 1,
+            location: ipod_sync::mapping::HostLocation::NoLocation,
+            metadata: ipod_sync::mapping::HostTrackMetadata {
+                title: Some("Song".to_string()),
+                artist: Some("Artist".to_string()),
+                album: Some("Album".to_string()),
+                ..Default::default()
+            },
+            stats: ipod_sync::mapping::HostStats::default(),
+            content_rating: 0,
+        });
+        let summary = review_summary(&report, &host, &[]);
+        assert_eq!(
+            summary.details.adds.len(),
+            1,
+            "the add resolves by host pid"
+        );
+        assert_eq!(summary.details.adds[0].title, "Song");
+        assert_eq!(summary.details.adds[0].size_bytes, Some(4_000_000));
+        assert_eq!(summary.details.updates.len(), 1);
+        assert_eq!(summary.details.updates[0].artist, "Artist");
+        assert_eq!(
+            summary.details.updates[0].deltas,
+            vec![StatDelta {
+                field: StatField::Rating,
+                host: 80,
+                device: 60,
+            }]
+        );
+        assert_eq!(summary.details.playlist_creates.len(), 1);
+        assert_eq!(summary.details.playlist_creates[0].name, "New");
+    }
+
+    #[test]
+    fn progress_events_fold_into_the_progress_snapshot() {
+        let mut state = state();
+        state.phase = SyncPhase::Running;
+        advance(
+            &mut state,
+            SyncEvent::Progress(ProgressEvent::Step {
+                name: "Files",
+                index: 3,
+                total: 6,
+                began: true,
+            }),
+            ReviewPolicy::Always,
+        );
+        advance(
+            &mut state,
+            SyncEvent::Progress(ProgressEvent::Item {
+                current: 12,
+                total: 340,
+                label: "Copying a track".to_string(),
+            }),
+            ReviewPolicy::Always,
+        );
+        assert_eq!(state.progress.step, Some("Files"));
+        assert_eq!(state.progress.step_index, 3);
+        assert_eq!(state.progress.step_total, 6);
+        assert_eq!(state.progress.item_current, 12);
+        assert_eq!(state.progress.item_total, 340);
+        assert_eq!(
+            state.progress.item_label.as_deref(),
+            Some("Copying a track")
+        );
+
+        // A new run resets the snapshot (Start fires from Idle).
+        state.phase = SyncPhase::Idle;
+        advance(
+            &mut state,
+            SyncEvent::Start {
+                dry_run: false,
+                mount: PathBuf::from("/mnt/ipod"),
+            },
+            ReviewPolicy::Always,
+        );
+        assert_eq!(state.progress, SyncProgress::default());
+        assert!(state.events.is_empty());
     }
 
     #[test]
@@ -903,6 +1288,7 @@ mod tests {
                 },
                 changes: SyncChanges::default(),
                 diagnostics: Vec::new(),
+                recovery: None,
             })
         );
     }
