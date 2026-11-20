@@ -649,6 +649,126 @@
                       </object>
                     </child>
                     <child>
+                      <object class="GtkRevealer" id="sync_sheet_revealer">
+                        <property name="transition-type">slide-down</property>
+                        <property name="reveal-child">false</property>
+                        <child>
+                          <object class="GtkBox" id="sync_sheet">
+                            <property name="orientation">vertical</property>
+                            <style><class name="ipod-sync-sheet"/></style>
+                            <child>
+                              <object class="GtkBox" id="sync_sheet_header">
+                                <property name="orientation">vertical</property>
+                                <property name="spacing">6</property>
+                                <style><class name="ipod-sync-header"/></style>
+                                <child>
+                                  <object class="GtkBox">
+                                    <property name="orientation">horizontal</property>
+                                    <property name="spacing">8</property>
+                                    <child>
+                                      <object class="GtkSpinner" id="sync_sheet_spinner">
+                                        <property name="visible">false</property>
+                                      </object>
+                                    </child>
+                                    <child>
+                                      <object class="GtkLabel" id="sync_sheet_heading">
+                                        <property name="xalign">0</property>
+                                        <property name="hexpand">true</property>
+                                        <style><class name="ipod-sheet-heading"/></style>
+                                      </object>
+                                    </child>
+                                  </object>
+                                </child>
+                                <child>
+                                  <object class="GtkLabel" id="sync_sheet_summary">
+                                    <property name="xalign">0</property>
+                                    <property name="wrap">true</property>
+                                    <style><class name="muted"/></style>
+                                  </object>
+                                </child>
+                                <child>
+                                  <object class="GtkBox" id="sync_sheet_running">
+                                    <property name="orientation">vertical</property>
+                                    <property name="spacing">6</property>
+                                    <child>
+                                      <object class="GtkLabel" id="sync_sheet_action">
+                                        <property name="xalign">0</property>
+                                        <property name="ellipsize">end</property>
+                                        <property name="single-line-mode">true</property>
+                                      </object>
+                                    </child>
+                                    <child>
+                                      <object class="GtkProgressBar" id="sync_progress_bar">
+                                        <property name="hexpand">true</property>
+                                      </object>
+                                    </child>
+                                    <child>
+                                      <object class="GtkBox">
+                                        <property name="orientation">horizontal</property>
+                                        <child>
+                                          <object class="GtkLabel" id="sync_step_label">
+                                            <property name="xalign">0</property>
+                                            <property name="hexpand">true</property>
+                                            <style><class name="muted"/></style>
+                                          </object>
+                                        </child>
+                                        <child>
+                                          <object class="GtkLabel" id="sync_step_fraction">
+                                            <property name="xalign">1</property>
+                                            <style><class name="muted"/></style>
+                                          </object>
+                                        </child>
+                                      </object>
+                                    </child>
+                                  </object>
+                                </child>
+                              </object>
+                            </child>
+                            <child>
+                              <object class="GtkScrolledWindow" id="sync_sheet_body_scroll">
+                                <property name="vexpand">true</property>
+                                <property name="hscrollbar-policy">never</property>
+                                <property name="max-content-height">380</property>
+                                <style><class name="ipod-sync-body"/></style>
+                                <child>
+                                  <object class="GtkBox" id="sync_sheet_body">
+                                    <property name="orientation">vertical</property>
+                                    <property name="spacing">8</property>
+                                  </object>
+                                </child>
+                              </object>
+                            </child>
+                            <child>
+                              <object class="GtkBox" id="sync_sheet_footer">
+                                <property name="orientation">horizontal</property>
+                                <property name="spacing">8</property>
+                                <property name="halign">end</property>
+                                <style><class name="ipod-sync-footer"/></style>
+                                <child>
+                                  <object class="GtkButton" id="sync_sheet_cancel">
+                                    <property name="label" translatable="yes">Cancel</property>
+                                    <style><class name="flat"/></style>
+                                  </object>
+                                </child>
+                                <child>
+                                  <object class="GtkButton" id="sync_sheet_apply">
+                                    <property name="label" translatable="yes">Apply sync</property>
+                                    <style><class name="suggested-action"/></style>
+                                  </object>
+                                </child>
+                                <child>
+                                  <object class="GtkButton" id="sync_sheet_close">
+                                    <property name="label" translatable="yes">Close</property>
+                                    <style><class name="flat"/></style>
+                                  </object>
+                                </child>
+                              </object>
+                            </child>
+                          </object>
+                        </child>
+                      </object>
+                    </child>
+                    <child>
                       <object class="GtkBox" id="ready_bottom_bar">
                         <property name="orientation">horizontal</property>
                         <property name="spacing">20</property>
