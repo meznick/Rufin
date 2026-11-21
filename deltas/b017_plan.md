@@ -90,7 +90,7 @@ The claim inventory (every "B-017 validates" across the deltas):
 ## 4. Step 0 — app-level disposable write run (mine to prep, owner's click)
 
 1. Build the dev binary with the write surface:
-   `cargo build -p rufin -F gtk-shell/sync-writes` — gtk-shell now has a
+   `cargo build -p rufin -F ui/sync-writes` — the ui crate has a
    forwarding feature `sync-writes = ["ipod/sync-writes"]` (the rufin
    binary has no direct ipod dependency, so the feature needs the
    forwarding hop; D-3 builds on the same seam).
@@ -189,7 +189,7 @@ Nothing was written to either side — the `.itl` backup chain
 pod's journal/backup files all carry the second run's timestamps.
 
 The owner then asked how to enable the feature, ran the
-`cargo build -p rufin -F gtk-shell/sync-writes` command (binary
+`cargo build -p rufin -F ui/sync-writes` command (binary
 16:45:22, `testkit` symbols: 14; size = the 16:24 binary + 51,560 B —
 the compiled write surface over unchanged source), and re-launched at
 16:46:30. The second sync completed at 16:48:36: consistency backup

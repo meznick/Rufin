@@ -142,8 +142,9 @@ impl crate::Catalog {
     ) -> LibraryResult<HashMap<String, Vec<u8>>> {
         let mut connection = self.acquire_reader().await?;
         let rows: Vec<(String, Vec<u8>)> = sqlx::query_as(
-            "SELECT media_uri,native_artwork FROM tracks
-             WHERE source_key=?1 AND native_artwork IS NOT NULL",
+            "SELECT track.media_uri,details.native_artwork
+             FROM tracks track JOIN track_details details USING(track_key)
+             WHERE track.source_key=?1 AND details.native_artwork IS NOT NULL",
         )
         .bind(source_key.raw())
         .fetch_all(&mut *connection)
@@ -205,6 +206,50 @@ impl crate::Catalog {
         .execute(&mut *connection)
         .await?;
         write.commit().await?;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{CatalogBatch, SourceId, TrackMetadata, TrackObservation};
+
+    /// The artwork blob lives in `track_details`, not `tracks` — the query
+    /// must join. This guard exists because the corpus-gated iTunes
+    /// integration tests skip on hosts without the corpus.
+    #[tokio::test]
+    #[allow(clippy::panic_in_result_fn)] // assertions are the test's point
+    async fn itunes_artwork_bindings_read_the_details_blob() -> LibraryResult<()> {
+        let directory = tempfile::tempdir()?;
+        let catalog = crate::Catalog::open(directory.path().join("library.sqlite")).await?;
+        catalog
+            .reconcile_source(&SourceId::new("itunes-test"), "itunes", "iTunes")
+            .await?;
+        let source_key = catalog.source_key(&SourceId::new("itunes-test")).unwrap();
+        let mut observation = catalog.observe("itunes-test").await?;
+        let mut batch = CatalogBatch::default();
+        batch.tracks.push(TrackObservation {
+            object_id: "t1".into(),
+            media_uri: Some("rufin:source/track/itunes-test/t1".into()),
+            metadata: TrackMetadata {
+                title: "One".into(),
+                ..Default::default()
+            },
+            artwork_binding: Some(br#"[]"#.to_vec()),
+            ..Default::default()
+        });
+        observation.apply_catalog(&batch, true).await?;
+        let bindings = catalog
+            .itunes_artwork_bindings(source_key, &ReadCancellation::new())
+            .await?;
+        assert_eq!(
+            bindings
+                .get("rufin:source/track/itunes-test/t1")
+                .map(Vec::as_slice),
+            Some(br#"[]"#.as_slice()),
+            "the published binding round-trips through track_details"
+        );
         Ok(())
     }
 }

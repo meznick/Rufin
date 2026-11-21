@@ -71,7 +71,7 @@ only its own pid → path map.
 
 ## 5. Verification
 
-1. `cargo build -p rufin -F gtk-shell/sync-writes` (the feature build —
+1. `cargo build -p rufin -F ui/sync-writes` (the feature build —
    the only build that can write, and the one the owner runs).
 2. Clippy on `gtk-shell`, rustfmt.
 3. The unit test above against the snapshot.

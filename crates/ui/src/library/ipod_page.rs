@@ -51,7 +51,7 @@ crate::composite_box!(
     pub IpodPageView,
     ipod_page_view_imp,
     "RufinIpodPageView",
-    "/io/github/screwys/Rufin/ui/routes/ipod_page.ui",
+    "/app/rufin/rufin/ui/routes/ipod_page.ui",
     {
         state_stack: gtk::Stack,
         notice_revealer: gtk::Revealer,
