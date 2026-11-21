@@ -116,6 +116,7 @@ pub(crate) struct Stats {
     pub(crate) skips: u32,
     pub(crate) last_played: u32,
     pub(crate) native_plays: u32,
+    pub(crate) native_skips: u32,
     pub(crate) native_last_played: u32,
 }
 
@@ -126,6 +127,7 @@ impl Default for Stats {
             skips: 0,
             last_played: NONE,
             native_plays: NONE,
+            native_skips: NONE,
             native_last_played: NONE,
         }
     }
@@ -1647,6 +1649,7 @@ impl Packing<'_> {
                 .play_count
                 .filter(|plays| *plays != 0 || input.state.last_played.is_some()),
         );
+        stats.native_skips = optional_u32(input.state.skip_count);
         stats.native_last_played = optional_u32(input.state.last_played);
         if *stats == Stats::default() {
             self.stats.remove(&slot);

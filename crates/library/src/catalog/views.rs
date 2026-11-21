@@ -75,7 +75,11 @@ impl<'a> Context<'a> {
                     source.kind.as_deref().is_none_or(|kind| {
                         // File libraries and peers count Rufin's listens; servers report their own.
                         crate::SourceKind::parse(kind).is_some_and(|kind| {
-                            kind.file_library() || kind == crate::SourceKind::Peer
+                            // iTunes reads files but owns its counts: the .itl reports them and
+                            // the sync layer flushes Rufin's listens back, so its rows show the
+                            // native counters like a server's.
+                            (kind.file_library() && kind != crate::SourceKind::Itunes)
+                                || kind == crate::SourceKind::Peer
                         })
                     })
                 })
@@ -105,7 +109,7 @@ impl<'a> Context<'a> {
         } else {
             Played {
                 plays: known(stats.native_plays).unwrap_or(0),
-                skips: 0,
+                skips: known(stats.native_skips).unwrap_or(0),
                 last: known(stats.native_last_played),
             }
         }

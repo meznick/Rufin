@@ -1408,3 +1408,56 @@ async fn explicit_flag_survives_the_snapshot_round_trip_into_track_rows() {
         "the explicit track is the one the observation marked"
     );
 }
+
+#[tokio::test]
+async fn itunes_source_rows_show_the_native_counts_the_observation_reports() {
+    let mut fixture = fixture().await;
+    // An iTunes source owns its counts: the .itl reports them and Rufin
+    // flushes listens back through the sync layer, so rows show the native
+    // counters — not the (empty) listen history the file-walker sources
+    // accumulate. Kind-switch the fixture source to exercise that branch.
+    sqlx::query("UPDATE sources SET kind='itunes'")
+        .execute(&mut super::support::connection(&fixture.path).await)
+        .await
+        .unwrap();
+    fixture.catalog = super::support::reopen(fixture.catalog, &fixture.path).await;
+    {
+        let mut scan_observation = fixture.catalog.observe("source").await.unwrap();
+        scan_observation
+            .apply_catalog(
+                &library::CatalogBatch {
+                    tracks: vec![library::TrackObservation {
+                        object_id: "track-0".into(),
+                        album_object_id: Some("album-a".into()),
+                        user_data: library::NativeUserState {
+                            play_count: Some(7),
+                            skip_count: Some(2),
+                            last_played: Some(12_345),
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+                true,
+            )
+            .await
+            .unwrap();
+    }
+    fixture.catalog = super::support::reopen(fixture.catalog, &fixture.path).await;
+    let read = library::MemberRead::new(library::Collection::Source(fixture.source));
+    let rows = tracks(&fixture.catalog, read).await;
+    let row = rows
+        .iter()
+        .find(|row| row.object_id.as_deref() == Some("track-0"))
+        .expect("the published track is listed");
+    assert_eq!(row.state.play_count, 7, "the .itl play count is shown");
+    assert_eq!(row.state.skip_count, 2, "the .itl skip count is shown");
+    assert_eq!(row.state.last_played, Some(12_345));
+    let others: i64 = rows
+        .iter()
+        .filter(|row| row.object_id.as_deref() != Some("track-0"))
+        .map(|row| row.state.play_count)
+        .sum();
+    assert_eq!(others, 0, "unreported tracks stay at zero");
+}
