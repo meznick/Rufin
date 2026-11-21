@@ -7,9 +7,12 @@ use std::rc::Rc;
 
 use adw::prelude::*;
 
-use super::{EditableSource, begin_connect_attempt, setup_scaffold, SetupActions, SetupViewContext, SourcePresentation, SourceSetupFlow};
-use crate::Preferences;
-use gtk_widgets::controls::text_button;
+use super::{
+    EditableSource, SetupActions, SetupViewContext, SourcePresentation, SourceSetupFlow,
+    begin_connect_attempt, setup_scaffold,
+};
+use crate::shell::shell::Shell;
+use crate::widgets::controls::text_button;
 use localization::tr;
 
 #[derive(Default)]
@@ -24,7 +27,7 @@ struct ItunesSetupFlow {
 }
 
 pub(super) fn setup_flow(
-    _shell: &Rc<Preferences>,
+    _shell: &Rc<Shell>,
     presentation: &'static SourcePresentation,
 ) -> Rc<dyn SourceSetupFlow> {
     Rc::new(ItunesSetupFlow {
@@ -34,7 +37,7 @@ pub(super) fn setup_flow(
 }
 
 impl SourceSetupFlow for ItunesSetupFlow {
-    fn view(&self, shell: &Rc<Preferences>, context: &SetupViewContext) -> gtk::Widget {
+    fn view(&self, shell: &Rc<Shell>, context: &SetupViewContext) -> gtk::Widget {
         let (scroller, content, actions, status) =
             setup_scaffold(shell, context, self.presentation);
 
@@ -75,7 +78,7 @@ impl SourceSetupFlow for ItunesSetupFlow {
         let library_browse = text_button("folder-open-symbolic", "Browse…");
         library_row.add_suffix(&library_browse);
         {
-            let window = shell.window.clone();
+            let window = shell.chrome.window.clone();
             let row = library_row.clone();
             library_browse.connect_clicked(move |_| {
                 let dialog = gtk::FileDialog::builder()
@@ -95,7 +98,7 @@ impl SourceSetupFlow for ItunesSetupFlow {
                         return;
                     };
                     if let Some(path) = file.path() {
-                        row.set_text(&path.to_string_lossy().into_owned());
+                        row.set_text(&path.to_string_lossy());
                     }
                 });
             });
@@ -113,7 +116,7 @@ impl SourceSetupFlow for ItunesSetupFlow {
         let media_folder_browse = text_button("folder-open-symbolic", "Browse…");
         media_folder_row.add_suffix(&media_folder_browse);
         {
-            let window = shell.window.clone();
+            let window = shell.chrome.window.clone();
             let row = media_folder_row.clone();
             media_folder_browse.connect_clicked(move |_| {
                 let dialog = gtk::FileDialog::builder()
@@ -126,7 +129,7 @@ impl SourceSetupFlow for ItunesSetupFlow {
                         return;
                     };
                     if let Some(path) = folder.path() {
-                        row.set_text(&path.to_string_lossy().into_owned());
+                        row.set_text(&path.to_string_lossy());
                     }
                 });
             });
@@ -163,8 +166,11 @@ impl SourceSetupFlow for ItunesSetupFlow {
                 return;
             }
             begin_connect_attempt(&status_for_login, login, &tr("Reading iTunes library..."));
-            let (source, status, login) =
-                (source.clone(), status_for_login.downgrade(), login.downgrade());
+            let (source, status, login) = (
+                source.clone(),
+                status_for_login.downgrade(),
+                login.downgrade(),
+            );
             gtk::glib::spawn_future_local(async move {
                 let result = source.save_itunes(None, library, media_folder, None).await;
                 if let Err(error) = result {
@@ -189,14 +195,11 @@ impl SourceSetupFlow for ItunesSetupFlow {
 /// the sync layer falls back to the offset in the `.itl` envelope, which is
 /// what a fresh setup stores too.
 pub(super) fn settings_group(
-    shell: &Rc<Preferences>,
+    shell: &Rc<Shell>,
     saved: &EditableSource,
     _presentation: &'static SourcePresentation,
 ) -> Result<gtk::Widget, String> {
-    let initial = saved
-        .itunes_settings
-        .clone()
-        .unwrap_or_default();
+    let initial = saved.itunes_settings.clone().unwrap_or_default();
     let draft = Rc::new(RefCell::new(Draft {
         library: initial.library,
         media_folder: initial.media_folder.unwrap_or_default(),
@@ -241,7 +244,7 @@ pub(super) fn settings_group(
     let library_browse = text_button("folder-open-symbolic", "Browse…");
     library_row.add_suffix(&library_browse);
     {
-        let window = shell.window.clone();
+        let window = shell.chrome.window.clone();
         let row = library_row.clone();
         library_browse.connect_clicked(move |_| {
             let dialog = gtk::FileDialog::builder()
@@ -261,7 +264,7 @@ pub(super) fn settings_group(
                     return;
                 };
                 if let Some(path) = file.path() {
-                    row.set_text(&path.to_string_lossy().into_owned());
+                    row.set_text(&path.to_string_lossy());
                 }
             });
         });
@@ -279,7 +282,7 @@ pub(super) fn settings_group(
     let media_folder_browse = text_button("folder-open-symbolic", "Browse…");
     media_folder_row.add_suffix(&media_folder_browse);
     {
-        let window = shell.window.clone();
+        let window = shell.chrome.window.clone();
         let row = media_folder_row.clone();
         media_folder_browse.connect_clicked(move |_| {
             let dialog = gtk::FileDialog::builder()
@@ -292,7 +295,7 @@ pub(super) fn settings_group(
                     return;
                 };
                 if let Some(path) = folder.path() {
-                    row.set_text(&path.to_string_lossy().into_owned());
+                    row.set_text(&path.to_string_lossy());
                 }
             });
         });

@@ -1495,7 +1495,7 @@ impl crate::player::PlayerUi {
             shell.artwork.clear_artwork_tile(&controls.cover);
         }
         controls.title.set_text(&presentation.title);
-        gtk_widgets::recycled_cells::set_explicit_badge(
+        crate::widgets::recycled_cells::set_explicit_badge(
             &controls.explicit,
             presentation.current && presentation.explicit,
         );

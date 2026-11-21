@@ -3,6 +3,7 @@ use std::rc::Rc;
 use adw::prelude::*;
 
 use super::{Shell, layout::ResolvedLeftSidebarMode};
+use rufin_core::route::Route;
 
 pub(crate) struct Topbar {
     pub window_content: gtk::Box,

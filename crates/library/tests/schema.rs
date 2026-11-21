@@ -305,7 +305,7 @@ async fn newer_store_keeps_its_compatible_columns() {
     let mut expected = supported;
     for (table, rows) in &mut expected {
         if table == "tracks" {
-            rows.push(r#"[2,1,"two","file:///two.flac",null,0,null,0,"","","","",0,0,0,null,null,null,0,null,null,null,null,null,0,null,null,null,null]"#.into());
+            rows.push(r#"[2,1,"two","file:///two.flac",null,0,null,0,"","","","",0,0,0,null,null,null,0,null,null,null,null,null,0,null,null,null,null,null]"#.into());
         }
     }
     assert_eq!(durable_rows(&path).await, expected);
@@ -552,7 +552,7 @@ async fn released_stores_upgrade_with_their_user_data() {
                 .fetch_one(&mut raw)
                 .await
                 .unwrap(),
-            65,
+            66,
             "{version}"
         );
         // Favorites, ratings, listens, scrobbles and pending deliveries stay as they were.

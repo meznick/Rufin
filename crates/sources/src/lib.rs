@@ -262,22 +262,6 @@ mod local_change_integration_tests {
     ));
 }
 
-#[cfg(test)]
-mod itunes_catalog_integration_tests {
-    include!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/tests/itunes_catalog.rs"
-    ));
-}
-
-#[cfg(test)]
-mod itunes_write_back_integration_tests {
-    include!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/tests/itunes_write_back.rs"
-    ));
-}
-
 pub use config::{
     CredentialInput, CredentialPreset, EditableSource, PlexSettingsInput, PlexSetupInput,
     SourceConfiguration, SourceSettingsChange, SourceSetup,

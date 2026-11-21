@@ -996,6 +996,7 @@ impl MediaPlayingBinding {
     }
 }
 
+#[allow(dead_code)] // title_row/downloaded: fork badge slots, wired in later commits
 pub struct CollectionGridCardCell {
     pub card: CollectionGridCardView,
     cover: gtk::Widget,
@@ -1055,8 +1056,8 @@ impl CollectionGridCardCell {
         let title = card.imp().title.get();
         connect_label_tooltip(&title);
         let title_row = card.imp().title_row.get();
-        gtk_widgets::recycled_cells::install_playing_indicator(&title, &title_row);
-        let explicit = gtk_widgets::recycled_cells::explicit_badge();
+        crate::widgets::recycled_cells::install_playing_indicator(&title, &title_row);
+        let explicit = crate::widgets::recycled_cells::explicit_badge();
         title_row.append(&explicit);
         let field_cells = fields
             .iter()
@@ -1093,7 +1094,7 @@ impl CollectionGridCardCell {
     /// card that never flagged anything just keeps the badge hidden.
     pub fn set_explicit(&self, explicit: bool) {
         if let Some(badge) = self.explicit.borrow().as_ref() {
-            gtk_widgets::recycled_cells::set_explicit_badge(badge, explicit);
+            crate::widgets::recycled_cells::set_explicit_badge(badge, explicit);
         }
     }
 

@@ -7,10 +7,9 @@
 //! the last rating agreed with the `.itl`, and the merge treats
 //! `itl != base` as "iTunes moved, iTunes wins".
 
-use sqlx::Connection;
 use std::collections::HashMap;
 
-use crate::{Database, LibraryError, LibraryResult, ReadCancellation, SourceKey};
+use crate::{LibraryResult, ReadCancellation, SourceKey};
 
 /// Player-side values the iTunes write-back flushes into the `.itl`.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -24,7 +23,7 @@ pub struct ItunesPlayerState {
     pub last_played: Option<i64>,
 }
 
-impl Database {
+impl crate::Catalog {
     /// A local listen on an iTunes-source track: bump the native counters so
     /// the displayed stats move immediately (the `catalog_index_native_*`
     /// triggers refresh them) and the delta reaches the `.itl` on the next
@@ -37,8 +36,8 @@ impl Database {
         skipped: bool,
         started_at: i64,
     ) -> LibraryResult<()> {
-        let mut writer = self.writer().await?;
-        let connection = writer.as_mut().ok_or(LibraryError::WriterUnavailable)?;
+        let mut write = self.write().await?;
+        let connection = write.connection().await?;
         if skipped {
             sqlx::query(
                 "INSERT INTO native_media_state(media_uri,skip_count) VALUES(?1,1)
@@ -60,6 +59,7 @@ impl Database {
             .execute(&mut *connection)
             .await?;
         }
+        write.commit().await?;
         Ok(())
     }
 
@@ -68,9 +68,9 @@ impl Database {
     pub async fn itunes_player_state(
         &self,
         media_uri: &str,
-        cancellation: &ReadCancellation,
+        _cancellation: &ReadCancellation,
     ) -> LibraryResult<ItunesPlayerState> {
-        let (_permit, mut connection) = self.acquire_general(cancellation).await?;
+        let mut connection = self.acquire_reader().await?;
         let (user_rating, native_rating, play_count, skip_count, last_played): (
             Option<i64>,
             Option<i64>,
@@ -78,7 +78,7 @@ impl Database {
             Option<i64>,
             Option<i64>,
         ) = sqlx::query_as(
-            "SELECT (SELECT rating FROM user_media_state WHERE media_uri=?1),
+            "SELECT (SELECT rating FROM user_state WHERE media_uri=?1),
                     (SELECT rating FROM native_media_state WHERE media_uri=?1),
                     (SELECT play_count FROM native_media_state WHERE media_uri=?1),
                     (SELECT skip_count FROM native_media_state WHERE media_uri=?1),
@@ -99,14 +99,26 @@ impl Database {
     /// iTunes wins: adopt the `.itl` rating into the user slot, so the
     /// visible rating follows iTunes even when an older override lingers.
     pub async fn adopt_user_rating(&self, media_uri: &str, rating: i64) -> LibraryResult<()> {
-        write_user_rating(media_uri, rating, self).await
+        let mut write = self.write().await?;
+        crate::favorites::write_user_media_state(
+            &mut write,
+            &crate::favorites::UserMediaStateWrite {
+                media_uri: media_uri.to_owned(),
+                favorite: None,
+                rating: Some(rating),
+                changed_at: None,
+            },
+        )
+        .await?;
+        write.commit().await?;
+        Ok(())
     }
 
     /// Flush success: the native rating becomes the written value, so a
     /// later user "clear rating" falls back to the value the `.itl` holds.
     pub async fn adopt_native_rating(&self, media_uri: &str, rating: i64) -> LibraryResult<()> {
-        let mut writer = self.writer().await?;
-        let connection = writer.as_mut().ok_or(LibraryError::WriterUnavailable)?;
+        let mut write = self.write().await?;
+        let connection = write.connection().await?;
         sqlx::query(
             "INSERT INTO native_media_state(media_uri,rating) VALUES(?1,?2)
              ON CONFLICT(media_uri) DO UPDATE SET rating=excluded.rating",
@@ -115,6 +127,7 @@ impl Database {
         .bind(rating)
         .execute(&mut *connection)
         .await?;
+        write.commit().await?;
         Ok(())
     }
 
@@ -125,9 +138,9 @@ impl Database {
     pub async fn itunes_artwork_bindings(
         &self,
         source_key: SourceKey,
-        cancellation: &ReadCancellation,
+        _cancellation: &ReadCancellation,
     ) -> LibraryResult<HashMap<String, Vec<u8>>> {
-        let (_permit, mut connection) = self.acquire_general(cancellation).await?;
+        let mut connection = self.acquire_reader().await?;
         let rows: Vec<(String, Vec<u8>)> = sqlx::query_as(
             "SELECT media_uri,native_artwork FROM tracks
              WHERE source_key=?1 AND native_artwork IS NOT NULL",
@@ -142,9 +155,9 @@ impl Database {
     pub async fn itunes_base(
         &self,
         source_key: SourceKey,
-        cancellation: &ReadCancellation,
+        _cancellation: &ReadCancellation,
     ) -> LibraryResult<HashMap<String, Option<i64>>> {
-        let (_permit, mut connection) = self.acquire_general(cancellation).await?;
+        let mut connection = self.acquire_reader().await?;
         let rows: Vec<(String, Option<i64>)> =
             sqlx::query_as("SELECT media_uri,rating FROM itunes_sync_base WHERE source_key=?1")
                 .bind(source_key.raw())
@@ -160,8 +173,8 @@ impl Database {
         media_uri: &str,
         rating: Option<i64>,
     ) -> LibraryResult<()> {
-        let mut writer = self.writer().await?;
-        let connection = writer.as_mut().ok_or(LibraryError::WriterUnavailable)?;
+        let mut write = self.write().await?;
+        let connection = write.connection().await?;
         sqlx::query(
             "INSERT INTO itunes_sync_base(source_key,media_uri,rating) VALUES(?1,?2,?3)
              ON CONFLICT(media_uri) DO UPDATE SET rating=excluded.rating",
@@ -171,6 +184,7 @@ impl Database {
         .bind(rating)
         .execute(&mut *connection)
         .await?;
+        write.commit().await?;
         Ok(())
     }
 
@@ -180,8 +194,8 @@ impl Database {
         source_key: SourceKey,
         keep: &[String],
     ) -> LibraryResult<()> {
-        let mut writer = self.writer().await?;
-        let connection = writer.as_mut().ok_or(LibraryError::WriterUnavailable)?;
+        let mut write = self.write().await?;
+        let connection = write.connection().await?;
         sqlx::query(sqlx::AssertSqlSafe(format!(
             "DELETE FROM itunes_sync_base WHERE source_key=?1 AND media_uri NOT IN(
                  SELECT value FROM json_each(?2))"
@@ -190,23 +204,7 @@ impl Database {
         .bind(serde_json::to_string(keep)?)
         .execute(&mut *connection)
         .await?;
+        write.commit().await?;
         Ok(())
     }
-}
-
-async fn write_user_rating(media_uri: &str, rating: i64, database: &Database) -> LibraryResult<()> {
-    let mut writer = database.writer().await?;
-    let connection = writer.as_mut().ok_or(LibraryError::WriterUnavailable)?;
-    let mut transaction = connection.begin().await?;
-    sqlx::query(
-        "INSERT INTO user_media_state(media_uri,rating) VALUES(?1,?2)
-         ON CONFLICT(media_uri) DO UPDATE SET rating=excluded.rating",
-    )
-    .bind(media_uri)
-    .bind(rating)
-    .execute(&mut *transaction)
-    .await?;
-    crate::favorites::cleanup_empty_state(&mut transaction, media_uri).await?;
-    transaction.commit().await?;
-    Ok(())
 }

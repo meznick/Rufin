@@ -1072,18 +1072,13 @@ impl Source {
                 media_folder,
                 tz_offset_seconds,
                 ..
-            } => crate::itunes::connect(
-                source_id,
-                library,
-                media_folder,
-                tz_offset_seconds,
-            )
-            .map(|configuration| {
-                let source =
-                    crate::itunes::ItunesSource::from_configuration(&configuration)
+            } => crate::itunes::connect(source_id, library, media_folder, tz_offset_seconds).map(
+                |configuration| {
+                    let source = crate::itunes::ItunesSource::from_configuration(&configuration)
                         .expect("freshly encoded iTunes configuration");
-                ConnectedSource::itunes(configuration, source)
-            }),
+                    ConnectedSource::itunes(configuration, source)
+                },
+            ),
         }
     }
 
@@ -1236,11 +1231,9 @@ impl Source {
                 Implementation::OpenSubsonic(crate::subsonic::open(&configuration, credential)?)
             }
             "peer" => Implementation::Peer(crate::peer::PeerSource::open(&configuration, peer)?),
-            crate::itunes::ITUNES_SOURCE_ID => {
-                Implementation::Itunes(crate::itunes::ItunesSource::from_configuration(
-                    &configuration,
-                )?)
-            }
+            crate::itunes::ITUNES_SOURCE_ID => Implementation::Itunes(
+                crate::itunes::ItunesSource::from_configuration(&configuration)?,
+            ),
             kind => {
                 return Err(SourceError::InvalidConfig(format!(
                     "unknown source kind {kind}"
@@ -1257,7 +1250,10 @@ impl Source {
             Implementation::JellyfinEmby(source) => source.select_address().await,
             Implementation::OpenSubsonic(source) => source.select_address().await,
             Implementation::Plex(source) => source.select_address().await,
-            Implementation::Local(_) | Implementation::Files(_) | Implementation::Peer(_) => false,
+            Implementation::Local(_)
+            | Implementation::Files(_)
+            | Implementation::Peer(_)
+            | Implementation::Itunes(_) => false,
         };
         if moved {
             self.set_unreachable(None);
@@ -1493,7 +1489,17 @@ impl Source {
                         .await
                 }
                 Implementation::Peer(source) => source.audio_stream(playable, encoding).await,
-                Implementation::Itunes(source) => source.stream(&playable.media_uri).await,
+                Implementation::Itunes(_) => {
+                    // The observation stored the absolute host path in
+                    // `tracks.source_path`; the playable resolves it through
+                    // the catalog. Stream the file directly — no server, no
+                    // folder-mapping machinery.
+                    let file = playable.file.as_ref().ok_or(SourceError::NotFound)?;
+                    let uri = url::Url::from_file_path(&file.path)
+                        .map_err(|_| SourceError::NotFound)?
+                        .to_string();
+                    Ok(ResolvedStream::new(uri))
+                }
             }
         })
         .await
@@ -1554,8 +1560,11 @@ impl Source {
             Implementation::OpenSubsonic(source) => {
                 source.resolve_download(&self.track_object_id(&playable.media_uri)?, quality)
             }
-            Implementation::Itunes(source) => source
-                .stream(&playable.media_uri)
+            Implementation::Itunes(_) => self
+                .stream(
+                    playable,
+                    StreamRequest::original(playable.media_uri.clone()),
+                )
                 .await
                 .map(|stream| ResolvedDownload::encode(stream, quality)),
         }
@@ -2474,7 +2483,8 @@ impl Source {
                     }
                     Implementation::Local(_)
                     | Implementation::Files(_)
-                    | Implementation::Peer(_) => {}
+                    | Implementation::Peer(_)
+                    | Implementation::Itunes(_) => {}
                 }
                 Ok::<_, SourceError>(())
             })

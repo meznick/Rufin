@@ -25,6 +25,18 @@ pub trait TrackPresentation: Clone + PartialEq + Send + Sync + 'static {
     fn links(&self, field: LibraryField) -> rufin_core::route::detail_links::DetailLinks {
         rufin_core::route::detail_links::DetailLinks::text(&self.field(field))
     }
+    /// Display rating on the 0–10 scale (`None` = unrated).
+    fn rating(&self) -> Option<u8> {
+        None
+    }
+    /// Parental advisory: `true` marks the track explicit.
+    fn explicit(&self) -> bool {
+        false
+    }
+    /// The source id of the row, for per-source presentation flags.
+    fn source_id(&self) -> Option<&str> {
+        None
+    }
 }
 
 impl TrackPresentation for TrackRow {
@@ -64,6 +76,17 @@ impl TrackPresentation for TrackRow {
             &self.links.album_artists,
         )
     }
+    fn rating(&self) -> Option<u8> {
+        self.state
+            .rating
+            .and_then(|rating| u8::try_from(rating).ok())
+    }
+    fn explicit(&self) -> bool {
+        self.explicit
+    }
+    fn source_id(&self) -> Option<&str> {
+        self.source_id.as_deref()
+    }
 }
 
 impl TrackPresentation for std::sync::Arc<QueueRow> {
@@ -102,6 +125,18 @@ impl TrackPresentation for std::sync::Arc<QueueRow> {
             &self.track.links.artists,
             &self.track.links.album_artists,
         )
+    }
+    fn rating(&self) -> Option<u8> {
+        self.track
+            .state
+            .rating
+            .and_then(|rating| u8::try_from(rating).ok())
+    }
+    fn explicit(&self) -> bool {
+        self.track.metadata.explicit
+    }
+    fn source_id(&self) -> Option<&str> {
+        self.track.source_id.as_deref()
     }
 }
 
@@ -242,7 +277,8 @@ pub fn column_width(field: LibraryField) -> i32 {
         LibraryField::ReleaseDate | LibraryField::DateAdded => 118,
         LibraryField::LastPlayed => 148,
         LibraryField::PlayCount => play_count_column_width(),
-        LibraryField::UserRating | LibraryField::SongCount | LibraryField::AlbumCount => 96,
+        LibraryField::UserRating => 104,
+        LibraryField::SongCount | LibraryField::AlbumCount => 96,
         LibraryField::Year
         | LibraryField::DiscNumber
         | LibraryField::TrackNumber

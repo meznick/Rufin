@@ -85,7 +85,7 @@ pub fn tree_hash(root: &Path) -> Result<String, TreeHashError> {
         hasher.update(record.as_bytes());
         hasher.update([b'\n']);
     }
-    Ok(format!("{:x}", hasher.finalize()))
+    Ok(hex(&hasher.finalize()))
 }
 
 fn sha256(data: &[u8]) -> [u8; 32] {

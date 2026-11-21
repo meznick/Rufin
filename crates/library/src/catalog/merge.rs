@@ -792,14 +792,23 @@ async fn native_states(
                     state.favorite,
                     rating,
                     state.play_count.filter(|_| plays),
+                    state.skip_count.filter(|_| plays),
                     state.last_played.filter(|_| plays),
                 )
             })
             .collect::<Vec<_>>();
-        let objects: HashSet<String> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!("WITH incoming(object,favorite,rating,plays,played) AS(SELECT json_extract(value,'$[0]'),json_extract(value,'$[1]'),json_extract(value,'$[2]'),json_extract(value,'$[3]'),json_extract(value,'$[4]') FROM json_each(?2))
+        let objects: HashSet<String> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+            "WITH incoming(object,favorite,rating,plays,skips,played) AS(SELECT json_extract(value,'$[0]'),json_extract(value,'$[1]'),json_extract(value,'$[2]'),json_extract(value,'$[3]'),json_extract(value,'$[4]'),json_extract(value,'$[5]') FROM json_each(?2))
             SELECT row.object_id FROM incoming CROSS JOIN {} row ON row.source_key=?1 AND row.object_id=incoming.object
             WHERE incoming.favorite IS NOT NULL AND incoming.favorite IS NOT row.native_favorite OR incoming.rating IS NOT NULL AND incoming.rating IS NOT coalesce(row.native_rating,-1)
-            OR incoming.plays IS NOT NULL AND incoming.plays IS NOT row.native_play_count OR incoming.played IS NOT NULL AND incoming.played IS NOT row.native_last_played", R::TABLE.name)))
+            OR incoming.plays IS NOT NULL AND incoming.plays IS NOT row.native_play_count{skips} OR incoming.played IS NOT NULL AND incoming.played IS NOT row.native_last_played",
+            R::TABLE.name,
+            skips = if R::FAMILY == Family::Track {
+                " OR incoming.skips IS NOT NULL AND incoming.skips IS NOT row.native_skip_count"
+            } else {
+                ""
+            },
+        )))
             .bind(source).bind(serde_json::to_string(&incoming)?).fetch_all(write.connection().await?).await?.into_iter().collect();
         let rows = rows
             .iter()

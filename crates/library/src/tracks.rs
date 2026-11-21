@@ -123,6 +123,7 @@ impl From<TrackView> for crate::TrackRow {
                 .map(|day| day.midnight().assume_utc().unix_timestamp()),
             source_format: track.metadata.source_format,
             state: track.state,
+            explicit: track.metadata.explicit,
             is_downloaded: track.access.is_downloaded,
             cue: track.access.cue_path.is_some(),
             links: track.links,

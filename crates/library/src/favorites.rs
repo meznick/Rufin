@@ -21,6 +21,8 @@ pub struct NativeUserState {
     )]
     pub rating: Option<Option<i64>>,
     pub play_count: Option<i64>,
+    /// iTunes sources publish the `.itl` skip count through the native slot.
+    pub skip_count: Option<i64>,
     pub last_played: Option<i64>,
 }
 

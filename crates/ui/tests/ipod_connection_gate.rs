@@ -19,10 +19,10 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use gtk_library::device_manager::ConnectionState;
-use gtk_library::ipod_connection::{ConnectionSnapshot, IpodConnection};
 use ipod::BackendSearch;
 use ipod_sync::{MountEntry, MountError, MountSource};
+use ui::device_manager::ConnectionState;
+use ui::ipod_connection::{ConnectionSnapshot, IpodConnection};
 
 /// The service, built on an explicitly pinned backend dir. The backend is
 /// pre-loaded once so a set-but-broken `RUFIN_LIBGPOD_DIR` panics here with

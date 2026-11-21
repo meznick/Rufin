@@ -827,6 +827,8 @@ impl SourceOwner {
             }
             // The Radio page reads `stations::page`; it has no rows of the Catalog.
             Route::Radio => (None, Plan::Missing),
+            // The iPod page is device UI, not a catalog route.
+            Route::Ipod => (None, Plan::Missing),
         };
         Ok((header, plan, None))
     }

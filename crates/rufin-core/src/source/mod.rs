@@ -6,9 +6,9 @@ mod download;
 pub mod feed;
 pub mod folders;
 mod integrations;
+pub(crate) mod itunes_sync;
 mod mosaics;
 mod outbox;
-pub(crate) mod itunes_sync;
 mod pins;
 pub mod search;
 pub use integrations::FileIntegration;
@@ -131,9 +131,6 @@ pub(crate) struct Shared {
     /// The edits of each playlist, which run one at a time.
     playlist_edits: Mutex<HashMap<library::PlaylistKey, Arc<tokio::sync::Mutex<()>>>>,
     connect: Mutex<Weak<crate::connect::ConnectOwner>>,
-    /// Debounced `.itl` write-back waker: a flush waits on this notify, and
-    /// every dirty mark pings it (itunes_sync).
-    maintenance: Arc<tokio::sync::Notify>,
     pub(crate) itunes_sync: itunes_sync::ItunesSync,
     pub(crate) started: AtomicBool,
 }
@@ -425,6 +422,7 @@ impl SourceOwner {
                         .join(format!("rufin-artwork-{}-{started}", std::process::id())),
                 )
                 .map_err(string_error)?
+            }
         };
         let itunes_sync = itunes_sync::ItunesSync::new(
             Arc::clone(&catalog),
@@ -469,7 +467,6 @@ impl SourceOwner {
                 album_release: Mutex::new(None),
                 playlist_edits: Mutex::new(HashMap::new()),
                 connect: Mutex::new(Weak::new()),
-                maintenance: Arc::new(tokio::sync::Notify::new()),
                 itunes_sync,
                 started: AtomicBool::new(false),
             });
@@ -2965,7 +2962,9 @@ impl SourceOwner {
         {
             // iTunes sources write back through the debounced `itl-sync`
             // service (the user slot is already committed above).
-            self.shared.itunes_sync.mark_rating(&source_id, target.media_uri());
+            self.shared
+                .itunes_sync
+                .mark_rating(&source_id, target.media_uri());
             return;
         }
         if let Some(source_key) = self.shared.catalog.source_key(&source_id)

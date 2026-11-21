@@ -45,7 +45,7 @@ use std::path::Path;
 
 use ipod_sync::{BackendStatus, DeviceFacts, RetrieveError, ScanReport};
 
-use crate::device_manager::{ConnectionState, DeviceInfo, DeviceManager, PreflightError};
+use crate::library::device_manager::{ConnectionState, DeviceInfo, DeviceManager, PreflightError};
 
 /// The user-facing diagnostic for a soft-accepted distro backend build
 /// (`BackendStatus::Loaded { abi_verified: false }`): the library loads,
@@ -289,6 +289,7 @@ pub fn apply_scan(
 /// The production preflight composition: run `ipod_sync::preflight` on the
 /// candidate mount with the loaded backend, mapped onto B-002's
 /// [`PreflightError`].
+#[allow(dead_code)] // exercised by the env-gated integration gates
 pub fn preflight_with_backend(
     backend: &ipod::IpodBackend,
 ) -> impl Fn(&Path) -> Result<(), PreflightError> + '_ {

@@ -13,13 +13,15 @@ pub(crate) async fn pragma(
             .await?,
     )
 }
-pub(crate) const STORE_VERSION: i64 = 65;
+pub(crate) const STORE_VERSION: i64 = 66;
 
 /// Bits of the `flags` column of tracks, albums, artists, tags and folders, copied from the
 /// artwork binding and the details row so the Catalog load reads neither.
 pub(crate) const HAS_PICTURE: i64 = 1;
 /// Tracks only.
 pub(crate) const TRACK_CUE: i64 = 2;
+/// Tracks only: the explicit parental-advisory flag (mith @0xA6).
+pub(crate) const TRACK_EXPLICIT: i64 = 4;
 /// Albums only: the release class code, from its compilation flag and release types, in
 /// four bits from here.
 pub(crate) const ALBUM_RELEASE_SHIFT: i64 = 2;
@@ -31,7 +33,7 @@ pub(crate) const LINK_GENRE: i64 = 2;
 pub(crate) const LINK_MOOD: i64 = 3;
 pub(crate) const LINK_FOLDER: i64 = 4;
 
-pub(crate) const STORE_SCHEMA: &str = r#"PRAGMA user_version = 65;
+pub(crate) const STORE_SCHEMA: &str = r#"PRAGMA user_version = 66;
 
 CREATE TABLE sources (
     source_key INTEGER PRIMARY KEY,
@@ -111,6 +113,7 @@ CREATE TABLE tracks (
     native_rating INTEGER,
     native_play_count INTEGER,
     native_last_played INTEGER,
+    native_skip_count INTEGER,
     UNIQUE(source_key,object_id)
 ) STRICT;
 CREATE INDEX tracks_album_idx ON tracks(album_key) WHERE album_key IS NOT NULL;
@@ -526,6 +529,25 @@ CREATE TABLE fingerprint (
 CREATE TABLE metadata_lookup_cache (
     key TEXT PRIMARY KEY, payload BLOB NOT NULL,
     written_at INTEGER NOT NULL, expires_at INTEGER NOT NULL
+) STRICT;
+
+-- iTunes write-back slots. `native_media_state` carries the native stats the `.itl` last
+-- held: a local listen bumps the counters there so displayed stats move before the next
+-- debounced `.itl` flush, and the refresh merge re-derives the pending delta from them.
+-- `itunes_sync_base` is the rating sync base: the last rating agreed with the `.itl`;
+-- the refresh merge treats `itl != base` as "iTunes moved, iTunes wins".
+CREATE TABLE native_media_state (
+    media_uri TEXT PRIMARY KEY CHECK (media_uri <> ''),
+    favorite INTEGER,
+    rating INTEGER,
+    play_count INTEGER,
+    skip_count INTEGER,
+    last_played INTEGER
+) STRICT;
+CREATE TABLE itunes_sync_base (
+    source_key INTEGER NOT NULL,
+    media_uri TEXT PRIMARY KEY CHECK (media_uri <> ''),
+    rating INTEGER
 ) STRICT;
 
 -- The Store's identity and a counter the first Write after a Catalog image raises, so an image

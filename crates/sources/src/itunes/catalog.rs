@@ -8,21 +8,22 @@ use itl_sync::paths::{MappedLocation, MediaMapping};
 use itl_sync::survey::unique_tracks;
 use library::{
     AlbumMetadata, AlbumObservation, ArtistCredit, ArtistMetadata, ArtistObservation,
-    ArtworkCandidate, ArtworkImage, CatalogBatch, GenreObservation, NativeUserState,
-    ReadCancellation, SourceId, TagMetadata, TagReference, TrackMetadata, TrackObservation,
+    ArtworkCandidate, ArtworkImage, CatalogBatch, NativeUserState, ReadCancellation, SourceId,
+    TagKind, TagMetadata, TagObservation, TagReference, TrackMetadata, TrackObservation,
 };
 
-use crate::source::{SourceReadProgress, SourceReadStage};
-use crate::{SourceError, SourceResult};
-use super::write::ItunesPatch;
 use super::ItunesSource;
+use super::write::ItunesPatch;
+use crate::source::{SourceProgress, SourceProgressStage};
+use crate::{SourceError, SourceResult};
 
 pub(crate) async fn acquire(
     source: &ItunesSource,
-    catalog: &mut library::Catalog<'_>,
-    progress: &(dyn Fn(SourceReadProgress) + Send + Sync),
+    observation: &mut library::Observation<'_>,
+    progress: &(dyn Fn(SourceProgress) + Send + Sync),
     cancelled: &(dyn Fn() -> bool + Send + Sync),
 ) -> SourceResult<()> {
+    observation.start_observation().await?;
     let config = source.config();
     let library_path = config.library.clone();
     let itl = tokio::task::spawn_blocking(move || itl_core::ItlFile::open(&library_path))
@@ -58,17 +59,16 @@ pub(crate) async fn acquire(
         })
         .collect::<Vec<_>>();
     let total = located.len();
-    progress(SourceReadProgress {
-        stage: SourceReadStage::Albums,
+    progress(SourceProgress {
+        stage: SourceProgressStage::Albums,
         completed: 0,
         total: None,
     });
 
-    let source_id = SourceId::new(catalog.source_id.to_string());
+    let source_id = SourceId::new(observation.source_id);
     let track_object_id = |id: u32| format!("itunes:track:{id}");
-    let media_uri_for = |object_id: &str| {
-        library::source_entity_uri(&source_id, "track", object_id)
-    };
+    let media_uri_for =
+        |object_id: &str| library::source_entity_uri(&source_id, "track", object_id);
     // Albums: iTunes groups tracks by (Album, Album Artist). The mith album
     // id (@0x9C) is absent on most tracks (zeros), and `album_persistent_id`
     // reads the wrong header range (the date-added bytes) — so the identity
@@ -77,12 +77,9 @@ pub(crate) async fn acquire(
     // share one "Unknown Album" per album artist (remote-source behavior;
     // iTunes itself shows them only in Songs).
     const UNKNOWN_ALBUM: &str = "Unknown Album";
-    let album_identity = |name: &str, artist: &str| {
-        (artist.to_lowercase(), name.to_lowercase())
-    };
-    let album_object_id = |identity: &(String, String)| {
-        format!("itunes:album:{}:{}", identity.0, identity.1)
-    };
+    let album_identity = |name: &str, artist: &str| (artist.to_lowercase(), name.to_lowercase());
+    let album_object_id =
+        |identity: &(String, String)| format!("itunes:album:{}:{}", identity.0, identity.1);
     let album_of = |track: &itl_core::Track| {
         let name = track.album().unwrap_or("").to_string();
         let artist = track
@@ -91,7 +88,10 @@ pub(crate) async fn acquire(
             .unwrap_or("")
             .to_string();
         let (title, identity) = if name.is_empty() {
-            (UNKNOWN_ALBUM.to_string(), album_identity(UNKNOWN_ALBUM, &artist))
+            (
+                UNKNOWN_ALBUM.to_string(),
+                album_identity(UNKNOWN_ALBUM, &artist),
+            )
         } else {
             (name.clone(), album_identity(&name, &artist))
         };
@@ -115,14 +115,18 @@ pub(crate) async fn acquire(
     let mut genres: BTreeMap<String, String> = BTreeMap::new();
     for (track, _) in &located {
         if let Some(name) = track.artist().filter(|name| !name.is_empty()) {
-            artists.entry(name.to_string()).or_insert_with(|| name.to_string());
+            artists
+                .entry(name.to_string())
+                .or_insert_with(|| name.to_string());
         }
         if let Some(name) = track
             .album_artist()
             .or_else(|| track.artist())
             .filter(|name| !name.is_empty())
         {
-            artists.entry(name.to_string()).or_insert_with(|| name.to_string());
+            artists
+                .entry(name.to_string())
+                .or_insert_with(|| name.to_string());
         }
         if let Some(name) = track.genre().filter(|name| !name.is_empty()) {
             genres
@@ -141,11 +145,6 @@ pub(crate) async fn acquire(
                 artist: artist.clone(),
                 sort_text: title.to_lowercase(),
                 year: *year,
-                release_date: None,
-                date_added: None,
-                musicbrainz_release_id: None,
-                musicbrainz_release_group_id: None,
-                is_compilation: None,
                 album_artists: (!artist.is_empty())
                     .then(|| ArtistCredit {
                         object_id: artist_id(artist),
@@ -155,8 +154,7 @@ pub(crate) async fn acquire(
                     })
                     .into_iter()
                     .collect(),
-                genres: Vec::new(),
-                release_types: Vec::new(),
+                ..Default::default()
             },
             artwork_binding: None,
             user_data: NativeUserState::default(),
@@ -176,9 +174,10 @@ pub(crate) async fn acquire(
             user_data: NativeUserState::default(),
         })
         .collect();
-    batch.genres = genres
+    batch.tags = genres
         .iter()
-        .map(|(name, _)| GenreObservation {
+        .map(|(name, _)| TagObservation {
+            kind: TagKind::Genre,
             object_id: genre_id(name),
             metadata: TagMetadata {
                 name: name.clone(),
@@ -188,20 +187,20 @@ pub(crate) async fn acquire(
         })
         .collect();
 
-    let base = catalog
-        .database
-        .itunes_base(catalog.source, &ReadCancellation::new())
+    let base = observation
+        .catalog
+        .itunes_base(observation.source, &ReadCancellation::new())
         .await?;
     // Embedded artwork: reuse the previous observation's binding while the
     // file revision (size + mtime) is unchanged; inspect the rest in
     // batches. First scan reads the tags (a few seconds), later refreshes
     // only `stat`.
-    let cached_bindings = catalog
-        .database
-        .itunes_artwork_bindings(catalog.source, &ReadCancellation::new())
+    let cached_bindings = observation
+        .catalog
+        .itunes_artwork_bindings(observation.source, &ReadCancellation::new())
         .await?;
-    let artwork = embedded_bindings(catalog.source_id, &located, &cached_bindings, cancelled)
-        .await?;
+    let artwork =
+        embedded_bindings(observation.source_id, &located, &cached_bindings, cancelled).await?;
     let mut observed_uris = Vec::with_capacity(located.len());
     let mut patches: Vec<(String, ItunesPatch)> = Vec::new();
 
@@ -209,8 +208,8 @@ pub(crate) async fn acquire(
         if index % 128 == 0 && cancelled() {
             return Err(SourceError::Cancelled);
         }
-        progress(SourceReadProgress {
-            stage: SourceReadStage::Tracks,
+        progress(SourceProgress {
+            stage: SourceProgressStage::Tracks,
             completed: index,
             total: Some(total),
         });
@@ -219,8 +218,8 @@ pub(crate) async fn acquire(
         let media_uri = media_uri_for(&object_id);
         observed_uris.push(media_uri.clone());
 
-        let player = catalog
-            .database
+        let player = observation
+            .catalog
             .itunes_player_state(&media_uri, &ReadCancellation::new())
             .await?;
         let old_base = base.get(&media_uri).copied().flatten();
@@ -241,15 +240,15 @@ pub(crate) async fn acquire(
         if old_base != itl_rating {
             if let Some(rating) = itl_rating {
                 if player.user_rating.is_some() && player.user_rating != itl_rating {
-                    catalog
-                        .database
+                    observation
+                        .catalog
                         .adopt_user_rating(&media_uri, rating)
                         .await?;
                 }
             }
-            catalog
-                .database
-                .write_itunes_base(catalog.source, &media_uri, itl_rating)
+            observation
+                .catalog
+                .write_itunes_base(observation.source, &media_uri, itl_rating)
                 .await?;
         } else if let Some(user) = player.user_rating {
             if Some(user) != itl_rating {
@@ -309,23 +308,16 @@ pub(crate) async fn acquire(
                 disc_number: i64::from(track.disc_number().unwrap_or(1)),
                 track_number: i64::from(track.track_number().unwrap_or(0)),
                 year: track.year().map(i64::from),
-                release_date: None,
                 date_added: format_date(track.date_added_unix()),
                 source_format: track.kind().and_then(source_format),
                 audio_properties: library::AudioProperties {
-                    bitrate_kbps: (track.bit_rate() > 0).then(|| u32::from(track.bit_rate()) / 1000),
+                    bitrate_kbps: (track.bit_rate() > 0)
+                        .then(|| u32::from(track.bit_rate()) / 1000),
                     sample_rate_hz: (track.sample_rate() > 0).then_some(track.sample_rate()),
-                    bit_depth: None,
-                    channels: None,
+                    ..Default::default()
                 },
-                comment: None,
                 explicit: track.is_explicit(),
                 bpm: track.bpm().map(i64::from),
-                musicbrainz_recording_id: None,
-                musicbrainz_release_track_id: None,
-                musicbrainz_album_id: None,
-                musicbrainz_release_group_id: None,
-                primary_artist_musicbrainz_id: None,
                 artists: {
                     let sort_text = (!artist.is_empty()).then(|| artist.to_lowercase());
                     (!artist.is_empty())
@@ -357,19 +349,10 @@ pub(crate) async fn acquire(
                     })
                     .into_iter()
                     .collect(),
-                moods: Vec::new(),
-                album_tags: None,
-                source_loudness: None,
-                album_loudness: None,
+                ..Default::default()
             },
             source_path: local_path,
-            cue_path: None,
-            cue_start_millis: None,
-            cue_end_millis: None,
             first_seen_at: None,
-            loudness_analysis_key: [0; 32],
-            source_lyrics: None,
-            source_lyrics_input: [0; 32],
             artwork_binding: artwork[index].clone(),
             user_data: NativeUserState {
                 favorite: None,
@@ -378,34 +361,24 @@ pub(crate) async fn acquire(
                 skip_count: Some(final_skip),
                 last_played: final_played,
             },
-            folders: None,
+            ..Default::default()
         });
     }
     if cancelled() {
         return Err(SourceError::Cancelled);
     }
-    progress(SourceReadProgress {
-        stage: SourceReadStage::Artists,
+    progress(SourceProgress {
+        stage: SourceProgressStage::Artists,
         completed: 0,
         total: Some(batch.artists.len()),
     });
 
-    catalog.apply_catalog(&batch, true).await?;
-
-    // Unindex everything this pass did not observe (tracks removed from the
-    // .itl, tracks that lost their location, albums/artists that became
-    // empty). The generic wrapper calls this with an empty kind list, which
-    // only records completeness — the actual absent-row sweep is per kind.
-    if let Some(stamp) = catalog.observed {
-        catalog
-            .complete_source_observation(stamp, &["track", "album", "artist", "genre"], None)
-            .await?;
-    }
+    observation.apply_catalog(&batch, true).await?;
 
     // Base rows for tracks no longer in the .itl.
-    catalog
-        .database
-        .prune_itunes_base(catalog.source, &observed_uris)
+    observation
+        .catalog
+        .prune_itunes_base(observation.source, &observed_uris)
         .await?;
 
     // Push the pending deltas into the .itl (single atomic write per batch).
@@ -418,10 +391,10 @@ pub(crate) async fn acquire(
             Ok(()) => {
                 for (media_uri, patch) in &patches {
                     if let Some(rating) = patch.rating {
-                        let _ = catalog
-                            .database
+                        let _ = observation
+                            .catalog
                             .write_itunes_base(
-                                catalog.source,
+                                observation.source,
                                 media_uri,
                                 Some(i64::from(rating)),
                             )

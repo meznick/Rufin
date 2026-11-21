@@ -118,7 +118,10 @@ impl SourceOwner {
                     media_folder,
                     tz_offset_seconds,
                 };
-                self.update_source(input).recv().await.map_err(string_error)??;
+                self.update_source(input)
+                    .recv()
+                    .await
+                    .map_err(string_error)??;
                 Ok(source_id)
             } else {
                 let input = SourceSetup::Itunes {

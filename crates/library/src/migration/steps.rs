@@ -45,6 +45,9 @@ pub(crate) async fn upgrade(path: &Path) -> LibraryResult<Option<bool>> {
         if version < 65 {
             to_65(&mut *transaction).await?;
         }
+        if version < 66 {
+            to_66(&mut *transaction).await?;
+        }
         sqlx::query(sqlx::AssertSqlSafe(format!(
             "PRAGMA user_version={STORE_VERSION}"
         )))
@@ -228,6 +231,29 @@ async fn to_64(connection: &mut SqliteConnection) -> LibraryResult<()> {
 async fn to_65(connection: &mut SqliteConnection) -> LibraryResult<()> {
     sqlx::raw_sql(
         "CREATE INDEX lyrics_cache_picked_idx ON lyrics_cache(media_uri, authority, role, language, script) WHERE picked;",
+    )
+    .execute(connection)
+    .await?;
+    Ok(())
+}
+
+/// The iTunes write-back slots (fork): native stats and the rating sync base.
+async fn to_66(connection: &mut SqliteConnection) -> LibraryResult<()> {
+    sqlx::raw_sql(
+        "ALTER TABLE tracks ADD COLUMN native_skip_count INTEGER;
+         CREATE TABLE native_media_state (
+             media_uri TEXT PRIMARY KEY CHECK (media_uri <> ''),
+             favorite INTEGER,
+             rating INTEGER,
+             play_count INTEGER,
+             skip_count INTEGER,
+             last_played INTEGER
+         ) STRICT;
+         CREATE TABLE itunes_sync_base (
+             source_key INTEGER NOT NULL,
+             media_uri TEXT PRIMARY KEY CHECK (media_uri <> ''),
+             rating INTEGER
+         ) STRICT;",
     )
     .execute(connection)
     .await?;

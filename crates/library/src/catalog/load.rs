@@ -25,7 +25,7 @@ use crate::{
 const RANGE_TRACKS: i64 = 8_192;
 const MAX_RANGES: usize = 4;
 
-const TRACKS: &str = "SELECT track_key,source_key,album_key,indexed,native_metadata,flags,title,display_artist,display_album,sort_text,comment,source_format,duration_millis,disc_number,track_number,year,released,added_at,bpm,native_favorite,native_rating,native_play_count,native_last_played FROM tracks WHERE track_key>?1 AND track_key<=?2 ORDER BY track_key";
+const TRACKS: &str = "SELECT track_key,source_key,album_key,indexed,native_metadata,flags,title,display_artist,display_album,sort_text,comment,source_format,duration_millis,disc_number,track_number,year,released,added_at,bpm,native_favorite,native_rating,native_play_count,native_skip_count,native_last_played FROM tracks WHERE track_key>?1 AND track_key<=?2 ORDER BY track_key";
 const LINKS: &str = "SELECT track_key,role,target FROM track_links WHERE track_key>?1 AND track_key<=?2 ORDER BY track_key,role,position";
 
 fn native_state(row: &Rows<'_>, start: i32) -> NativeState {
@@ -33,7 +33,8 @@ fn native_state(row: &Rows<'_>, start: i32) -> NativeState {
         favorite: row.optional_int(start).map(|value| value != 0),
         rating: row.optional_int(start + 1),
         play_count: row.optional_int(start + 2),
-        last_played: row.optional_int(start + 3),
+        skip_count: row.optional_int(start + 3),
+        last_played: row.optional_int(start + 4),
     }
 }
 
@@ -86,6 +87,7 @@ async fn read_range(
                     native: tracks.flag(4),
                     picture: flags & HAS_PICTURE != 0,
                     cue: flags & crate::schema::TRACK_CUE != 0,
+                    explicit: flags & crate::schema::TRACK_EXPLICIT != 0,
                     title: tracks.text(6),
                     artist: tracks.text(7),
                     album_title: tracks.text(8),

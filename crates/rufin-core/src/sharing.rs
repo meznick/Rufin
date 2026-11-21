@@ -87,7 +87,11 @@ fn link(source: &SourceConfiguration) -> Option<Link> {
     match source.source_kind()? {
         SourceKind::Navidrome | SourceKind::Subsonic => Some(Link::Created),
         SourceKind::Jellyfin | SourceKind::Emby | SourceKind::Plex => Some(Link::WebClient),
-        SourceKind::Local | SourceKind::Webdav | SourceKind::Smb | SourceKind::Peer => None,
+        SourceKind::Local
+        | SourceKind::Webdav
+        | SourceKind::Smb
+        | SourceKind::Peer
+        | SourceKind::Itunes => None,
     }
 }
 

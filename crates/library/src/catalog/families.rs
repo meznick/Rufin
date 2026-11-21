@@ -112,7 +112,7 @@ pub(crate) static TRACKS: Table = Table {
         Held display_album, Held sort_text, Read duration_millis, Read disc_number,
         Read track_number, Read year, Read release_date, Read date_added, Held released,
         Held added_at, Read first_seen_at, Read bpm, Held comment, Held source_format, Held flags, Read native_favorite,
-        Read native_rating, Read native_play_count, Read native_last_played,
+        Read native_rating, Read native_play_count, Read native_skip_count, Read native_last_played,
     ],
     details: Some(&TRACK_DETAILS),
     tagged: false,
@@ -393,6 +393,17 @@ fn state_cells(state: &NativeState) -> [Option<Cell>; 4] {
     ]
 }
 
+/// The track state cells: tracks also carry the native skip count.
+fn track_state_cells(state: &NativeState) -> [Option<Cell>; 5] {
+    [
+        int(state.favorite.map(i64::from)),
+        int(state.rating),
+        int(state.play_count),
+        int(state.skip_count),
+        int(state.last_played),
+    ]
+}
+
 fn native_state(row: &SqliteRow) -> LibraryResult<NativeState> {
     Ok(NativeState {
         favorite: row
@@ -400,8 +411,16 @@ fn native_state(row: &SqliteRow) -> LibraryResult<NativeState> {
             .map(|value| value != 0),
         rating: row.try_get("native_rating")?,
         play_count: row.try_get("native_play_count")?,
+        skip_count: None,
         last_played: row.try_get("native_last_played")?,
     })
+}
+
+/// The track-only read: tracks also carry the native skip count.
+fn track_state(row: &SqliteRow) -> LibraryResult<NativeState> {
+    let mut state = native_state(row)?;
+    state.skip_count = row.try_get("native_skip_count")?;
+    Ok(state)
 }
 
 fn missing(table: &str, key: i64) -> LibraryError {
@@ -643,7 +662,7 @@ impl Row for Track {
             text(facts.format.as_deref()),
             num(self.flags()),
         ];
-        cells.extend(state_cells(&self.state));
+        cells.extend(track_state_cells(&self.state));
         cells.extend([
             blob(self.binding.as_deref()),
             text(self.source_path.as_deref()),
@@ -712,9 +731,10 @@ impl Row for Track {
                 bpm: row.try_get("bpm")?,
                 comment: snapshot.held_optional(record.comment),
                 format: snapshot.held_optional(record.format),
+                explicit: record.flags & crate::schema::TRACK_EXPLICIT as u16 != 0,
             },
             first_seen: row.try_get("first_seen_at")?,
-            state: native_state(row)?,
+            state: track_state(row)?,
             binding: row.try_get("native_artwork")?,
             source_path: row.try_get("source_path")?,
             cue_path: row.try_get("cue_path")?,

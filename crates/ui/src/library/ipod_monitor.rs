@@ -23,7 +23,7 @@ use std::time::Duration;
 
 use gio::prelude::*;
 
-use crate::ipod_connection::IpodConnection;
+use crate::library::ipod_connection::IpodConnection;
 
 /// How long mount events coalesce before one scan runs.
 const DEBOUNCE: Duration = Duration::from_millis(300);
@@ -172,7 +172,7 @@ mod tests {
 
     use ipod::BackendSearch;
 
-    use crate::ipod_connection::IpodConnection;
+    use crate::library::ipod_connection::IpodConnection;
 
     /// The debounce test uses a **private** main context via the
     /// `trigger_on` seam: touching the global default context would race

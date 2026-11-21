@@ -14,14 +14,13 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_channel::Sender;
-use library::{Database, ReadCancellation, SourceKey};
+use library::{Catalog, ReadCancellation, SourceKey};
+use sources::SourceId;
 use sources::itunes::write::{ItunesPatch, write_patches};
 use sources::itunes::{ITUNES_SOURCE_ID, ItunesSourceConfig};
-use sources::SourceId;
 
-use crate::runtime::{SourceEvent, SourceNotice, SourceNoticeKind};
+use crate::runtime::SourceEvent;
 use crate::settings::SettingsFile;
-use crate::source::configured_source;
 
 const DEBOUNCE: Duration = Duration::from_millis(1500);
 
@@ -58,7 +57,7 @@ struct Inner {
 #[derive(Clone)]
 pub(crate) struct ItunesSync {
     inner: Arc<Inner>,
-    database: Arc<Database>,
+    catalog: Arc<Catalog>,
     settings: SettingsFile,
     runtime: tokio::runtime::Handle,
     events: Sender<SourceEvent>,
@@ -66,14 +65,14 @@ pub(crate) struct ItunesSync {
 
 impl ItunesSync {
     pub(crate) fn new(
-        database: Arc<Database>,
+        catalog: Arc<Catalog>,
         settings: SettingsFile,
         runtime: tokio::runtime::Handle,
         events: Sender<SourceEvent>,
     ) -> Self {
         Self {
             inner: Arc::new(Inner::default()),
-            database,
+            catalog,
             settings,
             runtime,
             events,
@@ -97,13 +96,7 @@ impl ItunesSync {
                     continue;
                 }
                 let source_id = item.configuration.source_id.clone();
-                let Some(source_key) = service
-                    .database
-                    .source_identity_key(&source_id)
-                    .await
-                    .ok()
-                    .flatten()
-                else {
+                let Some(source_key) = service.catalog.source_key(&source_id) else {
                     continue;
                 };
                 service.notify_busy(&source_id, source_key).await;
@@ -119,7 +112,9 @@ impl ItunesSync {
                 .busy_notified
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            notified.insert(source_id.as_str().to_string(), true).is_none()
+            notified
+                .insert(source_id.as_str().to_string(), true)
+                .is_none()
         };
         if fresh {
             tracing::warn!(
@@ -127,31 +122,33 @@ impl ItunesSync {
                 %source_key,
                 "the iTunes library is open in iTunes — write-back stays pending until it closes",
             );
-            let _ = self
-                .events
-                .send(SourceEvent::Notice(SourceNotice {
-                    source_key,
-                    kind: SourceNoticeKind::ItunesLibraryBusy,
-                }))
-                .await;
+            let _ = self.events.send(SourceEvent::ItunesLibraryBusy).await;
         }
     }
 
     /// A rating was set/cleared on an iTunes-source track.
     pub(crate) fn mark_rating(&self, source_id: &SourceId, media_uri: &str) {
-        self.mark(source_id, media_uri, Dirty {
-            rating: true,
-            activity: false,
-        });
+        self.mark(
+            source_id,
+            media_uri,
+            Dirty {
+                rating: true,
+                activity: false,
+            },
+        );
     }
 
     /// A listen was recorded on an iTunes-source track (native slots already
     /// bumped by the caller).
     pub(crate) fn mark_activity(&self, source_id: &SourceId, media_uri: &str) {
-        self.mark(source_id, media_uri, Dirty {
-            rating: false,
-            activity: true,
-        });
+        self.mark(
+            source_id,
+            media_uri,
+            Dirty {
+                rating: false,
+                activity: true,
+            },
+        );
     }
 
     fn mark(&self, source_id: &SourceId, media_uri: &str, dirty: Dirty) {
@@ -207,16 +204,15 @@ impl ItunesSync {
         self.inner.flushing.store(false, Ordering::Release);
     }
 
-    async fn flush_source(
-        &self,
-        source_id: &SourceId,
-        dirty: BTreeMap<String, Dirty>,
-    ) {
+    async fn flush_source(&self, source_id: &SourceId, dirty: BTreeMap<String, Dirty>) {
         let Some(configuration) = ({
             let stored = self.settings.load();
-            configured_source(&stored.sources, source_id)
-                .ok()
-                .map(|configured| configured.configuration)
+            stored
+                .sources
+                .configured
+                .iter()
+                .find(|configured| &configured.configuration.source_id == source_id)
+                .map(|configured| configured.configuration.clone())
         }) else {
             return;
         };
@@ -227,13 +223,7 @@ impl ItunesSync {
             tracing::warn!(%source_id, "could not decode the iTunes source configuration");
             return;
         };
-        let Some(source_key) = self
-            .database
-            .source_identity_key(source_id)
-            .await
-            .ok()
-            .flatten()
-        else {
+        let Some(source_key) = self.catalog.source_key(source_id) else {
             return;
         };
 
@@ -247,7 +237,10 @@ impl ItunesSync {
                     .pending
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner());
-                let entry = pending.by_source.entry(source_id.as_str().to_string()).or_default();
+                let entry = pending
+                    .by_source
+                    .entry(source_id.as_str().to_string())
+                    .or_default();
                 for (media_uri, flags) in &dirty {
                     entry.entry(media_uri.clone()).or_default().merge(*flags);
                 }
@@ -275,7 +268,7 @@ impl ItunesSync {
                 continue;
             };
             let Ok(state) = self
-                .database
+                .catalog
                 .itunes_player_state(media_uri, &ReadCancellation::new())
                 .await
             else {
@@ -323,17 +316,13 @@ impl ItunesSync {
                     .remove(source_id.as_str());
                 for (media_uri, rating) in &base_ratings {
                     if let Err(error) = self
-                        .database
+                        .catalog
                         .write_itunes_base(source_key, media_uri, Some(*rating))
                         .await
                     {
                         tracing::warn!(%error, media_uri, "could not update the iTunes sync base");
                     }
-                    if let Err(error) = self
-                        .database
-                        .adopt_native_rating(media_uri, *rating)
-                        .await
-                    {
+                    if let Err(error) = self.catalog.adopt_native_rating(media_uri, *rating).await {
                         tracing::warn!(%error, media_uri, "could not adopt the native rating");
                     }
                 }
@@ -347,7 +336,10 @@ impl ItunesSync {
                         .pending
                         .lock()
                         .unwrap_or_else(|poisoned| poisoned.into_inner());
-                    let entry = pending.by_source.entry(source_id.as_str().to_string()).or_default();
+                    let entry = pending
+                        .by_source
+                        .entry(source_id.as_str().to_string())
+                        .or_default();
                     for (media_uri, flags) in dirty {
                         entry.entry(media_uri).or_default().merge(flags);
                     }
@@ -378,7 +370,7 @@ pub(crate) async fn record_itunes_listen(
 ) {
     let Some(source_id) = owner
         .shared
-        .database
+        .catalog
         .track_source_by_uri(media_uri, &ReadCancellation::new())
         .await
         .ok()
@@ -394,7 +386,7 @@ pub(crate) async fn record_itunes_listen(
     }
     if let Err(error) = owner
         .shared
-        .database
+        .catalog
         .record_native_listen(media_uri, skipped, started_at)
         .await
     {
@@ -415,10 +407,7 @@ fn itunes_track_id(media_uri: &str) -> Option<u32> {
     if kind != "track" {
         return None;
     }
-    object_id
-        .strip_prefix("itunes:track:")?
-        .parse::<u32>()
-        .ok()
+    object_id.strip_prefix("itunes:track:")?.parse::<u32>().ok()
 }
 
 #[cfg(test)]

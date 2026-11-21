@@ -553,17 +553,14 @@ pub fn track_column_for_key<T: crate::widgets::library_fields::TrackPresentation
         LibraryField::UserRating => {
             let half_stars_shell = Rc::clone(shell);
             let commit_shell = Rc::clone(shell);
-            gtk_widgets::ratings::rating_stars_column::<T, _, _, _>(
-                gtk_widgets::settings::library_field_title(LibraryField::UserRating),
+            crate::ratings::rating_stars_column::<T, _, _, _>(
+                rufin_core::settings::presentation::library_field_title(LibraryField::UserRating),
                 |item: &T| item.rating(),
                 move |item: &T| {
-                    (half_stars_shell.media_menus.half_stars_enabled)(
-                        item.media_uri(),
-                        item.source_id(),
-                    )
+                    half_stars_shell.half_stars_enabled(item.media_uri(), item.source_id())
                 },
                 move |item: &T, rating| {
-                    commit_shell.source.set_rating(
+                    commit_shell.set_rating(
                         ::library::FavoriteTarget::Track(item.media_uri().to_string()),
                         rating,
                     );
@@ -1092,7 +1089,9 @@ fn install_track_list_item_context_menu<T: Clone + 'static>(
     );
 }
 
-fn list_text_cell(item: &gtk::ListItem) -> Option<(gtk::Label, Option<gtk::Image>, Option<gtk::Label>)> {
+fn list_text_cell(
+    item: &gtk::ListItem,
+) -> Option<(gtk::Label, Option<gtk::Image>, Option<gtk::Label>)> {
     if let Some(cell) = list_cell::<RecycledBadgedTextCell>(item) {
         return Some((cell.label(), Some(cell.downloaded()), Some(cell.explicit())));
     }
@@ -1239,6 +1238,7 @@ where
                     bind_playing
                         .as_ref()
                         .and_then(|_| track_value(row).map(|track| track.media_uri.clone())),
+                    title_field && explicit_value(row),
                 )
             })
         }) else {
@@ -1247,7 +1247,7 @@ where
                 badge.set_visible(false);
             }
             if let Some(badge) = explicit.as_ref() {
-                gtk_widgets::recycled_cells::set_explicit_badge(badge, false);
+                crate::widgets::recycled_cells::set_explicit_badge(badge, false);
             }
             if let Some(playing) = bind_playing.as_ref() {
                 playing.unbind(label.upcast_ref());
@@ -1261,7 +1261,7 @@ where
                 .bind_download_badge(downloaded, download);
         }
         if let Some(explicit) = explicit.as_ref() {
-            gtk_widgets::recycled_cells::set_explicit_badge(explicit, flagged);
+            crate::widgets::recycled_cells::set_explicit_badge(explicit, flagged);
         }
         if let Some(playing) = bind_playing.as_ref() {
             if let Some(uri) = track {
@@ -1279,7 +1279,7 @@ where
                 downloaded.set_visible(false);
             }
             if let Some(explicit) = explicit.as_ref() {
-                gtk_widgets::recycled_cells::set_explicit_badge(explicit, false);
+                crate::widgets::recycled_cells::set_explicit_badge(explicit, false);
             }
             if let Some(playing) = playing.as_ref() {
                 playing.unbind(label.upcast_ref());
@@ -1292,7 +1292,15 @@ where
     column
 }
 
-pub struct TrackMergedColumnValues<ItemTrack, Downloaded, Artwork, Title, Subtitle, SubtitleLinks, Explicit> {
+pub struct TrackMergedColumnValues<
+    ItemTrack,
+    Downloaded,
+    Artwork,
+    Title,
+    Subtitle,
+    SubtitleLinks,
+    Explicit,
+> {
     pub track: ItemTrack,
     pub downloaded: Downloaded,
     pub artwork: Artwork,
@@ -1406,6 +1414,7 @@ where
                         subtitle_links(row),
                         downloaded_value(row),
                         item_track(row).map(|track| track.media_uri.clone()),
+                        explicit_value(row),
                     )
                 })
             })
@@ -1414,7 +1423,7 @@ where
             cell.downloaded()
                 .expect("track cell badge")
                 .set_visible(false);
-            gtk_widgets::recycled_cells::set_explicit_badge(&cell.explicit(), false);
+            crate::widgets::recycled_cells::set_explicit_badge(&cell.explicit(), false);
             bind_playing.unbind(title.upcast_ref());
             cell.clear_subtitle();
             clear_merged_artwork(&bind_shell, &cover);
@@ -1426,7 +1435,7 @@ where
         bind_shell
             .downloads
             .bind_download_badge(&cell.downloaded().expect("track cell badge"), downloaded);
-        gtk_widgets::recycled_cells::set_explicit_badge(&cell.explicit(), flagged);
+        crate::widgets::recycled_cells::set_explicit_badge(&cell.explicit(), flagged);
         if let Some(uri) = track {
             bind_playing.bind(title.upcast_ref(), item.position(), &uri);
         }
@@ -1448,7 +1457,7 @@ where
             cell.downloaded()
                 .expect("track cell badge")
                 .set_visible(false);
-            gtk_widgets::recycled_cells::set_explicit_badge(&cell.explicit(), false);
+            crate::widgets::recycled_cells::set_explicit_badge(&cell.explicit(), false);
             playing.unbind(title.upcast_ref());
             cell.clear_subtitle();
             clear_merged_artwork(&unbind_shell, &cell.cover());

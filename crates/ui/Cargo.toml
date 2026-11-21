@@ -12,30 +12,27 @@ publish.workspace = true
 
 [features]
 # Forwards the ipod crate's write-surface gate (b017_plan §4, step 0):
-# `cargo build -p rufin -F gtk-shell/sync-writes` compiles the whole
-# graph with real device writes enabled. Stays opt-in until B-017's
-# gate flip (D-3) makes it default-on.
+# `cargo build -p rufin -F ui/sync-writes` compiles the whole graph with
+# real device writes enabled. Stays opt-in until B-017's gate flip (D-3)
+# makes it default-on.
 sync-writes = ["ipod/sync-writes"]
 
 [dependencies]
-ipod-sync.workspace = true
-itl-core = "0.1.3"
-# The production preflight composition (`preflight_with_backend`) needs the
-# backend handle. The ipod crate is pure Rust with runtime dlopen, so this
-# stays a compile-time-only edge — builds without libgpod.so still work.
-ipod.workspace = true
-gio.workspace = true
-glib.workspace = true
-
-gtk-widgets.workspace = true
-artwork.workspace = true
-
 adw = { workspace = true, features = ["v1_9", "gtk_v4_20"] }
 app-identity.workspace = true
 async-channel.workspace = true
 audio-processing.workspace = true
 desktop-integration.workspace = true
+gio.workspace = true
+glib.workspace = true
 gtk = { workspace = true, features = ["v4_20"] }
+ipod.workspace = true
+ipod-sync.workspace = true
+# The artwork provider's pid → path resolution reads the `.itl` the
+# configured source points at (b017_plan §8, the A3 enabler) — the same
+# registry crates the sources crate's iTunes catalog uses.
+itl-core = "0.1.3"
+itl-sync = "0.1.0"
 library.workspace = true
 localization.workspace = true
 playback.workspace = true
@@ -45,10 +42,7 @@ regex.workspace = true
 roxmltree.workspace = true
 rufin-core.workspace = true
 sources.workspace = true
-gstreamer.workspace = true
-itl-core = "0.1.3"
-itl-sync = "0.1.0"
-
+tempfile.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 web.workspace = true

@@ -127,29 +127,11 @@ impl ItunesSource {
 
     pub(crate) async fn acquire_catalog(
         &self,
-        catalog: &mut library::Catalog<'_>,
-        progress: &(dyn Fn(crate::SourceReadProgress) + Send + Sync),
+        observation: &mut library::Observation<'_>,
+        progress: &(dyn Fn(crate::source::SourceProgress) + Send + Sync),
         cancelled: &(dyn Fn() -> bool + Send + Sync),
     ) -> SourceResult<()> {
-        catalog::acquire(self, catalog, progress, cancelled).await
-    }
-
-    /// Stream the locally mapped file. The observation stored the host path
-    /// in `tracks.source_path`; `database.track` reads it back.
-    pub(crate) async fn stream(
-        &self,
-        database: &library::Database,
-        media_uri: &str,
-    ) -> SourceResult<audio_processing::ResolvedStream> {
-        let track = database
-            .track(media_uri, &library::ReadCancellation::new())
-            .await?
-            .ok_or(SourceError::NotFound)?;
-        let path = track.access.source_path.ok_or(SourceError::NotFound)?;
-        let uri = url::Url::from_file_path(&path)
-            .map_err(|_| SourceError::NotFound)?
-            .to_string();
-        Ok(audio_processing::ResolvedStream::new(uri))
+        catalog::acquire(self, observation, progress, cancelled).await
     }
 }
 
@@ -163,9 +145,7 @@ pub fn connect(
     tz_offset_seconds: Option<i32>,
 ) -> SourceResult<SourceConfiguration> {
     if library.as_os_str().is_empty() {
-        return Err(SourceError::InvalidRequest(
-            "iTunes library path is empty",
-        ));
+        return Err(SourceError::InvalidRequest("iTunes library path is empty"));
     }
     let config = ItunesSourceConfig {
         library,

@@ -1,6 +1,10 @@
 mod catalog;
-mod device_manager;
+pub mod device_manager;
 mod home_layout;
+pub mod ipod_connection;
+mod ipod_discovery;
+pub(crate) mod ipod_page;
+pub(crate) mod ipod_sync_service;
 mod track_selection;
 pub(crate) use catalog::CatalogUi;
 

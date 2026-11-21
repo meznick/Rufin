@@ -1075,7 +1075,7 @@ impl crate::player::PlayerUi {
             .fullscreen_player
             .title
             .set_text(&presentation.title);
-        gtk_widgets::recycled_cells::set_explicit_badge(
+        crate::widgets::recycled_cells::set_explicit_badge(
             &self.views.fullscreen_player.explicit,
             presentation.explicit,
         );

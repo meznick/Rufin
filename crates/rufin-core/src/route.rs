@@ -299,9 +299,8 @@ mod tests {
     #[test]
     fn ipod_route_is_never_source_scoped() {
         assert!(
-            !Route::Ipod.requires_selected_source(),
+            !Route::Ipod.requires_selected_source(library::SearchMode::Title),
             "the device page must render with no configured source"
         );
-        assert!(!Route::Ipod.uses_selected_source());
     }
 }

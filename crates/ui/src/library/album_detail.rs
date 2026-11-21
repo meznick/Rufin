@@ -1242,7 +1242,7 @@ enum AlbumTrackField {
     Image(ArtworkTile),
     Favorite(gtk::Button),
     Tools,
-    Rating(gtk_widgets::ratings::RatingControl),
+    Rating(crate::ratings::RatingControl),
 }
 
 impl AlbumTrackSlot {
@@ -1346,7 +1346,7 @@ impl AlbumTrackSlot {
                         (cell.clone().upcast(), AlbumTrackField::Index(cell))
                     }
                     LibraryField::UserRating => {
-                        let control = gtk_widgets::ratings::RatingControl::new(None, false);
+                        let control = crate::ratings::RatingControl::new(None, false);
                         let widget = control.widget().clone();
                         widget.set_halign(gtk::Align::Center);
                         widget.set_valign(gtk::Align::Center);
@@ -1359,7 +1359,7 @@ impl AlbumTrackSlot {
                                 return;
                             };
                             if let Some(track) = row.borrow().clone() {
-                                shell.source.set_rating(
+                                shell.set_rating(
                                     library::FavoriteTarget::Track(track.media_uri.clone()),
                                     rating,
                                 );
@@ -1442,7 +1442,7 @@ impl AlbumTrackSlot {
                                 .state
                                 .rating
                                 .and_then(|value| u8::try_from(value).ok()),
-                            (shell.media_menus.half_stars_enabled)(
+                            (|uri: &str, id: Option<&str>| shell.half_stars_enabled(uri, id))(
                                 &track.media_uri,
                                 track.source_id.as_deref(),
                             ),

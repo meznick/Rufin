@@ -271,6 +271,9 @@ impl CatalogUi {
             Route::Home => self.home_route(std::sync::Arc::clone(&read.view)),
             Route::Search => return self.search_route(),
             Route::Radio => return self.radio_route(),
+            // The device page is built by the shell (shell::route), never by
+            // the catalog UI; this arm only closes the match.
+            Route::Ipod => return MountedRoute::static_widget(gtk::Label::new(None).upcast()),
         };
         mounted.with_view(view)
     }

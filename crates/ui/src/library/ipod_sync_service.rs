@@ -1,7 +1,7 @@
 //! B-015: the sync boundary service (b015_plan §3.2).
 //!
 //! `IpodSyncService` owns the sync lifecycle: the gating decision rides
-//! the connection snapshot ([`crate::ipod_page::sync_controls`]), while
+//! the connection snapshot ([`crate::library::ipod_page::sync_controls`]), while
 //! this service runs the engine. A **per-run thread** does the blocking
 //! work (the `.itl` parse, the device parse, the engine transaction) —
 //! never the connection worker, whose serialized FIFO must stay free
@@ -48,7 +48,7 @@ use ipod_sync::sync::report::{
 };
 use itl_core::ItlFile;
 
-use crate::ipod_discovery::ABI_UNVERIFIED_DIAGNOSTIC;
+use crate::library::ipod_discovery::ABI_UNVERIFIED_DIAGNOSTIC;
 
 /// The stored event ring's cap — the B-016 progress panel consumes the
 /// stream; B-015 only retains the recent tail.

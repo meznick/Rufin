@@ -348,6 +348,8 @@ pub struct TrackRow {
     pub date_added: Option<i64>,
     pub source_format: Option<String>,
     pub state: TrackState,
+    /// Parental advisory: `true` when the source marks the track explicit.
+    pub explicit: bool,
     pub is_downloaded: bool,
     pub cue: bool,
     pub links: TrackLinks,
@@ -811,6 +813,7 @@ impl<'a> Builder<'a> {
                 record.native_rating,
                 self.context.played(slot, record),
             ),
+            explicit: record.flags & crate::schema::TRACK_EXPLICIT as u16 != 0,
             is_downloaded: record.flags & DOWNLOADED != 0,
             cue: record.flags & CUE != 0,
             links: TrackLinks {
@@ -1241,6 +1244,7 @@ impl<'a> Builder<'a> {
                     date_added: None,
                     source_format: None,
                     state: TrackState::default(),
+                    explicit: false,
                     is_downloaded: false,
                     cue: false,
                     links: TrackLinks::default(),

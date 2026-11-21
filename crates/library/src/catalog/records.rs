@@ -94,6 +94,7 @@ pub(crate) struct NativeState {
     /// 0..100.
     pub(crate) rating: Option<i64>,
     pub(crate) play_count: Option<i64>,
+    pub(crate) skip_count: Option<i64>,
     pub(crate) last_played: Option<i64>,
 }
 
@@ -105,6 +106,7 @@ impl NativeState {
             self.rating = rating;
         }
         self.play_count = incoming.play_count.filter(|_| plays).or(self.play_count);
+        self.skip_count = incoming.skip_count.filter(|_| plays).or(self.skip_count);
         self.last_played = incoming.last_played.filter(|_| plays).or(self.last_played);
     }
 }
@@ -147,6 +149,7 @@ pub(crate) struct TrackFacts {
     pub(crate) bpm: Option<i64>,
     pub(crate) comment: Option<String>,
     pub(crate) format: Option<String>,
+    pub(crate) explicit: bool,
 }
 
 impl TrackFacts {
@@ -165,6 +168,7 @@ impl TrackFacts {
             bpm: metadata.bpm,
             comment: metadata.comment.clone(),
             format: metadata.source_format.clone(),
+            explicit: metadata.explicit,
         }
     }
 }
@@ -244,6 +248,7 @@ impl Track {
     pub(crate) fn flags(&self) -> i64 {
         picture_flag(self.binding.as_deref())
             | i64::from(self.cue_path.is_some()) * crate::schema::TRACK_CUE
+            | i64::from(self.facts.explicit) * crate::schema::TRACK_EXPLICIT
     }
 }
 

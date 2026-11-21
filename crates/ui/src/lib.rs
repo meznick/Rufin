@@ -19,6 +19,9 @@ pub use shell::{
     ApplicationExit, run_application, run_application_after_update, run_startup_error_application,
 };
 
+/// The iPod connection surface, visible to the env-gated integration gates.
+pub use library::{device_manager, ipod_connection};
+
 /// Registers the interface definitions, styles and icons compiled into the binary.
 pub fn register_resources() -> Result<(), String> {
     use gtk::glib::types::StaticType;

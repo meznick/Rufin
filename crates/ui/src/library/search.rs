@@ -897,18 +897,17 @@ fn search_column(
     if field == LibraryField::UserRating && category == CollectionCategory::Tracks {
         let rating_shell = Rc::clone(shell);
         let commit_shell = Rc::clone(shell);
-        return gtk_widgets::ratings::rating_stars_column::<SearchItem, _, _, _>(
-            gtk_widgets::settings::library_field_title(field),
+        return crate::ratings::rating_stars_column::<SearchItem, _, _, _>(
+            rufin_core::settings::presentation::library_field_title(field),
             move |item| match item {
-                SearchItem::Track(row, _) => row
-                    .state
-                    .rating
-                    .and_then(|value| u8::try_from(value).ok()),
+                SearchItem::Track(row, _) => {
+                    row.state.rating.and_then(|value| u8::try_from(value).ok())
+                }
                 _ => None,
             },
             move |item| match item {
                 SearchItem::Track(row, _) => {
-                    (rating_shell.media_menus.half_stars_enabled)(
+                    (|uri: &str, id: Option<&str>| rating_shell.half_stars_enabled(uri, id))(
                         &row.media_uri,
                         row.source_id.as_deref(),
                     )
@@ -917,7 +916,7 @@ fn search_column(
             },
             move |item, rating| {
                 if let SearchItem::Track(row, _) = item {
-                    commit_shell.source.set_rating(
+                    commit_shell.set_rating(
                         library::FavoriteTarget::Track(row.media_uri.clone()),
                         rating,
                     );

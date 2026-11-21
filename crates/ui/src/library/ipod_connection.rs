@@ -42,8 +42,8 @@ use ipod_sync::{
     DeviceFacts, Discovery, MountSource, ProcMountInfo, RetrieveError, ScanReport, collect,
 };
 
-use crate::device_manager::{ConnectionState, DeviceInfo, DeviceManager, PreflightError};
-use crate::ipod_discovery::{apply_scan, map_readiness};
+use crate::library::device_manager::{ConnectionState, DeviceInfo, DeviceManager, PreflightError};
+use crate::library::ipod_discovery::{apply_scan, map_readiness};
 
 /// One observable view of the connection FSM. Latest-wins; full clones
 /// (`DeviceInfo` is strings and numbers — this is the UI boundary, not a hot
@@ -71,6 +71,7 @@ pub struct OperationNotice {
     pub detail: String,
 }
 
+#[allow(dead_code)] // the monitor path and gates exercise these
 enum Command {
     Scan,
     /// A scan against a caller-supplied mount source (tests/edge seams; the
@@ -231,6 +232,7 @@ pub struct IpodConnection {
     alive: Arc<AtomicBool>,
 }
 
+#[allow(dead_code)] // the monitor path and the env-gated gates exercise these
 impl IpodConnection {
     /// Start the worker with the production backend search
     /// (`RUFIN_LIBGPOD_DIR`, then the loader's default paths).

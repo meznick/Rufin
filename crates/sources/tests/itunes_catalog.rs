@@ -1,3 +1,4 @@
+#![allow(clippy::print_stderr)] // skip messages are diagnostics, not print-debugging
 // Integration test for the iTunes source read path, gated by
 // `ITL_TEST_PATH` (defaults to the full production snapshot at
 // `/nvme2tb/iTunesACCEPT/`; skipped when absent).
@@ -6,18 +7,77 @@
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 use itl_sync::paths::{MappedLocation, MediaMapping};
-use library::{Database, ReadCancellation, source_entity_uri};
-use sources::{LocalImageRef, Source, SourceId, SourceImageRequest, SourceSetup};
+use library::{Catalog, ReadCancellation, source_entity_uri};
+use sources::{LocalImageRef, Refresh, Source, SourceId, SourceImageRequest};
 
 fn test_library() -> Option<PathBuf> {
-    std::env::var_os("ITL_TEST_PATH").map(PathBuf::from).or_else(|| {
-        let default = PathBuf::from("/nvme2tb/iTunesACCEPT/iTunes Library.itl");
-        default.exists().then_some(default)
-    })
+    std::env::var_os("ITL_TEST_PATH")
+        .map(PathBuf::from)
+        .or_else(|| {
+            let default = PathBuf::from("/nvme2tb/iTunesACCEPT/iTunes Library.itl");
+            default.exists().then_some(default)
+        })
+}
+
+/// Opens a fresh Catalog, connects the iTunes source, and reconciles it.
+async fn connect(
+    source_id: &str,
+    library: PathBuf,
+    media_folder: Option<PathBuf>,
+) -> (Catalog, Source, library::SourceKey, PathBuf) {
+    let directory = tempfile::tempdir().unwrap();
+    let database_path = directory.path().join("library.sqlite");
+    let catalog = Catalog::open(&database_path).await.unwrap();
+    let configuration =
+        sources::itunes::connect(SourceId::new(source_id), library, media_folder, None).unwrap();
+    let source = Source::open(configuration, None, None, None).unwrap();
+    catalog
+        .reconcile_source(
+            &SourceId::new(source_id),
+            sources::ITUNES_SOURCE_ID,
+            "iTunes",
+        )
+        .await
+        .unwrap();
+    let source_key = catalog.source_key(&SourceId::new(source_id)).unwrap();
+    (catalog, source, source_key, database_path)
+}
+
+async fn acquire(source: &Source, catalog: &Catalog) {
+    let cancelled = Arc::new(AtomicBool::new(false));
+    source
+        .acquire_catalog(catalog, &|_| {}, cancelled, Refresh::Changed)
+        .await
+        .unwrap();
+}
+
+async fn track_counts(
+    database_path: &std::path::Path,
+    source_key: library::SourceKey,
+) -> (i64, i64) {
+    use sqlx::Connection as _;
+    let mut connection = sqlx::SqliteConnection::connect_with(
+        &sqlx::sqlite::SqliteConnectOptions::new().filename(database_path),
+    )
+    .await
+    .unwrap();
+    let tracks: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM tracks WHERE source_key=?1 AND indexed=1")
+            .bind(source_key.raw())
+            .fetch_one(&mut connection)
+            .await
+            .unwrap();
+    let albums: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM albums WHERE source_key=?1 AND indexed=1")
+            .bind(source_key.raw())
+            .fetch_one(&mut connection)
+            .await
+            .unwrap();
+    (tracks, albums)
 }
 
 #[tokio::test]
@@ -58,51 +118,15 @@ async fn itunes_catalog_reads_tracks_albums_and_stats() {
     }
     let max_expected = expected_albums.values().copied().max().unwrap_or(0);
 
-    let directory = tempfile::tempdir().unwrap();
-    let database_path = directory.path().join("library.sqlite");
-    let database = Database::open(&database_path).await.unwrap();
-    let connected = Source::connect(
-        SourceId::new("itunes-test"),
-        SourceSetup::Itunes {
-            name: None,
-            library: library_path.clone(),
-            media_folder: None,
-            tz_offset_seconds: None,
-        },
-        "",
-    )
-    .await
-    .unwrap();
-    let (_configuration, source, _credential) = connected.into_parts();
-    database
-        .reconcile_source(
-            &SourceId::new("itunes-test"),
-            sources::ITUNES_SOURCE_ID,
-            "iTunes",
-        )
-        .await
-        .unwrap();
-
-    let cancelled = Arc::new(AtomicBool::new(false));
-    let (complete, _) = source
-        .acquire_catalog(&database, &|_| {}, Arc::clone(&cancelled), true)
-        .await
-        .unwrap();
-    assert!(complete);
+    let (catalog, source, source_key, database_path) =
+        connect("itunes-test", library_path.clone(), None).await;
+    acquire(&source, &catalog).await;
 
     // Tracks, albums and stats mirror the .itl — except no-location tracks,
     // which have no file to play and are not published.
-    let source_key = database
-        .source_identity_key(&SourceId::new("itunes-test"))
-        .await
-        .unwrap()
-        .unwrap();
-    let (albums, count) = database
-        .source_counts(source_key, &ReadCancellation::new())
-        .await
-        .unwrap();
+    let (count, albums) = track_counts(&database_path, source_key).await;
     assert_eq!(
-        count, report.located,
+        count, report.located as i64,
         "catalog holds located unique .itl tracks only"
     );
     assert!(albums > 0, "albums observed");
@@ -118,13 +142,12 @@ async fn itunes_catalog_reads_tracks_albums_and_stats() {
         )
         .await
         .unwrap();
-        let album_rows: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM albums WHERE source_key=?1 AND indexed=1",
-        )
-        .bind(source_key.raw())
-        .fetch_one(&mut connection)
-        .await
-        .unwrap();
+        let album_rows: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM albums WHERE source_key=?1 AND indexed=1")
+                .bind(source_key.raw())
+                .fetch_one(&mut connection)
+                .await
+                .unwrap();
         assert_eq!(
             album_rows,
             expected_albums.len() as i64,
@@ -152,8 +175,7 @@ async fn itunes_catalog_reads_tracks_albums_and_stats() {
         .await
         .unwrap();
         assert_eq!(
-            max_track_count,
-            max_expected as i64,
+            max_track_count, max_expected as i64,
             "the largest album holds all of its tracks (play album works)"
         );
     }
@@ -169,7 +191,7 @@ async fn itunes_catalog_reads_tracks_albums_and_stats() {
         "track",
         &format!("itunes:track:{}", no_location.id()),
     );
-    let missing = database
+    let missing = catalog
         .itunes_player_state(&missing_uri, &ReadCancellation::new())
         .await
         .unwrap();
@@ -182,7 +204,7 @@ async fn itunes_catalog_reads_tracks_albums_and_stats() {
     // Refresh sweeps rows the new observation did not include: a stale
     // catalog from an older build must not keep no-location tracks visible.
     {
-        let mut catalog = database.catalog("itunes-test", None).await.unwrap();
+        let mut observation = catalog.observe("itunes-test").await.unwrap();
         let mut stale = library::CatalogBatch::default();
         stale.tracks.push(library::TrackObservation {
             object_id: format!("itunes:track:{}", no_location.id()),
@@ -193,23 +215,14 @@ async fn itunes_catalog_reads_tracks_albums_and_stats() {
             },
             ..Default::default()
         });
-        catalog.apply_catalog(&stale, true).await.unwrap();
+        observation.apply_catalog(&stale, true).await.unwrap();
     }
-    let (_, with_stale) = database
-        .source_counts(source_key, &ReadCancellation::new())
-        .await
-        .unwrap();
-    assert_eq!(with_stale, report.located + 1, "stale row seeded");
-    source
-        .acquire_catalog(&database, &|_| {}, Arc::clone(&cancelled), true)
-        .await
-        .unwrap();
-    let (_, after_refresh) = database
-        .source_counts(source_key, &ReadCancellation::new())
-        .await
-        .unwrap();
+    let (with_stale, _) = track_counts(&database_path, source_key).await;
+    assert_eq!(with_stale, report.located as i64 + 1, "stale row seeded");
+    acquire(&source, &catalog).await;
+    let (after_refresh, _) = track_counts(&database_path, source_key).await;
     assert_eq!(
-        after_refresh, report.located,
+        after_refresh, report.located as i64,
         "refresh unindexes tracks absent from the .itl observation"
     );
 
@@ -225,7 +238,7 @@ async fn itunes_catalog_reads_tracks_albums_and_stats() {
         "track",
         &format!("itunes:track:{}", rated.id()),
     );
-    let state = database
+    let state = catalog
         .itunes_player_state(&rated_uri, &ReadCancellation::new())
         .await
         .unwrap();
@@ -234,7 +247,7 @@ async fn itunes_catalog_reads_tracks_albums_and_stats() {
         Some(i64::from(rated.rating())),
         "rating imported from the .itl"
     );
-    let base = database
+    let base = catalog
         .itunes_base(source_key, &ReadCancellation::new())
         .await
         .unwrap();
@@ -255,7 +268,7 @@ async fn itunes_catalog_reads_tracks_albums_and_stats() {
         "track",
         &format!("itunes:track:{}", played.id()),
     );
-    let played_state = database
+    let played_state = catalog
         .itunes_player_state(&played_uri, &ReadCancellation::new())
         .await
         .unwrap();
@@ -286,7 +299,8 @@ async fn itunes_catalog_reads_tracks_albums_and_stats() {
                 &format!("itunes:track:{}", explicit.id()),
             );
             let flagged: i64 = sqlx::query_scalar(
-                "SELECT json_extract(metadata, '$.explicit') FROM tracks WHERE media_uri=?1",
+                "SELECT json_extract(details.metadata, '$.explicit') FROM track_details details
+                 WHERE details.track_key=(SELECT track_key FROM tracks WHERE media_uri=?1)",
             )
             .bind(&uri)
             .fetch_one(&mut connection)
@@ -294,7 +308,8 @@ async fn itunes_catalog_reads_tracks_albums_and_stats() {
             .unwrap();
             assert_eq!(flagged, 1, "explicit flag imported from the .itl");
             let stored: String = sqlx::query_scalar(
-                "SELECT json(metadata) FROM tracks WHERE media_uri=?1",
+                "SELECT json(details.metadata) FROM track_details details
+                 WHERE details.track_key=(SELECT track_key FROM tracks WHERE media_uri=?1)",
             )
             .bind(&uri)
             .fetch_one(&mut connection)
@@ -312,7 +327,8 @@ async fn itunes_catalog_reads_tracks_albums_and_stats() {
                 &format!("itunes:track:{}", clean.id()),
             );
             let flagged: i64 = sqlx::query_scalar(
-                "SELECT json_extract(metadata, '$.explicit') FROM tracks WHERE media_uri=?1",
+                "SELECT json_extract(details.metadata, '$.explicit') FROM track_details details
+                 WHERE details.track_key=(SELECT track_key FROM tracks WHERE media_uri=?1)",
             )
             .bind(uri)
             .fetch_one(&mut connection)
@@ -403,41 +419,9 @@ async fn itunes_embedded_artwork_publishes_bindings_and_serves_images() {
         }
     }
 
-    let directory = tempfile::tempdir().unwrap();
-    let database_path = directory.path().join("library.sqlite");
-    let database = Database::open(&database_path).await.unwrap();
-    let connected = Source::connect(
-        SourceId::new("itunes-art-test"),
-        SourceSetup::Itunes {
-            name: None,
-            library: library_path.clone(),
-            media_folder: None,
-            tz_offset_seconds: None,
-        },
-        "",
-    )
-    .await
-    .unwrap();
-    let (_configuration, source, _credential) = connected.into_parts();
-    database
-        .reconcile_source(
-            &SourceId::new("itunes-art-test"),
-            sources::ITUNES_SOURCE_ID,
-            "iTunes",
-        )
-        .await
-        .unwrap();
-    let source_key = database
-        .source_identity_key(&SourceId::new("itunes-art-test"))
-        .await
-        .unwrap()
-        .unwrap();
-
-    let cancelled = Arc::new(AtomicBool::new(false));
-    source
-        .acquire_catalog(&database, &|_| {}, Arc::clone(&cancelled), true)
-        .await
-        .unwrap();
+    let (catalog, source, source_key, database_path) =
+        connect("itunes-art-test", library_path.clone(), None).await;
+    acquire(&source, &catalog).await;
 
     let uri_for = |id: u32| {
         source_entity_uri(
@@ -446,7 +430,7 @@ async fn itunes_embedded_artwork_publishes_bindings_and_serves_images() {
             &format!("itunes:track:{id}"),
         )
     };
-    let bindings = database
+    let bindings = catalog
         .itunes_artwork_bindings(source_key, &ReadCancellation::new())
         .await
         .unwrap();
@@ -491,7 +475,8 @@ async fn itunes_embedded_artwork_publishes_bindings_and_serves_images() {
         .await
         .unwrap();
         let native_artwork: Option<Vec<u8>> = sqlx::query_scalar(
-            "SELECT native_artwork FROM tracks WHERE source_key=?1 AND media_uri=?2",
+            "SELECT details.native_artwork FROM track_details details
+             WHERE details.track_key=(SELECT track_key FROM tracks WHERE source_key=?1 AND media_uri=?2)",
         )
         .bind(source_key.raw())
         .bind(&uri)
@@ -506,11 +491,8 @@ async fn itunes_embedded_artwork_publishes_bindings_and_serves_images() {
 
     // A refresh reuses the cached binding verbatim (the file revision is
     // unchanged), and the picture is still served.
-    source
-        .acquire_catalog(&database, &|_| {}, Arc::clone(&cancelled), true)
-        .await
-        .unwrap();
-    let refreshed = database
+    acquire(&source, &catalog).await;
+    let refreshed = catalog
         .itunes_artwork_bindings(source_key, &ReadCancellation::new())
         .await
         .unwrap();

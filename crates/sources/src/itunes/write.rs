@@ -7,8 +7,8 @@
 //! through `write_patches`.
 
 use super::ItunesSourceConfig;
-use itl_sync::sync::{PatchSet, TrackPatch};
 use itl_sync::WriteOptions;
+use itl_sync::sync::{PatchSet, TrackPatch};
 
 /// Absolute-value patch for one track; `None` = leave the field untouched.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -84,10 +84,11 @@ pub async fn write_patches(
         media_root: config.media_folder.clone(),
         ..WriteOptions::default()
     };
-    let report = tokio::task::spawn_blocking(move || itl_sync::write_library(&library, &set, &options))
-        .await
-        .map_err(|e| ItunesWriteError::Rejected(format!("write task failed: {e}")))?
-        .map_err(|e| ItunesWriteError::Rejected(e.to_string()))?;
+    let report =
+        tokio::task::spawn_blocking(move || itl_sync::write_library(&library, &set, &options))
+            .await
+            .map_err(|e| ItunesWriteError::Rejected(format!("write task failed: {e}")))?
+            .map_err(|e| ItunesWriteError::Rejected(e.to_string()))?;
 
     // A patch for an id the library does not hold is a silent no-op inside
     // the write pipeline (empty change set, successful exit). Treat it as a

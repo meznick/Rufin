@@ -538,7 +538,6 @@ impl PlaybackOwner {
             .await
         {
             Ok(_) => {
-                self.scrobbler.listen_recorded(deliveries.len());
                 crate::source::itunes_sync::record_itunes_listen(
                     &self.source,
                     &listen.media_uri,

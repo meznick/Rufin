@@ -43,11 +43,11 @@ use gtk::glib;
 use gtk::subclass::prelude::ObjectSubclassIsExt;
 use localization::{msgid, tr, tr_with};
 
-use crate::device_manager::{ConnectionState, DeviceInfo};
-use crate::ipod_connection::{ConnectionSnapshot, IpodConnection};
-use crate::ipod_sync_service::{IpodSyncService, SyncPhase, SyncState};
+use crate::library::device_manager::{ConnectionState, DeviceInfo};
+use crate::library::ipod_connection::{ConnectionSnapshot, IpodConnection};
+use crate::library::ipod_sync_service::{IpodSyncService, SyncPhase, SyncState};
 
-gtk_widgets::composite_box!(
+crate::composite_box!(
     pub IpodPageView,
     ipod_page_view_imp,
     "RufinIpodPageView",
@@ -593,7 +593,7 @@ impl IpodPageView {
 /// The review sheet's one-line summary — the counts joined with the
 /// capacity verdict (the widget layer translates; the pure counts live
 /// in the service).
-fn review_summary_line(summary: &crate::ipod_sync_service::ReviewSummary) -> String {
+fn review_summary_line(summary: &crate::library::ipod_sync_service::ReviewSummary) -> String {
     if summary.nothing_to_do {
         return tr(msgid(
             "Nothing to sync — the device already matches the library.",
@@ -671,7 +671,7 @@ fn format_mb(bytes: u64) -> String {
 
 /// One diff row: initials tile, title over artist · album, the
 /// right-aligned size or transcode chip.
-fn diff_track_row(track: &crate::ipod_sync_service::DiffTrack) -> gtk::Widget {
+fn diff_track_row(track: &crate::library::ipod_sync_service::DiffTrack) -> gtk::Widget {
     let row = gtk::Box::new(gtk::Orientation::Horizontal, 12);
     row.add_css_class("ipod-diff-row");
 
@@ -719,7 +719,7 @@ fn diff_track_row(track: &crate::ipod_sync_service::DiffTrack) -> gtk::Widget {
 /// min → max. Every other field is host-wins device-ward: the device
 /// gets the host's value, so the chip shows device → host — including
 /// a rating downgrade, which is real.
-fn stat_delta_direction(delta: &crate::ipod_sync_service::StatDelta) -> (i64, i64) {
+fn stat_delta_direction(delta: &crate::library::ipod_sync_service::StatDelta) -> (i64, i64) {
     match delta.field {
         ipod_sync::dry_run::StatField::PlayCount | ipod_sync::dry_run::StatField::SkipCount => {
             (delta.host.min(delta.device), delta.host.max(delta.device))
@@ -729,7 +729,7 @@ fn stat_delta_direction(delta: &crate::ipod_sync_service::StatDelta) -> (i64, i6
 }
 
 /// One stat-update row: title/artist and a chip per changed field.
-fn stat_track_row(track: &crate::ipod_sync_service::StatTrack) -> gtk::Widget {
+fn stat_track_row(track: &crate::library::ipod_sync_service::StatTrack) -> gtk::Widget {
     let row = gtk::Box::new(gtk::Orientation::Horizontal, 12);
     row.add_css_class("ipod-diff-row");
 
@@ -797,7 +797,7 @@ fn diff_section(title: &str, count: usize, rows: Vec<gtk::Widget>, collapsed: bo
 /// A nested member line: a colored +/− prefix over the track name.
 fn member_row(
     prefix: &str,
-    track: &crate::ipod_sync_service::DiffTrack,
+    track: &crate::library::ipod_sync_service::DiffTrack,
     class: &str,
 ) -> gtk::Widget {
     let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
@@ -824,7 +824,7 @@ fn member_row(
 
 /// One playlist diff row: the name, a delta chip, and the expandable
 /// member list. Deferred smart lists render a plain row with a chip.
-fn playlist_diff_row(playlist: &crate::ipod_sync_service::DiffPlaylist) -> gtk::Widget {
+fn playlist_diff_row(playlist: &crate::library::ipod_sync_service::DiffPlaylist) -> gtk::Widget {
     if playlist.deferred {
         let row = gtk::Box::new(gtk::Orientation::Horizontal, 12);
         row.add_css_class("ipod-diff-row");
@@ -886,7 +886,10 @@ fn playlist_diff_row(playlist: &crate::ipod_sync_service::DiffPlaylist) -> gtk::
 /// The always-visible inline review card: the heading, the summary
 /// line and the grouped diff sections. No footer — the Sync button is
 /// the single action.
-fn render_review_card(view: &IpodPageView, summary: &crate::ipod_sync_service::ReviewSummary) {
+fn render_review_card(
+    view: &IpodPageView,
+    summary: &crate::library::ipod_sync_service::ReviewSummary,
+) {
     let imp = view.imp();
     imp.review_heading.set_label(&tr(msgid("Sync review")));
     imp.review_summary.set_label(&review_summary_line(summary));
@@ -1048,7 +1051,7 @@ fn render_running_float(view: &IpodPageView, progress: &ipod_sync::sync::report:
 /// the resume hint and the collapsed Details expander, and Close.
 fn render_result_float(
     view: &IpodPageView,
-    summary: &crate::ipod_sync_service::SyncOutcomeSummary,
+    summary: &crate::library::ipod_sync_service::SyncOutcomeSummary,
 ) {
     let imp = view.imp();
     imp.float_running.set_visible(false);
@@ -1092,7 +1095,9 @@ fn render_result_float(
     clear_box(&imp.float_details);
     if failed {
         imp.float_details.set_visible(true);
-        if let Some(diagnostic) = crate::ipod_sync_service::outcome_diagnostic(&summary.status) {
+        if let Some(diagnostic) =
+            crate::library::ipod_sync_service::outcome_diagnostic(&summary.status)
+        {
             let label = gtk::Label::new(Some(&diagnostic));
             label.set_xalign(0.0);
             label.set_wrap(true);
@@ -1354,7 +1359,7 @@ mod tests {
 
     use ipod::BackendSearch;
 
-    use crate::ipod_connection::OperationNotice;
+    use crate::library::ipod_connection::OperationNotice;
 
     fn snapshot_with(state: ConnectionState) -> ConnectionSnapshot {
         ConnectionSnapshot {
@@ -1371,7 +1376,7 @@ mod tests {
     fn rich_snapshot(state: ConnectionState) -> ConnectionSnapshot {
         ConnectionSnapshot {
             state,
-            device: Some(crate::device_manager::DeviceInfo {
+            device: Some(crate::library::device_manager::DeviceInfo {
                 mount_point: PathBuf::from("/run/media/test/IPOD"),
                 name: "Test iPod".to_string(),
                 model: "Classic".to_string(),
@@ -1394,8 +1399,8 @@ mod tests {
 
     /// A device with every fact populated — the full-overview fixture
     /// for the B-014 pure-layer gates.
-    fn full_device() -> crate::device_manager::DeviceInfo {
-        crate::device_manager::DeviceInfo {
+    fn full_device() -> crate::library::device_manager::DeviceInfo {
+        crate::library::device_manager::DeviceInfo {
             mount_point: PathBuf::from("/run/media/test/IPOD"),
             name: "iPod user".to_string(),
             model: "Video (Black)".to_string(),
@@ -1553,7 +1558,7 @@ mod tests {
 
     #[test]
     fn stat_delta_direction_points_the_way_the_sync_moves() {
-        use crate::ipod_sync_service::StatDelta;
+        use crate::library::ipod_sync_service::StatDelta;
         use ipod_sync::dry_run::StatField;
 
         // Counts merge additively: the chip shows min → max, never a

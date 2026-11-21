@@ -253,24 +253,21 @@ fn playlist_entry_column(
         LibraryField::UserRating => {
             let half_stars_shell = Rc::clone(shell);
             let commit_shell = Rc::clone(shell);
-            gtk_widgets::ratings::rating_stars_column::<PlaylistEntryView, _, _, _>(
-                gtk_widgets::settings::library_field_title(field),
+            crate::ratings::rating_stars_column::<TrackRow, _, _, _>(
+                rufin_core::settings::presentation::library_field_title(field),
                 move |entry| {
                     entry
-                        .track
                         .state
                         .rating
                         .and_then(|value| u8::try_from(value).ok())
                 },
                 move |entry| {
-                    (half_stars_shell.media_menus.half_stars_enabled)(
-                        &entry.track.media_uri,
-                        entry.track.source_id.as_deref(),
-                    )
+                    half_stars_shell
+                        .half_stars_enabled(&entry.media_uri, entry.source_id.as_deref())
                 },
                 move |entry, rating| {
-                    commit_shell.source.set_rating(
-                        library::FavoriteTarget::Track(entry.track.media_uri.clone()),
+                    commit_shell.set_rating(
+                        library::FavoriteTarget::Track(entry.media_uri.clone()),
                         rating,
                     );
                 },

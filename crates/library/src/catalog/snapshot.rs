@@ -34,6 +34,8 @@ pub(crate) const DOWNLOADED: u16 = 1 << 9;
 // Most track sort texts are the title or its lowercase, so they store no string.
 pub(crate) const SORT_TITLE: u16 = 1 << 10;
 pub(crate) const SORT_LOWER: u16 = 1 << 11;
+/// Tracks: the explicit parental-advisory flag.
+pub(crate) const EXPLICIT: u16 = 1 << 12;
 /// Albums: the header comes from a local cache of a removed source.
 pub(crate) const CACHED_LOCAL: u16 = 1 << 8;
 /// Albums: a source observed a header.
@@ -782,6 +784,7 @@ impl Snapshot {
             native: track.native,
             picture: pictured(track.binding.as_deref()),
             cue: track.cue_path.is_some(),
+            explicit: track.facts.explicit,
             title: &facts.title,
             artist: &facts.artist,
             album_title: &facts.album,
@@ -1628,6 +1631,7 @@ impl Packing<'_> {
             source,
             flags: native_flags(input.indexed, input.native, input.picture, input.state)
                 | u16::from(input.cue) * CUE
+                | u16::from(input.explicit) * EXPLICIT
                 | sort
                 | kept,
             native_rating: rating(input.state.rating),
@@ -1689,6 +1693,7 @@ pub(crate) struct TrackInput<'a> {
     pub(crate) native: bool,
     pub(crate) picture: bool,
     pub(crate) cue: bool,
+    pub(crate) explicit: bool,
     pub(crate) title: &'a str,
     pub(crate) artist: &'a str,
     pub(crate) album_title: &'a str,

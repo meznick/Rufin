@@ -223,14 +223,14 @@ where
         let Some(item) = item.downcast_ref::<gtk::ListItem>() else {
             return;
         };
-        let cell = crate::recycled_cells::RecycledRatingCell::new();
+        let cell = crate::widgets::recycled_cells::RecycledRatingCell::new();
         let commit = Rc::clone(&commit);
         let weak_item = item.downgrade();
         cell.connect_commit(move |rating| {
             let Some(item) = weak_item.upgrade() else {
                 return;
             };
-            let Some(row) = crate::sparse_model::item_at_from_item::<T>(&item) else {
+            let Some(row) = crate::widgets::view_model::item_at_from_item::<T>(&item) else {
                 return;
             };
             commit.borrow_mut()(&row, rating);
@@ -241,13 +241,13 @@ where
         let Some(item) = item.downcast_ref::<gtk::ListItem>() else {
             return;
         };
-        let Some(cell) = crate::recycled_cells::list_cell::<crate::recycled_cells::RecycledRatingCell>(
-            item,
-        ) else {
+        let Some(cell) = crate::widgets::recycled_cells::list_cell::<
+            crate::widgets::recycled_cells::RecycledRatingCell,
+        >(item) else {
             return;
         };
         let mut shared = shared.borrow_mut();
-        if let Some(row) = crate::sparse_model::item_at_from_item::<T>(&item) {
+        if let Some(row) = crate::widgets::view_model::item_at_from_item::<T>(&item) {
             cell.set_rating(shared.0(&row), shared.1(&row));
         } else {
             cell.set_rating(None, false);
@@ -257,8 +257,9 @@ where
         let Some(item) = item.downcast_ref::<gtk::ListItem>() else {
             return;
         };
-        if let Some(cell) =
-            crate::recycled_cells::list_cell::<crate::recycled_cells::RecycledRatingCell>(item)
+        if let Some(cell) = crate::widgets::recycled_cells::list_cell::<
+            crate::widgets::recycled_cells::RecycledRatingCell,
+        >(item)
         {
             cell.set_rating(None, false);
         }

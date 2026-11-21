@@ -1876,11 +1876,33 @@ mod tests {
                 "tz_offset_seconds": null,
             }),
         );
-        Arc::new(Source::open(configuration, None, None).unwrap())
+        Arc::new(Source::open(configuration, None, None, None).unwrap())
     }
 
-    fn media_uri() -> &'static str {
-        "rufin:source/track/itunes-metadata-test/itunes%3Atrack%3A1"
+    fn playable(track: Option<&str>) -> library::Playable {
+        library::Playable {
+            track: library::TrackKey::from_raw(0),
+            source: None,
+            source_id: None,
+            source_kind: Some(crate::itunes::ITUNES_SOURCE_ID.to_string()),
+            media_uri: "rufin:source/track/itunes-metadata-test/itunes%3Atrack%3A1".into(),
+            object_id: None,
+            format: None,
+            source_path: track.map(str::to_owned),
+            cue_path: None,
+            download: None,
+            mapped: None,
+            locator: None,
+            file: None,
+            window: None,
+            audio_revision: None,
+            audio_hash: None,
+            channels: None,
+            bitrate_kbps: None,
+            bit_depth: None,
+            gains: library::Gains::default(),
+            names: library::PlayableNames::default(),
+        }
     }
 
     #[test]
@@ -1890,15 +1912,8 @@ mod tests {
         std::fs::write(&library, b"placeholder").unwrap();
         let source = itunes_source(&library);
         let track = directory.path().join("Music").join("Track.mp3");
-        let resolved = NativeFile::resolve(
-            &source,
-            media_uri(),
-            Some(track.to_str().unwrap()),
-            None,
-            false,
-            None,
-        )
-        .unwrap();
+        let resolved =
+            NativeFile::resolve(&source, &playable(Some(track.to_str().unwrap()))).unwrap();
         assert!(matches!(resolved.location, FileLocation::Native(path) if path == track));
     }
 
@@ -1911,11 +1926,7 @@ mod tests {
         let outside = tempfile::tempdir().unwrap();
         let resolved = NativeFile::resolve(
             &source,
-            media_uri(),
-            Some(outside.path().join("Track.mp3").to_str().unwrap()),
-            None,
-            false,
-            None,
+            &playable(Some(outside.path().join("Track.mp3").to_str().unwrap())),
         );
         assert!(matches!(resolved, Err(Error::Unavailable)));
     }

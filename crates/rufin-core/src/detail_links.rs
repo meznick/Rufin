@@ -44,7 +44,9 @@ pub fn source_link(source: &sources::SourceConfiguration, media_uri: &str) -> Op
     let source_kind = source.source_kind()?;
     let folder = source_kind.file_library();
     let title = match source_kind {
-        SourceKind::Local | SourceKind::Webdav | SourceKind::Smb => msgid("Open Folder"),
+        SourceKind::Local | SourceKind::Webdav | SourceKind::Smb | SourceKind::Itunes => {
+            msgid("Open Folder")
+        }
         SourceKind::Jellyfin => msgid("Open on Jellyfin"),
         SourceKind::Emby => msgid("Open on Emby"),
         SourceKind::Plex => msgid("Open on Plex"),

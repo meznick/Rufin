@@ -13,7 +13,9 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
-use gtk_library::ipod_sync_service::{BoundarySource, EngineRunner, IpodSyncService, SyncBoundary};
+use crate::library::ipod_sync_service::{
+    BoundarySource, EngineRunner, IpodSyncService, SyncBoundary,
+};
 use ipod::{ArtworkInput, BackendSearch};
 use ipod_sync::dry_run::{CoverEvidence, SourceKey};
 use sources::itunes::{ITUNES_SOURCE_ID, ItunesSource};
@@ -121,7 +123,7 @@ impl SyncBoundary for ShellSyncBoundary {
     }
 
     fn transcode(&self, source: &Path, destination: &Path) -> std::io::Result<()> {
-        let uri = gstreamer::glib::filename_to_uri(source, None)
+        let uri = glib::filename_to_uri(source, None)
             .map_err(|error| std::io::Error::other(error.to_string()))?;
         audio_processing::transcode_to_m4a(
             &audio_processing::ResolvedStream::new(uri.as_str()),

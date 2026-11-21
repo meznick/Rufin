@@ -672,7 +672,7 @@ pub fn explicit_badge() -> gtk::Label {
     badge.set_valign(gtk::Align::Center);
     badge.set_xalign(0.5);
     badge.set_visible(false);
-    crate::localization::bind_widget_tooltip(&badge, "Explicit");
+    crate::widgets::localization::bind_widget_tooltip(&badge, "Explicit");
     badge
 }
 

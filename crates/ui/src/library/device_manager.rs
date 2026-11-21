@@ -33,6 +33,7 @@ impl ConnectionState {
     }
 
     /// Whether sync is enabled while in this state. Only `Ready` enables it.
+    #[allow(dead_code)] // exercised by the env-gated integration gates
     pub fn sync_enabled(&self) -> bool {
         matches!(self, Self::Ready)
     }
@@ -138,6 +139,7 @@ impl DeviceManager {
     }
 
     /// Whether sync is enabled in the current state.
+    #[allow(dead_code)] // exercised by the env-gated integration gates
     pub fn sync_enabled(&self) -> bool {
         self.state.sync_enabled()
     }
