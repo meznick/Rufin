@@ -709,6 +709,25 @@ fn diff_track_row(track: &crate::ipod_sync_service::DiffTrack) -> gtk::Widget {
     row.upcast()
 }
 
+/// The arrow direction one stat chip renders: the pair the sync
+/// actually moves from and to (the B-016 review feedback — a play-count
+/// chip that showed higher → lower implied a loss that never happens).
+///
+/// Counts merge additively: both sides only ever move **up** to the
+/// converged total (host catches up with the device's pending plays,
+/// the device catches up with a drifted host), so the chip shows
+/// min → max. Every other field is host-wins device-ward: the device
+/// gets the host's value, so the chip shows device → host — including
+/// a rating downgrade, which is real.
+fn stat_delta_direction(delta: &crate::ipod_sync_service::StatDelta) -> (i64, i64) {
+    match delta.field {
+        ipod_sync::dry_run::StatField::PlayCount | ipod_sync::dry_run::StatField::SkipCount => {
+            (delta.host.min(delta.device), delta.host.max(delta.device))
+        }
+        _ => (delta.device, delta.host),
+    }
+}
+
 /// One stat-update row: title/artist and a chip per changed field.
 fn stat_track_row(track: &crate::ipod_sync_service::StatTrack) -> gtk::Widget {
     let row = gtk::Box::new(gtk::Orientation::Horizontal, 12);
@@ -734,8 +753,9 @@ fn stat_track_row(track: &crate::ipod_sync_service::StatTrack) -> gtk::Widget {
     let chips = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     chips.set_halign(gtk::Align::End);
     for delta in &track.deltas {
-        let old = delta.device.to_string();
-        let new = delta.host.to_string();
+        let (old, new) = stat_delta_direction(delta);
+        let old = old.to_string();
+        let new = new.to_string();
         let text = match delta.field {
             ipod_sync::dry_run::StatField::Rating => {
                 tr_with("rating {old} → {new}", &[("old", &old), ("new", &new)])
@@ -1529,6 +1549,37 @@ mod tests {
         let mut snapshot = rich_snapshot(ConnectionState::Ready);
         snapshot.device.as_mut().unwrap().model_supported = true;
         snapshot
+    }
+
+    #[test]
+    fn stat_delta_direction_points_the_way_the_sync_moves() {
+        use crate::ipod_sync_service::StatDelta;
+        use ipod_sync::dry_run::StatField;
+
+        // Counts merge additively: the chip shows min → max, never a
+        // loss. Device ahead (pending plays) = the host catches up.
+        let pending_plays = StatDelta {
+            field: StatField::PlayCount,
+            host: 24,
+            device: 27,
+        };
+        assert_eq!(stat_delta_direction(&pending_plays), (24, 27));
+
+        // Host ahead (drift) = the device catches up.
+        let drifted_host = StatDelta {
+            field: StatField::PlayCount,
+            host: 30,
+            device: 27,
+        };
+        assert_eq!(stat_delta_direction(&drifted_host), (27, 30));
+
+        // A rating is host-wins device-ward — the downgrade is real.
+        let downgrade = StatDelta {
+            field: StatField::Rating,
+            host: 60,
+            device: 80,
+        };
+        assert_eq!(stat_delta_direction(&downgrade), (80, 60));
     }
 
     #[test]
