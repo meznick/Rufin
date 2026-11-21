@@ -2012,32 +2012,35 @@ scale.volume-slider:dir(rtl) {
   margin: 16px 16px 20px 16px;
 }
 
-/* The B-016 sync sheet: one morphing card above the bottom bar. */
-.ipod-sync-sheet {
+/* The B-016 sync UI: the always-visible inline review card plus the
+   floating run/result panel anchored to the page bottom. */
+.ipod-review-card {
   background: var(--card-bg-color);
   border: 1px solid var(--border-color);
   border-radius: 14px;
-  margin: 16px 16px 0 16px;
+  padding: 14px 16px;
 }
 
-.ipod-sync-header {
-  padding: 14px 16px 12px 16px;
-  border-bottom: 1px solid var(--border-color);
+.ipod-float-sheet {
+  background: var(--card-bg-color);
+  border: 1px solid var(--border-color);
+  border-bottom: none;
+  border-radius: 14px 14px 0 0;
+  box-shadow: 0 -6px 24px rgba(0, 0, 0, 0.18);
+}
+
+.ipod-float-body {
+  padding: 12px 16px;
+}
+
+.ipod-float-footer {
+  padding: 8px 16px;
+  border-top: 1px solid var(--border-color);
 }
 
 .ipod-sheet-heading {
   font-size: 1.1em;
   font-weight: 600;
-}
-
-.ipod-sync-body {
-  padding: 10px 8px;
-  background: transparent;
-}
-
-.ipod-sync-footer {
-  padding: 10px 16px;
-  border-top: 1px solid var(--border-color);
 }
 
 .ipod-count-chip {

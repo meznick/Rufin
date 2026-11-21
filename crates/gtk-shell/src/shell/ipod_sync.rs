@@ -12,9 +12,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use gtk_library::ipod_sync_service::{
-    BoundarySource, EngineRunner, IpodSyncService, SyncBoundary, review_policy,
-};
+use gtk_library::ipod_sync_service::{BoundarySource, EngineRunner, IpodSyncService, SyncBoundary};
 use ipod::{ArtworkInput, BackendSearch};
 use ipod_sync::dry_run::{CoverEvidence, SourceKey};
 use sources::itunes::{ITUNES_SOURCE_ID, ItunesSource};
@@ -50,13 +48,14 @@ impl ShellSyncBoundary {
         Self { sources }
     }
 
-    /// The production service: the engine runner over this boundary,
-    /// with the S-08-delta policy (dev reviews, release runs silently).
+    /// The production service: the engine runner over this boundary.
+    /// The Sync click is the approval — the page's live preview is the
+    /// review (B-016).
     pub fn service(self) -> IpodSyncService {
-        IpodSyncService::new(
-            Arc::new(EngineRunner::new(Arc::new(self), BackendSearch::FromEnv)),
-            review_policy(),
-        )
+        IpodSyncService::new(Arc::new(EngineRunner::new(
+            Arc::new(self),
+            BackendSearch::FromEnv,
+        )))
     }
 }
 
