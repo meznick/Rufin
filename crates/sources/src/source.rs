@@ -1491,11 +1491,13 @@ impl Source {
                 Implementation::Peer(source) => source.audio_stream(playable, encoding).await,
                 Implementation::Itunes(_) => {
                     // The observation stored the absolute host path in
-                    // `tracks.source_path`; the playable resolves it through
-                    // the catalog. Stream the file directly — no server, no
-                    // folder-mapping machinery.
-                    let file = playable.file.as_ref().ok_or(SourceError::NotFound)?;
-                    let uri = url::Url::from_file_path(&file.path)
+                    // `tracks.source_path`; the playable reads it back.
+                    // Stream the file directly — iTunes is not a server and
+                    // its tracks never have `files` rows (only the file
+                    // walker writes those), so `playable.file` is always
+                    // None here and `playable.source_path` is the path.
+                    let path = playable.source_path.as_ref().ok_or(SourceError::NotFound)?;
+                    let uri = url::Url::from_file_path(path)
                         .map_err(|_| SourceError::NotFound)?
                         .to_string();
                     Ok(ResolvedStream::new(uri))

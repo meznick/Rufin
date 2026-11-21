@@ -509,3 +509,55 @@ async fn itunes_embedded_artwork_publishes_bindings_and_serves_images() {
         .unwrap();
     assert!(!image.bytes.is_empty(), "cached picture still served");
 }
+
+/// Corpus-free regression guard: the stream arm must play the host path the
+/// observation stored in `tracks.source_path`. After the 0.19 port the arm
+/// read `playable.file` instead — a `files` row, which only the file walker
+/// writes — so every iTunes track failed with NotFound, surfaced as "Track
+/// unavailable" at playback. Runs on any host, no `.itl` needed.
+#[tokio::test]
+async fn stream_resolves_the_observation_source_path() {
+    let configuration = sources::itunes::connect(
+        SourceId::new("itunes-stream-test"),
+        "/nonexistent/iTunes Library.itl".into(),
+        None,
+        None,
+    )
+    .unwrap();
+    let source = Source::open(configuration, None, None, None).unwrap();
+    let media_uri = "rufin:source/track/itunes-stream-test/itunes:track:7";
+    let playable = library::Playable {
+        track: library::TrackKey::from_raw(1),
+        source: Some(library::SourceKey::from_raw(1)),
+        source_id: Some(SourceId::new("itunes-stream-test")),
+        source_kind: Some("itunes".to_string()),
+        media_uri: media_uri.to_string(),
+        object_id: Some("itunes:track:7".to_string()),
+        format: Some("M4A".to_string()),
+        source_path: Some("/music/Artist/Album/Track.m4a".to_string()),
+        cue_path: None,
+        download: None,
+        mapped: None,
+        locator: None,
+        file: None,
+        window: None,
+        audio_revision: None,
+        audio_hash: None,
+        channels: None,
+        bitrate_kbps: None,
+        bit_depth: None,
+        gains: library::Gains::default(),
+        names: library::PlayableNames::default(),
+    };
+    let stream = source
+        .stream(&playable, playback::StreamRequest::original(media_uri))
+        .await
+        .unwrap();
+    assert_eq!(
+        stream.uri(),
+        url::Url::from_file_path("/music/Artist/Album/Track.m4a")
+            .unwrap()
+            .as_str(),
+        "the stream plays the host path the observation stored, not a files row"
+    );
+}
