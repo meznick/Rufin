@@ -3444,6 +3444,8 @@ dependencies = [
  "gtk4",
  "ipod",
  "ipod-sync",
+ "itl-core",
+ "itl-sync",
  "libadwaita",
  "library",
  "localization",
