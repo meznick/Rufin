@@ -466,117 +466,123 @@
                             <property name="spacing">8</property>
                             <style><class name="ipod-info-box"/></style>
                             <child>
+                              <!-- The mockup's overview layout: four
+                                   label-over-value pairs in a 2x2 grid,
+                                   the Update/Restore buttons below. -->
                               <object class="GtkGrid">
-                                <property name="row-spacing">8</property>
+                                <property name="row-spacing">12</property>
                                 <property name="column-spacing">24</property>
+                                <property name="column-homogeneous">true</property>
                                 <property name="valign">start</property>
                                 <child>
-                                  <object class="GtkLabel">
-                                    <property name="label" translatable="yes">Capacity</property>
-                                    <property name="xalign">0</property>
-                                    <style><class name="dim-label"/></style>
-                                    <layout>
-                                      <property name="column">0</property>
-                                      <property name="row">0</property>
-                                    </layout>
+                                  <object class="GtkBox">
+                                    <property name="orientation">vertical</property>
+                                    <property name="spacing">4</property>
+                                    <child>
+                                      <object class="GtkLabel">
+                                        <property name="label" translatable="yes">Capacity</property>
+                                        <property name="xalign">0</property>
+                                        <style><class name="dim-label"/></style>
+                                      </object>
+                                    </child>
+                                    <child>
+                                      <object class="GtkLabel" id="capacity_value">
+                                        <property name="xalign">0</property>
+                                      </object>
+                                    </child>
                                   </object>
-                                </child>
-                                <child>
-                                  <object class="GtkLabel" id="capacity_value">
-                                    <property name="xalign">0</property>
-                                    <layout>
-                                      <property name="column">1</property>
-                                      <property name="row">0</property>
-                                    </layout>
-                                  </object>
-                                </child>
-                                <child>
-                                  <object class="GtkLabel">
-                                    <property name="label" translatable="yes">Serial number</property>
-                                    <property name="xalign">0</property>
-                                    <style><class name="dim-label"/></style>
-                                    <layout>
-                                      <property name="column">0</property>
-                                      <property name="row">1</property>
-                                    </layout>
-                                  </object>
-                                </child>
-                                <child>
-                                  <object class="GtkLabel" id="serial_value">
-                                    <property name="xalign">0</property>
-                                    <property name="selectable">true</property>
-                                    <layout>
-                                      <property name="column">1</property>
-                                      <property name="row">1</property>
-                                    </layout>
-                                  </object>
-                                </child>
-                                <child>
-                                  <object class="GtkLabel">
-                                    <property name="label" translatable="yes">Format</property>
-                                    <property name="xalign">0</property>
-                                    <style><class name="dim-label"/></style>
-                                    <layout>
-                                      <property name="column">0</property>
-                                      <property name="row">2</property>
-                                    </layout>
-                                  </object>
-                                </child>
-                                <child>
-                                  <object class="GtkLabel" id="format_value">
-                                    <property name="xalign">0</property>
-                                    <layout>
-                                      <property name="column">1</property>
-                                      <property name="row">2</property>
-                                    </layout>
-                                  </object>
-                                </child>
-                                <child>
-                                  <object class="GtkLabel">
-                                    <property name="label" translatable="yes">Software version</property>
-                                    <property name="xalign">0</property>
-                                    <style><class name="dim-label"/></style>
-                                    <layout>
-                                      <property name="column">0</property>
-                                      <property name="row">3</property>
-                                    </layout>
-                                  </object>
+                                  <layout>
+                                    <property name="column">0</property>
+                                    <property name="row">0</property>
+                                  </layout>
                                 </child>
                                 <child>
                                   <object class="GtkBox">
                                     <property name="orientation">vertical</property>
-                                    <property name="spacing">8</property>
-                                    <property name="valign">start</property>
+                                    <property name="spacing">4</property>
+                                    <child>
+                                      <object class="GtkLabel">
+                                        <property name="label" translatable="yes">Software version</property>
+                                        <property name="xalign">0</property>
+                                        <style><class name="dim-label"/></style>
+                                      </object>
+                                    </child>
                                     <child>
                                       <object class="GtkLabel" id="firmware_value">
                                         <property name="xalign">0</property>
                                       </object>
                                     </child>
+                                  </object>
+                                  <layout>
+                                    <property name="column">1</property>
+                                    <property name="row">0</property>
+                                  </layout>
+                                </child>
+                                <child>
+                                  <object class="GtkBox">
+                                    <property name="orientation">vertical</property>
+                                    <property name="spacing">4</property>
                                     <child>
-                                      <object class="GtkBox">
-                                        <property name="orientation">horizontal</property>
-                                        <property name="spacing">8</property>
-                                        <child>
-                                          <object class="GtkButton">
-                                            <property name="label" translatable="yes">Update</property>
-                                            <property name="sensitive">false</property>
-                                          </object>
-                                        </child>
-                                        <child>
-                                          <!-- Furniture (b014_plan D-6): restore
-                                               wipes the pod — permanently out
-                                               of scope, never enabled. -->
-                                          <object class="GtkButton">
-                                            <property name="label" translatable="yes">Restore iPod…</property>
-                                            <property name="sensitive">false</property>
-                                          </object>
-                                        </child>
+                                      <object class="GtkLabel">
+                                        <property name="label" translatable="yes">Serial number</property>
+                                        <property name="xalign">0</property>
+                                        <style><class name="dim-label"/></style>
                                       </object>
                                     </child>
-                                    <layout>
-                                      <property name="column">1</property>
-                                      <property name="row">3</property>
-                                    </layout>
+                                    <child>
+                                      <object class="GtkLabel" id="serial_value">
+                                        <property name="xalign">0</property>
+                                        <property name="selectable">true</property>
+                                      </object>
+                                    </child>
+                                  </object>
+                                  <layout>
+                                    <property name="column">0</property>
+                                    <property name="row">1</property>
+                                  </layout>
+                                </child>
+                                <child>
+                                  <object class="GtkBox">
+                                    <property name="orientation">vertical</property>
+                                    <property name="spacing">4</property>
+                                    <child>
+                                      <object class="GtkLabel">
+                                        <property name="label" translatable="yes">Format</property>
+                                        <property name="xalign">0</property>
+                                        <style><class name="dim-label"/></style>
+                                      </object>
+                                    </child>
+                                    <child>
+                                      <object class="GtkLabel" id="format_value">
+                                        <property name="xalign">0</property>
+                                      </object>
+                                    </child>
+                                  </object>
+                                  <layout>
+                                    <property name="column">1</property>
+                                    <property name="row">1</property>
+                                  </layout>
+                                </child>
+                              </object>
+                            </child>
+                            <child>
+                              <object class="GtkBox">
+                                <property name="orientation">horizontal</property>
+                                <property name="spacing">8</property>
+                                <property name="margin-top">12</property>
+                                <child>
+                                  <object class="GtkButton">
+                                    <property name="label" translatable="yes">Update</property>
+                                    <property name="sensitive">false</property>
+                                  </object>
+                                </child>
+                                <child>
+                                  <!-- Furniture (b014_plan D-6): restore
+                                       wipes the pod — permanently out
+                                       of scope, never enabled. -->
+                                  <object class="GtkButton">
+                                    <property name="label" translatable="yes">Restore iPod…</property>
+                                    <property name="sensitive">false</property>
                                   </object>
                                 </child>
                               </object>
