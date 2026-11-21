@@ -504,7 +504,6 @@ impl Shell {
                 MountedRoute::static_widget(crate::library::ipod_page::ipod_route_view(
                     &self.ipod_connection,
                     &self.ipod_sync,
-                    gtk_library::ipod_sync_service::review_policy(),
                 ))
             });
             return;

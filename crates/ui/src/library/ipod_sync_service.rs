@@ -11,13 +11,13 @@
 //! [`EngineRunner`] over a [`SyncBoundary`] (the shell's wiring of the
 //! selected iTunes source); the gates inject stubs, so every phase
 //! transition is display-free tested. The pure [`advance`] table carries
-//! the semantics — including the owner's S-08 delta: with
-//! [`ReviewPolicy::Always`] (dev builds) a non-dry prepared sync stops
-//! at `Review` for the user's dialog approval; with
-//! [`ReviewPolicy::Never`] (release) the click is the approval and the
-//! run starts immediately. Both policies are gated in the same test
-//! profile — the policy is a parameter, not a `cfg`, so neither path is
-//! untested.
+//! the semantics. There is no review gate: the page always shows the
+//! live diff (an auto-refreshing dry-run preview), so the Sync click
+//! itself is the approval — the B-016 redesign the owner settled after
+//! the mockup rounds (2026-11-21; see `deltas/b016_delta.md`). A
+//! preview (`Start { dry_run: true }`) stops at `Review`; a real run
+//! (`Start { dry_run: false }`) goes straight to `Running` once
+//! prepared.
 //!
 //! Backend loading happens **on the run thread**: `IpodBackend` is not
 //! `Send` (raw symbol tables), so each phase loads its own instance —
@@ -283,12 +283,10 @@ pub enum SyncPhase {
     Idle,
     /// The run thread is collecting (`.itl` + device + compute).
     Collecting,
-    /// The diff is shown in the page's sync sheet and awaits the user's
-    /// decision (dev flow). `dry_run` marks the S-08 deliverable review
-    /// — its sheet offers no approval, and the machine refuses one.
+    /// The live preview: the last dry-run diff, shown inline on the
+    /// page. Always present when the device is ready — never a gate.
     Review {
         summary: ReviewSummary,
-        dry_run: bool,
     },
     /// The engine transaction runs on the run thread.
     Running,
@@ -313,43 +311,25 @@ pub struct SyncState {
     pub progress: SyncProgress,
 }
 
-/// Whether a real (non-dry) run may proceed straight from prepare
-/// (the owner's S-08 delta, `deltas/b015_delta.md`): `Always` in dev
-/// builds (review every run), `Never` in release (the click is the
-/// approval). A parameter, not a `cfg` — both arms are gated in the
-/// same profile.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ReviewPolicy {
-    Always,
-    Never,
-}
-
-/// The production policy (the S-08 delta): dev builds review every run,
-/// release builds run on the click. One place — the shell wires both
-/// the service and the page with it.
-pub fn review_policy() -> ReviewPolicy {
-    if cfg!(debug_assertions) {
-        ReviewPolicy::Always
-    } else {
-        ReviewPolicy::Never
-    }
-}
-
 /// One service-internal transition input.
+/// The `Prepared` payload deliberately rides the event unboxed — one
+/// value per collection, and `advance` must stay payload-aware (the
+/// same rationale as `SyncAction::Execute`'s box in the other
+/// direction; here the box would just move the allocation).
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
 pub enum SyncEvent {
-    /// A Sync click: the device mount at click time.
+    /// A Sync click or the page's preview refresh: the device mount at
+    /// click time. `dry_run` true = the live preview; false = the real
+    /// run.
     Start { dry_run: bool, mount: PathBuf },
     /// The run thread finished collecting.
     Prepared {
         dry_run: bool,
         result: Result<PreparedSync, String>,
     },
-    /// The user approved the reviewed plan (dev flow) — the prepared
-    /// sync rides the event, so `advance` stays payload-aware and the
-    /// approval cannot run a stale or fabricated plan.
-    Approved(PreparedSync),
-    /// The user dismissed the review or the result.
+    /// The user dismissed the result (the review is never dismissible —
+    /// it is the page's live diff).
     Dismissed,
     /// A progress event from the engine.
     Progress(ProgressEvent),
@@ -369,16 +349,18 @@ pub enum SyncAction {
 
 /// The pure transition table. Every semantic of the service lives here;
 /// the facade applies actions and fans snapshots out.
-pub fn advance(
-    state: &mut SyncState,
-    event: SyncEvent,
-    policy: ReviewPolicy,
-) -> Option<SyncAction> {
+pub fn advance(state: &mut SyncState, event: SyncEvent) -> Option<SyncAction> {
     match (&state.phase, event) {
-        (SyncPhase::Idle, SyncEvent::Start { dry_run, mount }) => {
+        // A start is allowed from Idle, from Done (the result closed),
+        // and from Review — the live preview is never a gate: a Sync
+        // click or a preview refresh restarts the collection.
+        (
+            SyncPhase::Idle | SyncPhase::Done(_) | SyncPhase::Review { .. },
+            SyncEvent::Start { dry_run, mount },
+        ) => {
             state.phase = SyncPhase::Collecting;
-            // A fresh run starts with a clean progress surface — the
-            // previous run's tail must not bleed into the next one.
+            // A fresh collection starts with a clean progress surface —
+            // the previous run's tail must not bleed into the next one.
             state.progress = SyncProgress::default();
             state.events.clear();
             Some(SyncAction::Prepare { dry_run, mount })
@@ -390,11 +372,9 @@ pub fn advance(
                 result: Ok(prepared),
             },
         ) => {
-            // A dry run always stops at the review: the sheet IS the
-            // deliverable (S-08) — and it carries no approval.
+            // A preview stops at the review: the diff is the deliverable.
             state.phase = SyncPhase::Review {
                 summary: review_summary(&prepared.report, &prepared.host, &prepared.device_tracks),
-                dry_run: true,
             };
             None
         }
@@ -404,23 +384,12 @@ pub fn advance(
                 dry_run: false,
                 result: Ok(prepared),
             },
-        ) => match policy {
-            ReviewPolicy::Always => {
-                state.phase = SyncPhase::Review {
-                    summary: review_summary(
-                        &prepared.report,
-                        &prepared.host,
-                        &prepared.device_tracks,
-                    ),
-                    dry_run: false,
-                };
-                None
-            }
-            ReviewPolicy::Never => {
-                state.phase = SyncPhase::Running;
-                Some(SyncAction::Execute(Box::new(prepared)))
-            }
-        },
+        ) => {
+            // A real run: the click was the approval (the diff was
+            // already on the page) — straight to the engine.
+            state.phase = SyncPhase::Running;
+            Some(SyncAction::Execute(Box::new(prepared)))
+        }
         (
             SyncPhase::Collecting,
             SyncEvent::Prepared {
@@ -429,17 +398,6 @@ pub fn advance(
             },
         ) => {
             state.phase = SyncPhase::Done(SyncOutcomeSummary::failed("Prepare", diagnostic));
-            None
-        }
-        // A dry review carries no approval: the S-08 deliverable cannot
-        // run the engine, whatever calls `approve`.
-        (SyncPhase::Review { dry_run: true, .. }, SyncEvent::Approved(_)) => None,
-        (SyncPhase::Review { dry_run: false, .. }, SyncEvent::Approved(prepared)) => {
-            state.phase = SyncPhase::Running;
-            Some(SyncAction::Execute(Box::new(prepared)))
-        }
-        (SyncPhase::Review { .. }, SyncEvent::Dismissed) => {
-            state.phase = SyncPhase::Idle;
             None
         }
         (SyncPhase::Done(_), SyncEvent::Dismissed) => {
@@ -460,8 +418,8 @@ pub fn advance(
             None
         }
         // Every other combination is a no-op: a stray start while
-        // running, an approve outside Review, a finished outside
-        // Running, progress in any phase.
+        // collecting or running, a dismiss outside Done, a finished
+        // outside Running, progress in any phase.
         _ => None,
     }
 }
@@ -877,12 +835,8 @@ pub fn outcome_diagnostic(status: &SyncStatus) -> Option<String> {
 
 struct ServiceInner {
     state: Mutex<SyncState>,
-    /// The prepared sync between `Review` and `Approved` (the plan the
-    /// approval runs).
-    pending: Mutex<Option<PreparedSync>>,
     subscribers: Mutex<Vec<async_channel::Sender<SyncState>>>,
     runner: Arc<dyn Runner>,
-    policy: ReviewPolicy,
 }
 
 impl ServiceInner {
@@ -892,27 +846,9 @@ impl ServiceInner {
     /// subscriber. Lives on the inner value so the run threads — which
     /// hold `Arc<ServiceInner>` — can apply their own results.
     fn apply(self: &Arc<Self>, event: SyncEvent) {
-        // A prepared payload entering the review is stashed for the
-        // approval (one clone per run — the review path is dev-only).
-        let stash = match &event {
-            SyncEvent::Prepared {
-                result: Ok(prepared),
-                ..
-            } => Some(prepared.clone()),
-            _ => None,
-        };
         let action = {
             let mut state = self.state.lock().expect("sync state lock poisoned");
-            let action = advance(&mut state, event, self.policy);
-            // The prepared payload survives only while a review holds
-            // it; every other phase drops it (dismissal, the release
-            // straight-through, a finished run).
-            *self.pending.lock().expect("pending lock poisoned") =
-                if matches!(state.phase, SyncPhase::Review { .. }) {
-                    stash
-                } else {
-                    None
-                };
+            let action = advance(&mut state, event);
             // The acceptance finding: a failed run printed nothing to
             // the console — the diagnostic sat in the result. Log every
             // terminal failure here so the console carries the reason.
@@ -981,14 +917,12 @@ pub struct IpodSyncService {
 }
 
 impl IpodSyncService {
-    pub fn new(runner: Arc<dyn Runner>, policy: ReviewPolicy) -> Self {
+    pub fn new(runner: Arc<dyn Runner>) -> Self {
         Self {
             inner: Arc::new(ServiceInner {
                 state: Mutex::new(SyncState::default()),
-                pending: Mutex::new(None),
                 subscribers: Mutex::new(Vec::new()),
                 runner,
-                policy,
             }),
         }
     }
@@ -1014,9 +948,9 @@ impl IpodSyncService {
         receiver
     }
 
-    /// A Sync click: `dry_run` is the dev checkbox state (release never
-    /// passes `true` — the checkbox is not compiled); `mount` is the
-    /// current device's mount point. A no-op outside `Idle`/`Done`.
+    /// A Sync click (`dry_run` false) or the page's preview refresh
+    /// (`dry_run` true): `mount` is the current device's mount point.
+    /// A no-op while collecting or running.
     pub fn start(&self, dry_run: bool, mount: &Path) {
         self.inner.apply(SyncEvent::Start {
             dry_run,
@@ -1024,28 +958,7 @@ impl IpodSyncService {
         });
     }
 
-    /// The review dialog's Sync button (dev flow): moves the pending
-    /// prepared sync into the approval event. A dry review refuses —
-    /// the S-08 deliverable has no approval path, however `approve` is
-    /// called.
-    pub fn approve(&self) {
-        let state = self.inner.state.lock().expect("sync state lock poisoned");
-        if !matches!(state.phase, SyncPhase::Review { dry_run: false, .. }) {
-            return;
-        }
-        drop(state);
-        let prepared = self
-            .inner
-            .pending
-            .lock()
-            .expect("pending lock poisoned")
-            .take();
-        if let Some(prepared) = prepared {
-            self.inner.apply(SyncEvent::Approved(prepared));
-        }
-    }
-
-    /// The review dialog's Close / the result dialog's OK.
+    /// The result panel's Close.
     pub fn dismiss(&self) {
         self.inner.apply(SyncEvent::Dismissed);
     }
@@ -1194,7 +1107,6 @@ mod tests {
                 total: 6,
                 began: true,
             }),
-            ReviewPolicy::Always,
         );
         advance(
             &mut state,
@@ -1203,7 +1115,6 @@ mod tests {
                 total: 340,
                 label: "Copying a track".to_string(),
             }),
-            ReviewPolicy::Always,
         );
         assert_eq!(state.progress.step, Some("Files"));
         assert_eq!(state.progress.step_index, 3);
@@ -1223,7 +1134,6 @@ mod tests {
                 dry_run: false,
                 mount: PathBuf::from("/mnt/ipod"),
             },
-            ReviewPolicy::Always,
         );
         assert_eq!(state.progress, SyncProgress::default());
         assert!(state.events.is_empty());
@@ -1276,7 +1186,6 @@ mod tests {
                 dry_run: false,
                 result: Err("no iTunes source configured".to_string()),
             },
-            ReviewPolicy::Always,
         );
         assert!(action.is_none());
         assert_eq!(
@@ -1294,7 +1203,7 @@ mod tests {
     }
 
     #[test]
-    fn start_only_from_idle_and_dry_always_reviews() {
+    fn a_preview_stops_at_the_review_and_a_real_run_executes() {
         let mut machine = state();
         let action = advance(
             &mut machine,
@@ -1302,7 +1211,6 @@ mod tests {
                 dry_run: true,
                 mount: PathBuf::from("/mnt/ipod"),
             },
-            ReviewPolicy::Never,
         );
         assert_eq!(machine.phase, SyncPhase::Collecting);
         assert!(matches!(
@@ -1317,58 +1225,63 @@ mod tests {
                 dry_run: false,
                 mount: PathBuf::from("/mnt/ipod"),
             },
-            ReviewPolicy::Always,
         );
         assert!(action.is_none());
         assert_eq!(machine.phase, SyncPhase::Collecting);
 
-        // A dry prepared sync reviews under both policies.
-        for policy in [ReviewPolicy::Always, ReviewPolicy::Never] {
-            let mut policy_state = state();
-            policy_state.phase = SyncPhase::Collecting;
-            let action = advance(
-                &mut policy_state,
-                SyncEvent::Prepared {
-                    dry_run: true,
-                    result: Ok(prepared()),
-                },
-                policy,
-            );
-            assert!(action.is_none(), "{policy:?}");
-            assert!(
-                matches!(policy_state.phase, SyncPhase::Review { .. }),
-                "{policy:?}: the dry run stops at the review"
-            );
-        }
+        // The preview lands on the review and never executes.
+        let action = advance(
+            &mut machine,
+            SyncEvent::Prepared {
+                dry_run: true,
+                result: Ok(prepared()),
+            },
+        );
+        assert!(action.is_none());
+        assert!(matches!(machine.phase, SyncPhase::Review { .. }));
+
+        // A real run restarts straight from the live preview — the
+        // preview is never a gate.
+        let action = advance(
+            &mut machine,
+            SyncEvent::Start {
+                dry_run: false,
+                mount: PathBuf::from("/mnt/ipod"),
+            },
+        );
+        assert!(matches!(
+            action,
+            Some(SyncAction::Prepare { dry_run: false, .. })
+        ));
+        let action = advance(
+            &mut machine,
+            SyncEvent::Prepared {
+                dry_run: false,
+                result: Ok(prepared()),
+            },
+        );
+        assert_eq!(machine.phase, SyncPhase::Running);
+        assert!(matches!(action, Some(SyncAction::Execute(_))));
     }
 
     #[test]
-    fn a_real_prepared_sync_reviews_or_runs_by_policy() {
-        let mut always_state = state();
-        always_state.phase = SyncPhase::Collecting;
+    fn preview_refreshes_restart_from_the_review() {
+        let mut machine = state();
+        machine.phase = SyncPhase::Review {
+            summary: review_summary(&report_with(false), &HostInputs::default(), &[]),
+        };
         let action = advance(
-            &mut always_state,
-            SyncEvent::Prepared {
-                dry_run: false,
-                result: Ok(prepared()),
+            &mut machine,
+            SyncEvent::Start {
+                dry_run: true,
+                mount: PathBuf::from("/mnt/ipod"),
             },
-            ReviewPolicy::Always,
         );
-        assert!(action.is_none());
-        assert!(matches!(always_state.phase, SyncPhase::Review { .. }));
-
-        let mut never_state = state();
-        never_state.phase = SyncPhase::Collecting;
-        let action = advance(
-            &mut never_state,
-            SyncEvent::Prepared {
-                dry_run: false,
-                result: Ok(prepared()),
-            },
-            ReviewPolicy::Never,
-        );
-        assert_eq!(never_state.phase, SyncPhase::Running);
-        assert!(matches!(action, Some(SyncAction::Execute(_))));
+        assert_eq!(machine.phase, SyncPhase::Collecting);
+        assert!(matches!(
+            action,
+            Some(SyncAction::Prepare { dry_run: true, .. })
+        ));
     }
 
     #[test]
@@ -1381,21 +1294,17 @@ mod tests {
                 dry_run: true,
                 result: Ok(prepared()),
             },
-            ReviewPolicy::Always,
         );
+        assert!(matches!(state.phase, SyncPhase::Review { .. }));
 
-        // Dismissing the review returns to Idle.
-        advance(&mut state, SyncEvent::Dismissed, ReviewPolicy::Always);
-        assert_eq!(state.phase, SyncPhase::Idle);
-
-        // The full dev flow: start → review → approve → running → done.
+        // The full run flow: start (from the preview) → prepared →
+        // running → done → dismissed → idle.
         advance(
             &mut state,
             SyncEvent::Start {
                 dry_run: false,
                 mount: PathBuf::from("/mnt/ipod"),
             },
-            ReviewPolicy::Always,
         );
         advance(
             &mut state,
@@ -1403,25 +1312,15 @@ mod tests {
                 dry_run: false,
                 result: Ok(prepared()),
             },
-            ReviewPolicy::Always,
-        );
-        advance(
-            &mut state,
-            SyncEvent::Approved(prepared()),
-            ReviewPolicy::Always,
         );
         assert_eq!(state.phase, SyncPhase::Running);
-        advance(
-            &mut state,
-            SyncEvent::Finished(completed_result()),
-            ReviewPolicy::Always,
-        );
+        advance(&mut state, SyncEvent::Finished(completed_result()));
         assert_eq!(
             state.phase,
             SyncPhase::Done(outcome_summary(&completed_result()))
         );
-        // Dismissing the result returns to Idle.
-        advance(&mut state, SyncEvent::Dismissed, ReviewPolicy::Always);
+        // Dismissing the result returns to Idle (the page re-previews).
+        advance(&mut state, SyncEvent::Dismissed);
         assert_eq!(state.phase, SyncPhase::Idle);
     }
 
@@ -1432,7 +1331,6 @@ mod tests {
             advance(
                 &mut state,
                 SyncEvent::Progress(ProgressEvent::Notice(format!("event {index}"))),
-                ReviewPolicy::Always,
             );
         }
         assert_eq!(state.events.len(), EVENT_RING_CAPACITY);
@@ -1451,60 +1349,10 @@ mod tests {
     }
 
     #[test]
-    fn a_dry_review_refuses_approval() {
-        let mut state = state();
-        state.phase = SyncPhase::Collecting;
-        advance(
-            &mut state,
-            SyncEvent::Prepared {
-                dry_run: true,
-                result: Ok(prepared()),
-            },
-            ReviewPolicy::Always,
-        );
-        assert!(matches!(
-            state.phase,
-            SyncPhase::Review { dry_run: true, .. }
-        ));
-        // The machine refuses the approval and stays on the review —
-        // the S-08 deliverable has no run path.
-        assert!(
-            advance(
-                &mut state,
-                SyncEvent::Approved(prepared()),
-                ReviewPolicy::Always
-            )
-            .is_none()
-        );
-        assert!(matches!(
-            state.phase,
-            SyncPhase::Review { dry_run: true, .. }
-        ));
-        // Dismissing still works.
-        advance(&mut state, SyncEvent::Dismissed, ReviewPolicy::Always);
-        assert_eq!(state.phase, SyncPhase::Idle);
-    }
-
-    #[test]
     fn stray_events_are_noops() {
         let mut state = state();
-        assert!(
-            advance(
-                &mut state,
-                SyncEvent::Approved(prepared()),
-                ReviewPolicy::Always
-            )
-            .is_none()
-        );
-        assert!(advance(&mut state, SyncEvent::Dismissed, ReviewPolicy::Always).is_none());
-        assert!(
-            advance(
-                &mut state,
-                SyncEvent::Finished(completed_result()),
-                ReviewPolicy::Always
-            )
-            .is_none()
-        );
+        assert!(advance(&mut state, SyncEvent::Dismissed).is_none());
+        assert!(advance(&mut state, SyncEvent::Finished(completed_result())).is_none());
         assert_eq!(state.phase, SyncPhase::Idle);
     }
 
@@ -1534,17 +1382,12 @@ mod tests {
     }
 
     #[test]
-    fn the_facade_drives_the_full_dev_flow_on_real_threads() {
-        let service = IpodSyncService::new(Arc::new(StubRunner), ReviewPolicy::Always);
+    fn the_facade_drives_a_real_run_on_real_threads() {
+        let service = IpodSyncService::new(Arc::new(StubRunner));
         let receiver = service.subscribe();
         assert_eq!(service.snapshot().phase, SyncPhase::Idle);
 
         service.start(false, Path::new("/mnt/ipod"));
-        wait_for(&receiver, |snapshot| {
-            matches!(snapshot.phase, SyncPhase::Review { .. })
-        });
-
-        service.approve();
         wait_for(&receiver, |snapshot| {
             matches!(snapshot.phase, SyncPhase::Done(_))
         });
@@ -1554,6 +1397,10 @@ mod tests {
         );
         // The ring caught the step event from the stub runner.
         assert_eq!(service.snapshot().events.len(), 1);
+
+        // Dismissing the result returns to Idle (the page re-previews).
+        service.dismiss();
+        wait_for(&receiver, |snapshot| snapshot.phase == SyncPhase::Idle);
     }
 
     /// Drain the channel until `predicate` matches, with a deadline —
@@ -1586,29 +1433,27 @@ mod tests {
     }
 
     #[test]
-    fn the_facade_approval_ignores_a_dry_review() {
-        let service = IpodSyncService::new(Arc::new(StubRunner), ReviewPolicy::Always);
+    fn the_facade_preview_never_executes_and_a_run_starts_from_it() {
+        let service = IpodSyncService::new(Arc::new(StubRunner));
         let receiver = service.subscribe();
         service.start(true, Path::new("/mnt/ipod"));
         wait_for(&receiver, |snapshot| {
             matches!(snapshot.phase, SyncPhase::Review { .. })
         });
-        service.approve();
-        // The stub runner would finish in milliseconds; a wrongly
-        // approved dry review would already be Done here. A short grace
-        // proves the approval never spawned it.
+        // The stub runner would finish in milliseconds if an execute
+        // had been spawned; a grace proves the preview never ran it.
         std::thread::sleep(std::time::Duration::from_millis(50));
-        assert!(matches!(
-            service.snapshot().phase,
-            SyncPhase::Review { dry_run: true, .. }
-        ));
-        service.dismiss();
-        wait_for(&receiver, |snapshot| snapshot.phase == SyncPhase::Idle);
+        assert!(matches!(service.snapshot().phase, SyncPhase::Review { .. }));
+        // A real run starts straight from the live preview.
+        service.start(false, Path::new("/mnt/ipod"));
+        wait_for(&receiver, |snapshot| {
+            matches!(snapshot.phase, SyncPhase::Done(_))
+        });
     }
 
     #[test]
-    fn the_facade_runs_straight_through_under_the_release_policy() {
-        let service = IpodSyncService::new(Arc::new(StubRunner), ReviewPolicy::Never);
+    fn the_facade_runs_straight_through_on_a_real_start() {
+        let service = IpodSyncService::new(Arc::new(StubRunner));
         service.start(false, Path::new("/mnt/ipod"));
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         loop {

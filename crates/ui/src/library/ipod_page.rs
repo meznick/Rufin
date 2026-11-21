@@ -36,6 +36,8 @@
 //! S-12 reports the operation until recovery verifies, and the
 //! recovery/dismiss control belongs to the B-015/B-016 sync flow.
 
+use std::path::PathBuf;
+
 use adw::prelude::*;
 use gtk::glib;
 use gtk::subclass::prelude::ObjectSubclassIsExt;
@@ -43,7 +45,7 @@ use localization::{msgid, tr, tr_with};
 
 use crate::device_manager::{ConnectionState, DeviceInfo};
 use crate::ipod_connection::{ConnectionSnapshot, IpodConnection};
-use crate::ipod_sync_service::{IpodSyncService, ReviewPolicy, SyncPhase, SyncState};
+use crate::ipod_sync_service::{IpodSyncService, SyncPhase, SyncState};
 
 gtk_widgets::composite_box!(
     pub IpodPageView,
@@ -73,25 +75,24 @@ gtk_widgets::composite_box!(
         firmware_value: gtk::Label,
         warning_label: gtk::Label,
         storage_bar: gtk::ProgressBar,
-        dry_run_check: gtk::CheckButton,
         running_spinner: gtk::Spinner,
         sync_button: gtk::Button,
-        sync_sheet_revealer: gtk::Revealer,
-        sync_sheet_header: gtk::Box,
-        sync_sheet_spinner: gtk::Spinner,
-        sync_sheet_heading: gtk::Label,
-        sync_sheet_summary: gtk::Label,
-        sync_sheet_running: gtk::Box,
-        sync_sheet_action: gtk::Label,
-        sync_progress_bar: gtk::ProgressBar,
-        sync_step_label: gtk::Label,
-        sync_step_fraction: gtk::Label,
-        sync_sheet_body_scroll: gtk::ScrolledWindow,
-        sync_sheet_body: gtk::Box,
-        sync_sheet_footer: gtk::Box,
-        sync_sheet_cancel: gtk::Button,
-        sync_sheet_apply: gtk::Button,
-        sync_sheet_close: gtk::Button,
+        review_card: gtk::Box,
+        review_heading: gtk::Label,
+        review_summary: gtk::Label,
+        review_body: gtk::Box,
+        float_sheet: gtk::Box,
+        float_running: gtk::Box,
+        float_action: gtk::Label,
+        float_progress_bar: gtk::ProgressBar,
+        float_step_label: gtk::Label,
+        float_step_fraction: gtk::Label,
+        float_result: gtk::Box,
+        float_heading: gtk::Label,
+        float_summary: gtk::Label,
+        float_details: gtk::Box,
+        float_footer: gtk::Box,
+        float_close: gtk::Button,
         error_heading: gtk::Label,
         error_diagnostic: gtk::Label,
         error_retry_button: gtk::Button,
@@ -860,31 +861,24 @@ fn playlist_diff_row(playlist: &crate::ipod_sync_service::DiffPlaylist) -> gtk::
     expander.upcast()
 }
 
-/// Fill the sheet body with the review sections (or the nothing-to-do
-/// line) and set the review footer buttons.
-fn render_review_sheet(
-    view: &IpodPageView,
-    summary: &crate::ipod_sync_service::ReviewSummary,
-    dry_run: bool,
-) {
+/// The always-visible inline review card: the heading, the summary
+/// line and the grouped diff sections. No footer — the Sync button is
+/// the single action.
+fn render_review_card(view: &IpodPageView, summary: &crate::ipod_sync_service::ReviewSummary) {
     let imp = view.imp();
-    imp.sync_sheet_heading.set_label(&tr(msgid("Sync review")));
-    imp.sync_sheet_summary
-        .set_label(&review_summary_line(summary));
+    imp.review_heading.set_label(&tr(msgid("Sync review")));
+    imp.review_summary.set_label(&review_summary_line(summary));
     if summary.would_fit {
-        imp.sync_sheet_summary.remove_css_class("error-text");
+        imp.review_summary.remove_css_class("error-text");
     } else {
-        imp.sync_sheet_summary.add_css_class("error-text");
+        imp.review_summary.add_css_class("error-text");
     }
-    imp.sync_sheet_summary.set_visible(true);
-    imp.sync_sheet_running.set_visible(false);
-    imp.sync_sheet_spinner.set_visible(false);
 
-    clear_box(&imp.sync_sheet_body);
+    clear_box(&imp.review_body);
     if summary.nothing_to_do {
-        imp.sync_sheet_body_scroll.set_visible(false);
+        imp.review_body.set_visible(false);
     } else {
-        imp.sync_sheet_body_scroll.set_visible(true);
+        imp.review_body.set_visible(true);
         let details = &summary.details;
         let mut sections: Vec<gtk::Widget> = Vec::new();
         if !details.adds.is_empty() {
@@ -976,48 +970,43 @@ fn render_review_sheet(
             ));
         }
         for section in sections {
-            imp.sync_sheet_body.append(&section);
+            imp.review_body.append(&section);
         }
     }
-
-    // Footer: a dry run (the S-08 deliverable) and a nothing-to-do
-    // review offer Close only; a real review offers Cancel + Apply.
-    let closable = dry_run || summary.nothing_to_do;
-    imp.sync_sheet_close.set_visible(closable);
-    imp.sync_sheet_cancel.set_visible(!closable);
-    imp.sync_sheet_apply.set_visible(!closable);
+    imp.review_card.set_visible(true);
 }
 
-/// The running sheet: the action line, the bar and the step labels —
-/// identical in dev and release (the diff is never shown during a run).
-fn render_running_sheet(view: &IpodPageView, progress: &ipod_sync::sync::report::SyncProgress) {
+/// The floating running panel: the discreet single action line, the
+/// bar and the step labels — no heading (the prototype round found it
+/// collides with the bar), identical in dev and release.
+fn render_running_float(view: &IpodPageView, progress: &ipod_sync::sync::report::SyncProgress) {
     let imp = view.imp();
-    imp.sync_sheet_heading.set_label(&tr(msgid("Syncing…")));
-    imp.sync_sheet_spinner.set_visible(true);
-    imp.sync_sheet_spinner.set_spinning(true);
-    imp.sync_sheet_summary.set_visible(false);
-    imp.sync_sheet_running.set_visible(true);
+    imp.float_result.set_visible(false);
+    clear_box(&imp.float_details);
+    imp.float_details.set_visible(false);
+    imp.float_footer.set_visible(false);
+    imp.float_running.set_visible(true);
 
     match &progress.item_label {
         Some(label) => {
-            imp.sync_sheet_action.set_label(label);
-            imp.sync_sheet_action.set_visible(true);
+            imp.float_action.set_label(label);
+            imp.float_action.set_visible(true);
         }
-        None => imp.sync_sheet_action.set_visible(false),
+        None => imp.float_action.set_visible(false),
     }
     if progress.item_total > 0 {
-        imp.sync_progress_bar
+        imp.float_progress_bar
             .set_fraction(f64::from(progress.item_current) / f64::from(progress.item_total));
-        imp.sync_step_fraction.set_label(&format!(
+        imp.float_step_fraction.set_label(&format!(
             "{} / {}",
             progress.item_current, progress.item_total
         ));
     } else {
-        imp.sync_progress_bar.set_fraction(0.0);
-        imp.sync_step_fraction.set_label("");
+        imp.float_progress_bar.set_fraction(0.0);
+        imp.float_step_fraction.set_label("");
     }
     if progress.step_total > 0 {
-        imp.sync_step_label.set_label(&format!(
+        imp.float_step_label.set_label(&format!(
             "{} — {}",
             tr_with(
                 "Step {index} of {total}",
@@ -1029,23 +1018,20 @@ fn render_running_sheet(view: &IpodPageView, progress: &ipod_sync::sync::report:
             progress.step.unwrap_or(""),
         ));
     } else {
-        imp.sync_step_label.set_label("");
+        imp.float_step_label.set_label("");
     }
-
-    clear_box(&imp.sync_sheet_body);
-    imp.sync_sheet_body_scroll.set_visible(false);
-    imp.sync_sheet_cancel.set_visible(false);
-    imp.sync_sheet_apply.set_visible(false);
-    imp.sync_sheet_close.set_visible(false);
 }
 
-/// The result sheet: the outcome, the failure diagnostic with the
-/// resume hint, and the remaining diagnostics.
-fn render_result_sheet(
+/// The floating result panel: the outcome, the failure diagnostic with
+/// the resume hint and the collapsed Details expander, and Close.
+fn render_result_float(
     view: &IpodPageView,
     summary: &crate::ipod_sync_service::SyncOutcomeSummary,
 ) {
     let imp = view.imp();
+    imp.float_running.set_visible(false);
+    imp.float_result.set_visible(true);
+
     let failed = !matches!(
         &summary.status,
         ipod_sync::sync::report::SyncStatus::Completed
@@ -1055,14 +1041,12 @@ fn render_result_sheet(
     } else {
         tr(msgid("Sync completed"))
     };
-    imp.sync_sheet_heading.set_label(&heading);
+    imp.float_heading.set_label(&heading);
     if failed {
-        imp.sync_sheet_heading.add_css_class("error-text");
+        imp.float_heading.add_css_class("error-text");
     } else {
-        imp.sync_sheet_heading.remove_css_class("error-text");
+        imp.float_heading.remove_css_class("error-text");
     }
-    imp.sync_sheet_spinner.set_visible(false);
-    imp.sync_sheet_running.set_visible(false);
 
     let changes = &summary.changes;
     let mut parts = Vec::new();
@@ -1081,18 +1065,17 @@ fn render_result_sheet(
         "{count} stats merged",
         changes.host_patches_written + changes.device_patches_written,
     );
-    imp.sync_sheet_summary.set_label(&parts.join(" · "));
-    imp.sync_sheet_summary.set_visible(true);
+    imp.float_summary.set_label(&parts.join(" · "));
 
-    clear_box(&imp.sync_sheet_body);
+    clear_box(&imp.float_details);
     if failed {
-        imp.sync_sheet_body_scroll.set_visible(true);
+        imp.float_details.set_visible(true);
         if let Some(diagnostic) = crate::ipod_sync_service::outcome_diagnostic(&summary.status) {
             let label = gtk::Label::new(Some(&diagnostic));
             label.set_xalign(0.0);
             label.set_wrap(true);
             label.add_css_class("error-text");
-            imp.sync_sheet_body.append(&label);
+            imp.float_details.append(&label);
         }
         if summary.recovery.is_some() {
             let hint = gtk::Label::new(Some(&tr(msgid(
@@ -1101,7 +1084,7 @@ fn render_result_sheet(
             hint.set_xalign(0.0);
             hint.set_wrap(true);
             hint.add_css_class("muted");
-            imp.sync_sheet_body.append(&hint);
+            imp.float_details.append(&hint);
         }
         if !summary.diagnostics.is_empty() {
             let details = adw::ExpanderRow::builder()
@@ -1115,76 +1098,87 @@ fn render_result_sheet(
                 label.add_css_class("ipod-finding");
                 details.add_row(&label);
             }
-            imp.sync_sheet_body.append(&details);
+            imp.float_details.append(&details);
         }
     } else {
-        imp.sync_sheet_body_scroll.set_visible(false);
+        imp.float_details.set_visible(false);
     }
-
-    imp.sync_sheet_cancel.set_visible(false);
-    imp.sync_sheet_apply.set_visible(false);
-    imp.sync_sheet_close.set_visible(true);
+    imp.float_footer.set_visible(true);
 }
 
 /// Apply one sync-service state to the page: the in-flight spinner, the
-/// running lock on the checkbox, and the phase-driven sync sheet — the
-/// thin widget layer over the service's pure machine.
-fn apply_sync_state(view: &IpodPageView, state: &SyncState, policy: ReviewPolicy) {
+/// running lock on the Sync button, the inline review card and the
+/// floating panel — the thin widget layer over the service's pure
+/// machine.
+fn apply_sync_state(view: &IpodPageView, state: &SyncState) {
     let imp = view.imp();
     let running = matches!(state.phase, SyncPhase::Collecting | SyncPhase::Running);
     imp.running_spinner.set_visible(running);
     imp.running_spinner.set_spinning(running);
-    imp.dry_run_check.set_sensitive(!running);
     match &state.phase {
-        SyncPhase::Review { summary, dry_run } if policy == ReviewPolicy::Always => {
-            render_review_sheet(view, summary, *dry_run);
-            imp.sync_sheet_revealer.set_reveal_child(true);
+        SyncPhase::Review { summary } => {
+            render_review_card(view, summary);
+            imp.float_sheet.set_visible(false);
         }
         SyncPhase::Running => {
-            render_running_sheet(view, &state.progress);
-            imp.sync_sheet_revealer.set_reveal_child(true);
+            render_running_float(view, &state.progress);
+            imp.float_sheet.set_visible(true);
         }
         SyncPhase::Done(summary) => {
-            render_result_sheet(view, summary);
-            imp.sync_sheet_revealer.set_reveal_child(true);
+            render_result_float(view, summary);
+            imp.float_sheet.set_visible(true);
         }
-        _ => imp.sync_sheet_revealer.set_reveal_child(false),
+        // Collecting keeps the stale preview card on screen (brief);
+        // Idle hides both — the page re-previews right away.
+        SyncPhase::Collecting => {}
+        SyncPhase::Idle => {
+            imp.review_card.set_visible(false);
+            imp.float_sheet.set_visible(false);
+        }
     }
 }
 
 /// The shell's entry point for `Route::Ipod`: the built and subscribed
 /// page with the action wiring. Call on the GTK main thread (the
 /// subscription attaches to the thread-default main context).
-pub fn ipod_route_view(
-    connection: &IpodConnection,
-    sync: &IpodSyncService,
-    policy: ReviewPolicy,
-) -> gtk::Widget {
+pub fn ipod_route_view(connection: &IpodConnection, sync: &IpodSyncService) -> gtk::Widget {
     let view = IpodPageView::new();
     let imp = view.imp();
 
-    // The Dry Run checkbox is a dev-build surface (the S-08 delta,
-    // b015_plan D-1): release builds compile it out of the bar.
-    if policy != ReviewPolicy::Always {
-        imp.dry_run_check.set_visible(false);
-    }
-
     // Scan again (No-iPod / Sync unavailable / Error): a fresh
     // mount-table scan — `retry()` re-applies the stale last report, so
-    // a replugged device needs this, not retry.
+    // a replugged device needs this, not retry. A manual scan also
+    // refreshes the live preview (the prepare re-reads the device
+    // itself, so the trigger is immediate).
     {
         let connection = connection.clone();
-        imp.scan_button.connect_clicked(move |_| connection.scan());
+        let sync = sync.clone();
+        imp.scan_button.connect_clicked(move |_| {
+            connection.scan();
+            if let Some(device) = connection.snapshot().device {
+                sync.start(true, &device.mount_point);
+            }
+        });
     }
     {
         let connection = connection.clone();
-        imp.unavailable_scan_button
-            .connect_clicked(move |_| connection.scan());
+        let sync = sync.clone();
+        imp.unavailable_scan_button.connect_clicked(move |_| {
+            connection.scan();
+            if let Some(device) = connection.snapshot().device {
+                sync.start(true, &device.mount_point);
+            }
+        });
     }
     {
         let connection = connection.clone();
-        imp.error_scan_button
-            .connect_clicked(move |_| connection.scan());
+        let sync = sync.clone();
+        imp.error_scan_button.connect_clicked(move |_| {
+            connection.scan();
+            if let Some(device) = connection.snapshot().device {
+                sync.start(true, &device.mount_point);
+            }
+        });
     }
     // Retry (Error): same-device transient failures — a synthetic replug
     // re-running retrieval + preflight against the last report.
@@ -1194,41 +1188,34 @@ pub fn ipod_route_view(
             .connect_clicked(move |_| connection.retry());
     }
     // The Ready sidebar's refresh icon (B-014): scanning is manual, so
-    // the overview needs its own on-page trigger.
-    {
-        let connection = connection.clone();
-        imp.sidebar_scan_button
-            .connect_clicked(move |_| connection.scan());
-    }
-    // Sync (B-015): start the service with the dev checkbox state and
-    // the current device's mount. The service itself ignores a start
-    // outside Idle — the click cannot double-run.
+    // the overview needs its own on-page trigger — and the preview
+    // refreshes with it.
     {
         let connection = connection.clone();
         let sync = sync.clone();
-        let dry_run_check = imp.dry_run_check.clone();
-        imp.sync_button.connect_clicked(move |_| {
+        imp.sidebar_scan_button.connect_clicked(move |_| {
+            connection.scan();
             if let Some(device) = connection.snapshot().device {
-                sync.start(dry_run_check.is_active(), &device.mount_point);
+                sync.start(true, &device.mount_point);
             }
         });
     }
-    // The sync sheet's footer: Cancel/Close dismiss, Apply approves the
-    // reviewed plan (a dry review refuses approval in the machine).
+    // Sync: the real run. The live preview is the review, so the click
+    // is the approval. The service ignores a start while collecting or
+    // running — the click cannot double-run.
     {
+        let connection = connection.clone();
         let sync = sync.clone();
-        imp.sync_sheet_cancel
-            .connect_clicked(move |_| sync.dismiss());
+        imp.sync_button.connect_clicked(move |_| {
+            if let Some(device) = connection.snapshot().device {
+                sync.start(false, &device.mount_point);
+            }
+        });
     }
+    // The floating result panel's Close.
     {
         let sync = sync.clone();
-        imp.sync_sheet_close
-            .connect_clicked(move |_| sync.dismiss());
-    }
-    {
-        let sync = sync.clone();
-        imp.sync_sheet_apply
-            .connect_clicked(move |_| sync.approve());
+        imp.float_close.connect_clicked(move |_| sync.dismiss());
     }
 
     // The connection snapshot + the sync running flag drive the Sync
@@ -1237,6 +1224,33 @@ pub fn ipod_route_view(
         std::rc::Rc::new(std::cell::RefCell::new(Option::<ConnectionSnapshot>::None));
     let running = std::rc::Rc::new(std::cell::Cell::new(false));
 
+    // The live preview: re-run when the device appears or changes. A
+    // failed preview is not re-run automatically (the user closes the
+    // result and decides) — the gate against an error panel that
+    // reappears forever with no source configured.
+    let last_preview_mount = std::rc::Rc::new(std::cell::RefCell::new(Option::<PathBuf>::None));
+    let preview_ok = std::rc::Rc::new(std::cell::Cell::new(true));
+    let preview_for = {
+        let connection = connection.clone();
+        let sync = sync.clone();
+        let last_preview_mount = last_preview_mount.clone();
+        let preview_ok = preview_ok.clone();
+        move |phase: &SyncPhase| {
+            if !matches!(phase, SyncPhase::Idle) || !preview_ok.get() {
+                return;
+            }
+            let Some(device) = connection.snapshot().device else {
+                return;
+            };
+            let mount = device.mount_point;
+            if last_preview_mount.borrow().as_deref() == Some(mount.as_path()) {
+                return;
+            }
+            last_preview_mount.borrow_mut().replace(mount.clone());
+            sync.start(true, &mount);
+        }
+    };
+
     let connection_receiver = connection.subscribe();
     *last_snapshot.borrow_mut() = Some(connection.snapshot());
     view.apply_snapshot(&connection.snapshot(), running.get());
@@ -1244,19 +1258,25 @@ pub fn ipod_route_view(
         let view = view.clone();
         let last_snapshot = last_snapshot.clone();
         let running = running.clone();
+        let sync = sync.clone();
+        let preview_for = preview_for.clone();
         glib::spawn_future_local(async move {
             while let Ok(snapshot) = connection_receiver.recv().await {
                 *last_snapshot.borrow_mut() = Some(snapshot.clone());
                 view.apply_snapshot(&snapshot, running.get());
+                preview_for(&sync.snapshot().phase);
             }
         });
     }
     let sync_receiver = sync.subscribe();
-    apply_sync_state(&view, &sync.snapshot(), policy);
+    apply_sync_state(&view, &sync.snapshot());
     {
         let view = view.clone();
         let last_snapshot = last_snapshot.clone();
         let running = running.clone();
+        let preview_for = preview_for.clone();
+        let preview_ok = preview_ok.clone();
+        let last_preview_mount = last_preview_mount.clone();
         glib::spawn_future_local(async move {
             while let Ok(state) = sync_receiver.recv().await {
                 let is_running = matches!(state.phase, SyncPhase::Collecting | SyncPhase::Running);
@@ -1264,7 +1284,17 @@ pub fn ipod_route_view(
                 if let Some(snapshot) = last_snapshot.borrow().as_ref() {
                     view.apply_snapshot(snapshot, is_running);
                 }
-                apply_sync_state(&view, &state, policy);
+                apply_sync_state(&view, &state);
+                if let SyncPhase::Done(summary) = &state.phase {
+                    preview_ok.set(matches!(
+                        summary.status,
+                        ipod_sync::sync::report::SyncStatus::Completed
+                    ));
+                    // The post-run refresh: clear the mount key so the
+                    // Idle trigger (after Close) re-previews.
+                    last_preview_mount.borrow_mut().take();
+                }
+                preview_for(&state.phase);
             }
         });
     }
