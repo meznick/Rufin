@@ -1,7 +1,9 @@
 # B-017: Per-model physical-device and iTunes acceptance
 
-Status: owner decisions D-1..D-4 recorded (2026-11-19); plan pending
-owner review. This is the gate that flips real device writes on.
+Status: owner decisions D-1..D-4 recorded (2026-11-19); step 0 done
+(2026-11-19); a real-pod run happened out of order on 2026-11-21 —
+recorded below as the deviation record, not an acceptance gate. A1–A8 /
+B1–B3 and the D-3 flip remain open.
 
 ## 1. What this task is
 
@@ -168,12 +170,71 @@ bytes before the sync and asserts them byte-identical after — a
 host-media regression fails the fixture gate instead of eating the
 library.
 
+## Real-pod run (2026-11-21) — out of order, deviation record
+
+A real-pod sync happened before phase A's prep and against the live
+library, not the disposable copy. Nothing broke — the engine's own
+verification passed — but the two §3 rules it crossed are recorded here
+instead of being silently absorbed.
+
+What happened, in the evidence: the owner relaunched the app at 16:26
+local on a binary built at 16:24 **without** the feature (a rebuild of
+the B-016 stat-chip fix; the write surface is absent from the binary —
+`ipod::testkit` symbols: 0). The 16:33 sync attempt walked Intent →
+Backup → HostWrite and then the executor's first device write
+(`create_track`) hit the compile-time gate:
+`sync failed step=FileOps ... write APIs are gated until B-010`.
+Nothing was written to either side — the `.itl` backup chain
+(`/nvme2tb/iTunes/*.bak*`) shows no host write for that run, and the
+pod's journal/backup files all carry the second run's timestamps.
+
+The owner then asked how to enable the feature, ran the
+`cargo build -p rufin -F gtk-shell/sync-writes` command (binary
+16:45:22, `testkit` symbols: 14; size = the 16:24 binary + 51,560 B —
+the compiled write surface over unchanged source), and re-launched at
+16:46:30. The second sync completed at 16:48:36: consistency backup
+16:47:44–58, host write 16:48:33, iTunesDB 16:48:34, the 2 Die
+Antwoord adds landed (`F20/libgpod310292.m4a`,
+`F48/libgpod141125.m4a`), ArtworkDB rewritten, `last-success.json`
+written, post-write re-parse passed. The owner's observation ("first
+sync didn't move the stats, second synced everything") is the gate,
+not a merge bug — the first run wrote nothing at all.
+
+The deviations:
+
+1. **The host write went to the live production `.itl`**
+   (`/nvme2tb/iTunes/iTunes Library.itl`, `.bak0` = the pre-image),
+   because the app's iTunes source points at the live library — §3's
+   disposable-copy rule was not followed. The write itself is the
+   standard benign field update (sentinel respected, atomic, rolling
+   backups), and the owner accepted the result, but phase A's first
+   real-pod write was planned against a copy.
+2. **No full `iPod_Control/` backup existed before the first real
+   write** (§3, §5 prep). Taken after the fact on 2026-11-21 into
+   `/nvme2tb/ipod-backup/IPOD-USER_2026-11-21/` (full mount root,
+   ~23 GB).
+
+Consequences carried into the remaining gates:
+
+- Phase B's B1 host-library acceptance now targets the **live `.itl`**
+  Rufin's host-write step produced (a disposable copy no longer exists
+  for that file) — the known full-library re-scan on the next Windows
+  iTunes open applies (benign, slow).
+- A1 (adds land) and the A2 playlist update (Хай рейт) are de-facto
+  exercised on the real pod; A3 covers stay open (the shell boundary's
+  artwork provider still returns `None` — see §8), as do A5–A8, B2/B3
+  and the D-3 flip. The run does **not** count as acceptance: the gates
+  run deliberately, with records.
+
 ## 5. Phase A — device acceptance on the Video 5.5g
 
 Prep: full backup of `iPod_Control/` (DBs + `Music/` + `iTunes/`) to
 the host; record device facts (model string from SysInfo, serial,
 capacity, mount, library track count, firmware — SysInfo fields only;
 the real firmware version needs the OSOS read, backlog B-025).
+
+The backup is taken (2026-11-21, after the out-of-order run — see the
+deviation record above): `/nvme2tb/ipod-backup/IPOD-USER_2026-11-21/`.
 
 The pod currently matches the live library's dry run (2 adds,
 1 update). Phase A first syncs **that plan** (Die Antwoord adds +
@@ -219,6 +280,14 @@ commit lands, real writes stay feature-gated.
 
 - Classic support is unverified (D-1): a device re-opens it — backlog.
 - Firmware version from the OSOS image — B-025.
+- The shell boundary's artwork provider (`ShellSyncBoundary.artwork`)
+  still returns `None` — adds land cover-less and A3 stays open until
+  it's wired to the runtime catalog's embedded-cover reader.
+- The feature flag is silently sticky per build: a plain
+  `cargo build -p rufin` reverts to the gated binary with no warning
+  until a sync fails mid-run (the 2026-11-21 incident). Worth a guard
+  with the D-3 flip: a build-script assertion that release builds carry
+  `sync-writes`, or an iPod-page "writes compiled out" notice.
 - Any format fact discovered during phases A/B (e.g. an unexpected
   iTunes byte the engine doesn't model) goes straight into itl-player
   `NOTES.md` with the VERIFIED marker and the measurement.
