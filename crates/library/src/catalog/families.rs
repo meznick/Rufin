@@ -10,7 +10,8 @@ use sqlx::sqlite::{SqliteArguments, SqliteRow};
 use super::merge::Touched;
 use super::records::*;
 use super::snapshot::{
-    CACHED_LOCAL, INDEXED, INPUT, NATIVE, Packed, SORT_LOWER, SORT_TITLE, Snapshot, UserItem,
+    CACHED_LOCAL, EXPLICIT, INDEXED, INPUT, NATIVE, Packed, SORT_LOWER, SORT_TITLE, Snapshot,
+    UserItem,
 };
 use super::strings::StrId;
 use super::write::{Family, Overlay, Write};
@@ -731,7 +732,7 @@ impl Row for Track {
                 bpm: row.try_get("bpm")?,
                 comment: snapshot.held_optional(record.comment),
                 format: snapshot.held_optional(record.format),
-                explicit: record.flags & crate::schema::TRACK_EXPLICIT as u16 != 0,
+                explicit: record.flags & EXPLICIT != 0,
             },
             first_seen: row.try_get("first_seen_at")?,
             state: track_state(row)?,

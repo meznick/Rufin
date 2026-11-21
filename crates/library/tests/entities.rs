@@ -1366,3 +1366,45 @@ async fn album_genres_supply_browsing_and_playback_without_changing_track_tags()
         1
     );
 }
+
+#[tokio::test]
+async fn explicit_flag_survives_the_snapshot_round_trip_into_track_rows() {
+    let mut fixture = fixture().await;
+    {
+        let mut scan_observation = fixture.catalog.observe("source").await.unwrap();
+        scan_observation
+            .apply_catalog(
+                &library::CatalogBatch {
+                    tracks: vec![library::TrackObservation {
+                        object_id: "track-0".into(),
+                        album_object_id: Some("album-a".into()),
+                        metadata: library::TrackMetadata {
+                            explicit: true,
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+                true,
+            )
+            .await
+            .unwrap();
+    }
+    // Reload: the row reads the snapshot record's flags, not the DB column
+    // directly, so a DB-only write would not prove the read path.
+    fixture.catalog = super::support::reopen(fixture.catalog, &fixture.path).await;
+    let read = library::MemberRead::new(library::Collection::Source(fixture.source));
+    let rows = tracks(&fixture.catalog, read).await;
+    let flagged: Vec<_> = rows.iter().filter(|row| row.explicit).collect();
+    assert_eq!(
+        flagged.len(),
+        1,
+        "exactly the published track shows the explicit flag"
+    );
+    assert_eq!(
+        flagged[0].object_id.as_deref(),
+        Some("track-0"),
+        "the explicit track is the one the observation marked"
+    );
+}

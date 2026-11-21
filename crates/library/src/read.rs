@@ -7,8 +7,8 @@ use std::sync::Arc;
 
 use crate::catalog::fetch::{self, Got, Part, Want};
 use crate::catalog::snapshot::{
-    COMPILATION, CUE, DOWNLOADED, METADATA_WRITABLE, PICTURE, Packed, SOURCE_OWNED, Snapshot,
-    WRITABLE,
+    COMPILATION, CUE, DOWNLOADED, EXPLICIT, METADATA_WRITABLE, PICTURE, Packed, SOURCE_OWNED,
+    Snapshot, WRITABLE,
 };
 use crate::catalog::strings::StrId;
 use crate::catalog::views::{
@@ -813,7 +813,7 @@ impl<'a> Builder<'a> {
                 record.native_rating,
                 self.context.played(slot, record),
             ),
-            explicit: record.flags & crate::schema::TRACK_EXPLICIT as u16 != 0,
+            explicit: record.flags & EXPLICIT != 0,
             is_downloaded: record.flags & DOWNLOADED != 0,
             cue: record.flags & CUE != 0,
             links: TrackLinks {
