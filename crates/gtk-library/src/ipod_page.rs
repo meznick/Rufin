@@ -387,12 +387,14 @@ pub fn support_warning(device: &DeviceInfo) -> Option<&'static str> {
 pub struct SyncControls {
     pub sync_enabled: bool,
     pub gating_note: Option<&'static str>,
-    pub running: bool,
+    pub disabled: bool,
 }
 
 /// The pure gating decision for one connection snapshot plus the sync
-/// service's running flag.
-pub fn sync_controls(snapshot: &ConnectionSnapshot, running: bool) -> SyncControls {
+/// service's phase-derived flag: `disabled` while a run is in flight
+/// **or** while the diff is still being computed — the Sync click must
+/// never race the live preview (the B-016 feedback).
+pub fn sync_controls(snapshot: &ConnectionSnapshot, disabled: bool) -> SyncControls {
     let ready = snapshot.state == ConnectionState::Ready;
     let alive = snapshot.worker_alive;
     let supported = snapshot
@@ -405,9 +407,9 @@ pub fn sync_controls(snapshot: &ConnectionSnapshot, running: bool) -> SyncContro
         .filter(|_| ready && alive && !supported)
         .and_then(|device| support_warning(device));
     SyncControls {
-        sync_enabled: ready && alive && supported && !running,
+        sync_enabled: ready && alive && supported && !disabled,
         gating_note,
-        running,
+        disabled,
     }
 }
 
@@ -476,9 +478,9 @@ impl IpodPageView {
     /// stack, the heading/diagnostics/device labels, and the notice
     /// banner. Called once with the initial snapshot (the subscription
     /// channel carries no replay) and on every channel event.
-    /// `sync_running` is the sync service's current in-flight flag —
-    /// the B-015 gating input.
-    pub fn apply_snapshot(&self, snapshot: &ConnectionSnapshot, sync_running: bool) {
+    /// `sync_disabled` is the sync service's phase-derived flag —
+    /// true while a run is in flight or the diff is being computed.
+    pub fn apply_snapshot(&self, snapshot: &ConnectionSnapshot, sync_disabled: bool) {
         let decision = decide(snapshot);
         let imp = self.imp();
 
@@ -547,8 +549,8 @@ impl IpodPageView {
                         None => imp.storage_bar.set_show_text(false),
                     }
                     // The B-015 gating (S-11): the Sync button follows
-                    // the snapshot + the in-flight flag.
-                    let controls = sync_controls(snapshot, sync_running);
+                    // the snapshot + the phase-derived flag.
+                    let controls = sync_controls(snapshot, sync_disabled);
                     imp.sync_button.set_sensitive(controls.sync_enabled);
                 }
                 imp.state_stack.set_visible_child_name(READY_PAGE);
@@ -1128,9 +1130,17 @@ fn apply_sync_state(view: &IpodPageView, state: &SyncState) {
             render_result_float(view, summary);
             imp.float_sheet.set_visible(true);
         }
-        // Collecting keeps the stale preview card on screen (brief);
-        // Idle hides both — the page re-previews right away.
-        SyncPhase::Collecting => {}
+        // Collecting: the diff is being computed — the card shows
+        // a placeholder line so the in-progress state is visible (a
+        // bare spinner read as nothing happening, the B-016 feedback).
+        SyncPhase::Collecting => {
+            imp.review_card.set_visible(true);
+            imp.review_heading.set_label(&tr(msgid("Sync review")));
+            imp.review_summary
+                .set_label(&tr(msgid("Comparing the device and the library…")));
+            clear_box(&imp.review_body);
+            imp.review_body.set_visible(false);
+        }
         SyncPhase::Idle => {
             imp.review_card.set_visible(false);
             imp.float_sheet.set_visible(false);
@@ -1218,11 +1228,20 @@ pub fn ipod_route_view(connection: &IpodConnection, sync: &IpodSyncService) -> g
         imp.float_close.connect_clicked(move |_| sync.dismiss());
     }
 
-    // The connection snapshot + the sync running flag drive the Sync
-    // button together: both subscriptions re-apply the controls.
+    // The connection snapshot + the sync phase drive the Sync button
+    // together: both subscriptions re-apply the controls. The button is
+    // muted while the diff is being computed, in flight, or the result
+    // is showing — the Sync click must never race the live preview.
     let last_snapshot =
         std::rc::Rc::new(std::cell::RefCell::new(Option::<ConnectionSnapshot>::None));
-    let running = std::rc::Rc::new(std::cell::Cell::new(false));
+    let sync_disabled = std::rc::Rc::new(std::cell::Cell::new(false));
+    // The initial flag follows the service's current phase (the channel
+    // carries no replay — a page mounted mid-run must not flash the
+    // button enabled).
+    sync_disabled.set(!matches!(
+        sync.snapshot().phase,
+        SyncPhase::Review { .. } | SyncPhase::Idle
+    ));
 
     // The live preview: re-run when the device appears or changes. A
     // failed preview is not re-run automatically (the user closes the
@@ -1253,17 +1272,22 @@ pub fn ipod_route_view(connection: &IpodConnection, sync: &IpodSyncService) -> g
 
     let connection_receiver = connection.subscribe();
     *last_snapshot.borrow_mut() = Some(connection.snapshot());
-    view.apply_snapshot(&connection.snapshot(), running.get());
+    view.apply_snapshot(&connection.snapshot(), sync_disabled.get());
+    // The B-016 feedback fix: the device may already be Ready here (a
+    // previous route visit scanned it) — the subscription channel
+    // carries no replay, so the preview must be triggered against the
+    // initial snapshot too, not only on future events.
+    preview_for(&sync.snapshot().phase);
     {
         let view = view.clone();
         let last_snapshot = last_snapshot.clone();
-        let running = running.clone();
+        let sync_disabled = sync_disabled.clone();
         let sync = sync.clone();
         let preview_for = preview_for.clone();
         glib::spawn_future_local(async move {
             while let Ok(snapshot) = connection_receiver.recv().await {
                 *last_snapshot.borrow_mut() = Some(snapshot.clone());
-                view.apply_snapshot(&snapshot, running.get());
+                view.apply_snapshot(&snapshot, sync_disabled.get());
                 preview_for(&sync.snapshot().phase);
             }
         });
@@ -1273,16 +1297,16 @@ pub fn ipod_route_view(connection: &IpodConnection, sync: &IpodSyncService) -> g
     {
         let view = view.clone();
         let last_snapshot = last_snapshot.clone();
-        let running = running.clone();
+        let sync_disabled = sync_disabled.clone();
         let preview_for = preview_for.clone();
         let preview_ok = preview_ok.clone();
         let last_preview_mount = last_preview_mount.clone();
         glib::spawn_future_local(async move {
             while let Ok(state) = sync_receiver.recv().await {
-                let is_running = matches!(state.phase, SyncPhase::Collecting | SyncPhase::Running);
-                running.set(is_running);
+                let disabled = !matches!(state.phase, SyncPhase::Review { .. } | SyncPhase::Idle);
+                sync_disabled.set(disabled);
                 if let Some(snapshot) = last_snapshot.borrow().as_ref() {
-                    view.apply_snapshot(snapshot, is_running);
+                    view.apply_snapshot(snapshot, disabled);
                 }
                 apply_sync_state(&view, &state);
                 if let SyncPhase::Done(summary) = &state.phase {
@@ -1537,10 +1561,11 @@ mod tests {
             support_warning(unsupported.device.as_ref().unwrap())
         );
 
-        // A running sync disables the button regardless.
+        // A disabled flag (run in flight, diff computing) mutes
+        // the button regardless.
         let controls = sync_controls(&ready_snapshot(), true);
         assert!(!controls.sync_enabled);
-        assert!(controls.running);
+        assert!(controls.disabled);
 
         // A dead worker disables the button.
         let mut dead = ready_snapshot();
