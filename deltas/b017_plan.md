@@ -281,8 +281,11 @@ commit lands, real writes stay feature-gated.
 - Classic support is unverified (D-1): a device re-opens it — backlog.
 - Firmware version from the OSOS image — B-025.
 - The shell boundary's artwork provider (`ShellSyncBoundary.artwork`)
-  still returns `None` — adds land cover-less and A3 stays open until
-  it's wired to the runtime catalog's embedded-cover reader.
+  is wired (2026-11-21, `deltas/b017_artwork_plan.md`): a lazy pid →
+  host-path map from the configured `.itl` (the same media-folder
+  machinery the sources crate's catalog uses) plus the sources crate's
+  embedded-cover reader. The A3 provider side is done; the on-device
+  evidence still comes with phase A.
 - The feature flag is silently sticky per build: a plain
   `cargo build -p rufin` reverts to the gated binary with no warning
   until a sync fails mid-run (the 2026-11-21 incident). Worth a guard

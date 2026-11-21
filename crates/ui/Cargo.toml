@@ -45,7 +45,10 @@ regex.workspace = true
 roxmltree.workspace = true
 rufin-core.workspace = true
 sources.workspace = true
-tempfile.workspace = true
+gstreamer.workspace = true
+itl-core = "0.1.3"
+itl-sync = "0.1.0"
+
 tokio.workspace = true
 tracing.workspace = true
 web.workspace = true
