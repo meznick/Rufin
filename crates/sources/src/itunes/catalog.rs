@@ -17,6 +17,22 @@ use super::write::ItunesPatch;
 use crate::source::{SourceProgress, SourceProgressStage};
 use crate::{SourceError, SourceResult};
 
+/// The catalog object id of a track: its Persistent ID (`mith` @0x80, the
+/// XML `Persistent ID`, verified stable 3400/3400 against the live library).
+/// The numeric `mhoh` track id is NOT used for identity: iTunes renumbers
+/// those on re-save (a re-save shifted every id by +1 on 2026-11-21 and the
+/// next refresh duplicated the whole library), so it travels separately in
+/// `TrackMetadata.itunes_track_id` for the write-back. A track without a
+/// PID (never seen in a real library) falls back to the numeric id.
+pub fn track_object_id(track: &itl_core::Track) -> String {
+    let pid = track.persistent_id();
+    if pid != 0 {
+        format!("itunes:track:{pid:016x}")
+    } else {
+        format!("itunes:track:id:{}", track.id())
+    }
+}
+
 pub(crate) async fn acquire(
     source: &ItunesSource,
     observation: &mut library::Observation<'_>,
@@ -66,7 +82,6 @@ pub(crate) async fn acquire(
     });
 
     let source_id = SourceId::new(observation.source_id);
-    let track_object_id = |id: u32| format!("itunes:track:{id}");
     let media_uri_for =
         |object_id: &str| library::source_entity_uri(&source_id, "track", object_id);
     // Albums: iTunes groups tracks by (Album, Album Artist). The mith album
@@ -214,7 +229,7 @@ pub(crate) async fn acquire(
             total: Some(total),
         });
 
-        let object_id = track_object_id(track.id());
+        let object_id = track_object_id(track);
         let media_uri = media_uri_for(&object_id);
         observed_uris.push(media_uri.clone());
 
@@ -318,6 +333,7 @@ pub(crate) async fn acquire(
                 },
                 explicit: track.is_explicit(),
                 bpm: track.bpm().map(i64::from),
+                itunes_track_id: Some(i64::from(track.id())),
                 artists: {
                     let sort_text = (!artist.is_empty()).then(|| artist.to_lowercase());
                     (!artist.is_empty())
@@ -374,6 +390,18 @@ pub(crate) async fn acquire(
     });
 
     observation.apply_catalog(&batch, true).await?;
+
+    // Unindex everything this pass did not observe: tracks removed from the
+    // .itl, tracks that lost their location, albums/artists/genres that
+    // became empty. The generic source wrapper calls
+    // complete_source_observation with an empty kind list, which only
+    // records completeness — the actual absent-row sweep is per kind and
+    // runs here, as the pre-rebase source did. Without it, rows keyed by a
+    // stale identity (e.g. the numeric id before the Persistent-ID re-key)
+    // would stay indexed forever.
+    observation
+        .complete_source_observation(&["track", "album", "artist", "genre"], None, None)
+        .await?;
 
     // Base rows for tracks no longer in the .itl.
     observation
@@ -458,12 +486,8 @@ async fn embedded_bindings(
     cancelled: &(dyn Fn() -> bool + Send + Sync),
 ) -> SourceResult<Vec<Option<Vec<u8>>>> {
     const INSPECT_BATCH: usize = 64;
-    let media_uri_for = |id: u32| {
-        library::source_entity_uri(
-            &SourceId::new(source_id),
-            "track",
-            &format!("itunes:track:{id}"),
-        )
+    let media_uri_for = |track: &itl_core::Track| {
+        library::source_entity_uri(&SourceId::new(source_id), "track", &track_object_id(track))
     };
     let mut bindings = vec![None; located.len()];
     let mut pending: Vec<(usize, PathBuf)> = Vec::new();
@@ -474,7 +498,7 @@ async fn embedded_bindings(
         let Some(revision) = crate::file::local::artwork::revision(path) else {
             continue;
         };
-        let media_uri = media_uri_for(track.id());
+        let media_uri = media_uri_for(track);
         if let Some(binding) = cached.get(&media_uri)
             && same_local_asset(binding, path, &revision)
         {

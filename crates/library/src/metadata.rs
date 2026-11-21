@@ -41,6 +41,11 @@ pub struct TrackMetadata {
     pub source_loudness: Option<NativeGain>,
     pub album_loudness: Option<NativeGain>,
     pub groupings: Vec<String>,
+    /// The `.itl` numeric track id the iTunes write-back targets. Not shown:
+    /// iTunes renumbers these on re-save, so the catalog keys by the
+    /// Persistent ID (`mith` @0x80) and this field carries the id that is
+    /// fresh for the file the observation read. Serde-default, no migration.
+    pub itunes_track_id: Option<i64>,
 }
 
 /// The TrackMetadata fields stored as typed `tracks` columns. `track_details.metadata` holds

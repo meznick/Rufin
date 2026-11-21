@@ -12,6 +12,7 @@ use std::sync::atomic::AtomicBool;
 
 use itl_sync::paths::{MappedLocation, MediaMapping};
 use library::{Catalog, ReadCancellation, source_entity_uri};
+use sources::itunes::catalog::track_object_id;
 use sources::{LocalImageRef, Refresh, Source, SourceId, SourceImageRequest};
 
 fn test_library() -> Option<PathBuf> {
@@ -29,7 +30,11 @@ async fn connect(
     library: PathBuf,
     media_folder: Option<PathBuf>,
 ) -> (Catalog, Source, library::SourceKey, PathBuf) {
-    let directory = tempfile::tempdir().unwrap();
+    // The catalog outlives this helper; the temp dir must too — SQLite
+    // reopens the WAL/SHM files by path on every transaction. Dropping the
+    // TempDir here would delete them and fail the first write with
+    // "unable to open database file". Leak the directory: tests are short.
+    let directory = Box::leak(Box::new(tempfile::tempdir().unwrap()));
     let database_path = directory.path().join("library.sqlite");
     let catalog = Catalog::open(&database_path).await.unwrap();
     let configuration =
@@ -154,8 +159,11 @@ async fn itunes_catalog_reads_tracks_albums_and_stats() {
             "one album object per (name, album artist) pair"
         );
         let duplicate_pairs: i64 = sqlx::query_scalar(
+            // Post-port: title/artist are thin `albums` columns, not part of
+            // the details JSON (json_extract on metadata reads NULL for
+            // every row and lumps the whole library into one bucket).
             "SELECT count(*) FROM (
-                 SELECT json_extract(metadata,'$.title'), json_extract(metadata,'$.artist')
+                 SELECT title, display_artist
                  FROM albums WHERE source_key=?1 AND indexed=1
                  GROUP BY 1,2 HAVING count(*)>1)",
         )
@@ -168,7 +176,12 @@ async fn itunes_catalog_reads_tracks_albums_and_stats() {
             "no two album objects with the same (title, artist)"
         );
         let max_track_count: i64 = sqlx::query_scalar(
-            "SELECT max(track_count) FROM albums WHERE source_key=?1 AND indexed=1",
+            // Post-port: `albums` has no track_count column; the largest
+            // album is the album_key grouping the most tracks.
+            "SELECT max(members) FROM (
+                 SELECT count(*) AS members FROM tracks
+                  WHERE source_key=?1 AND indexed=1 AND album_key IS NOT NULL
+                  GROUP BY album_key)",
         )
         .bind(source_key.raw())
         .fetch_one(&mut connection)
@@ -189,7 +202,7 @@ async fn itunes_catalog_reads_tracks_albums_and_stats() {
     let missing_uri = source_entity_uri(
         &SourceId::new("itunes-test"),
         "track",
-        &format!("itunes:track:{}", no_location.id()),
+        &track_object_id(no_location),
     );
     let missing = catalog
         .itunes_player_state(&missing_uri, &ReadCancellation::new())
@@ -207,7 +220,7 @@ async fn itunes_catalog_reads_tracks_albums_and_stats() {
         let mut observation = catalog.observe("itunes-test").await.unwrap();
         let mut stale = library::CatalogBatch::default();
         stale.tracks.push(library::TrackObservation {
-            object_id: format!("itunes:track:{}", no_location.id()),
+            object_id: track_object_id(no_location),
             media_uri: Some(missing_uri.clone()),
             metadata: library::TrackMetadata {
                 title: "stale cloud track".into(),
@@ -236,7 +249,7 @@ async fn itunes_catalog_reads_tracks_albums_and_stats() {
     let rated_uri = source_entity_uri(
         &SourceId::new("itunes-test"),
         "track",
-        &format!("itunes:track:{}", rated.id()),
+        &track_object_id(rated),
     );
     let state = catalog
         .itunes_player_state(&rated_uri, &ReadCancellation::new())
@@ -266,7 +279,7 @@ async fn itunes_catalog_reads_tracks_albums_and_stats() {
     let played_uri = source_entity_uri(
         &SourceId::new("itunes-test"),
         "track",
-        &format!("itunes:track:{}", played.id()),
+        &track_object_id(played),
     );
     let played_state = catalog
         .itunes_player_state(&played_uri, &ReadCancellation::new())
@@ -296,7 +309,7 @@ async fn itunes_catalog_reads_tracks_albums_and_stats() {
             let uri = source_entity_uri(
                 &SourceId::new("itunes-test"),
                 "track",
-                &format!("itunes:track:{}", explicit.id()),
+                &track_object_id(explicit),
             );
             let flagged: i64 = sqlx::query_scalar(
                 "SELECT json_extract(details.metadata, '$.explicit') FROM track_details details
@@ -324,7 +337,7 @@ async fn itunes_catalog_reads_tracks_albums_and_stats() {
             let uri = source_entity_uri(
                 &SourceId::new("itunes-test"),
                 "track",
-                &format!("itunes:track:{}", clean.id()),
+                &track_object_id(clean),
             );
             let flagged: i64 = sqlx::query_scalar(
                 "SELECT json_extract(details.metadata, '$.explicit') FROM track_details details
@@ -403,15 +416,15 @@ async fn itunes_embedded_artwork_publishes_bindings_and_serves_images() {
     let mapping = MediaMapping::new(&itl, &media_root).expect("corpus maps under the media folder");
 
     // Classify located tracks by their embedded pictures.
-    let mut with_picture: Option<u32> = None;
-    let mut without_picture: Option<u32> = None;
+    let mut with_picture: Option<itl_core::Track> = None;
+    let mut without_picture: Option<itl_core::Track> = None;
     for track in unique_tracks(&itl) {
         let MappedLocation::Mapped { path, .. } = mapping.to_local(track) else {
             continue;
         };
         match has_embedded_picture(&path) {
-            Some(true) => with_picture.get_or_insert(track.id()),
-            Some(false) => without_picture.get_or_insert(track.id()),
+            Some(true) => with_picture.get_or_insert_with(|| track.clone()),
+            Some(false) => without_picture.get_or_insert_with(|| track.clone()),
             None => continue,
         };
         if with_picture.is_some() && without_picture.is_some() {
@@ -423,11 +436,11 @@ async fn itunes_embedded_artwork_publishes_bindings_and_serves_images() {
         connect("itunes-art-test", library_path.clone(), None).await;
     acquire(&source, &catalog).await;
 
-    let uri_for = |id: u32| {
+    let uri_for = |track: &itl_core::Track| {
         source_entity_uri(
             &SourceId::new("itunes-art-test"),
             "track",
-            &format!("itunes:track:{id}"),
+            &track_object_id(track),
         )
     };
     let bindings = catalog
@@ -438,7 +451,7 @@ async fn itunes_embedded_artwork_publishes_bindings_and_serves_images() {
     // A track with an embedded picture publishes a Local binding, and
     // `Source::image` serves the picture bytes.
     let picture_id = with_picture.expect("corpus has a located track with an embedded picture");
-    let picture_uri = uri_for(picture_id);
+    let picture_uri = uri_for(&picture_id);
     let binding = bindings
         .get(&picture_uri)
         .expect("artwork binding published for the picture track");
@@ -463,7 +476,7 @@ async fn itunes_embedded_artwork_publishes_bindings_and_serves_images() {
     // A pictureless located track publishes no binding, and the
     // authoritative observation leaves no native artwork behind.
     if let Some(id) = without_picture {
-        let uri = uri_for(id);
+        let uri = uri_for(&id);
         assert!(
             !bindings.contains_key(&uri),
             "no binding for the pictureless track"
@@ -560,4 +573,74 @@ async fn stream_resolves_the_observation_source_path() {
             .as_str(),
         "the stream plays the host path the observation stored, not a files row"
     );
+}
+
+async fn track_rows(
+    database_path: &std::path::Path,
+    source_key: library::SourceKey,
+) -> Vec<(String, String)> {
+    use sqlx::Connection as _;
+    let mut connection = sqlx::SqliteConnection::connect_with(
+        &sqlx::sqlite::SqliteConnectOptions::new().filename(database_path),
+    )
+    .await
+    .unwrap();
+    sqlx::query_as::<_, (String, String)>(
+        "SELECT object_id, media_uri FROM tracks
+          WHERE source_key=?1 AND indexed=1 ORDER BY track_key",
+    )
+    .bind(source_key.raw())
+    .fetch_all(&mut connection)
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+async fn refreshed_itunes_observations_keep_stable_track_object_ids() {
+    let Some(library_path) = test_library() else {
+        eprintln!("ITL_TEST_PATH missing — skipping iTunes source integration test");
+        return;
+    };
+    // The numeric mhoh id is NOT the track identity: iTunes renumbers it on
+    // re-save (2026-11-21: one re-save shifted every id by +1 and the next
+    // refresh duplicated the whole library). The catalog keys by the
+    // Persistent ID (`mith` @0x80), so two refreshes of the same file must
+    // publish the same object ids and not grow the catalog.
+    let (catalog, source, source_key, database_path) =
+        connect("itunes-stable-test", library_path, None).await;
+    acquire(&source, &catalog).await;
+    let (first_tracks, first_albums) = track_counts(&database_path, source_key).await;
+    assert!(first_tracks > 0, "corpus publishes tracks");
+
+    let first = track_rows(&database_path, source_key).await;
+
+    acquire(&source, &catalog).await;
+    let (second_tracks, second_albums) = track_counts(&database_path, source_key).await;
+    assert_eq!(
+        second_tracks, first_tracks,
+        "a refresh does not duplicate tracks"
+    );
+    assert_eq!(
+        second_albums, first_albums,
+        "a refresh does not duplicate albums"
+    );
+    assert_eq!(
+        track_rows(&database_path, source_key).await,
+        first,
+        "the refresh keeps the object ids stable"
+    );
+    for (object_id, _) in &first {
+        let pid = object_id
+            .strip_prefix("itunes:track:")
+            .expect("track object id carries the itunes prefix");
+        assert_eq!(
+            pid.len(),
+            16,
+            "object id {object_id} keys by the 8-byte Persistent ID"
+        );
+        assert!(
+            pid.chars().all(|character| character.is_ascii_hexdigit()),
+            "object id {object_id} is the PID in hex"
+        );
+    }
 }

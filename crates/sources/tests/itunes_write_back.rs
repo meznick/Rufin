@@ -68,7 +68,7 @@ async fn itunes_write_back_updates_the_itl_and_refresh_does_not_double_count() {
     let media_uri = source_entity_uri(
         &SourceId::new("itunes-test"),
         "track",
-        &format!("itunes:track:{track_id}"),
+        &sources::itunes::catalog::track_object_id(&track),
     );
 
     async fn acquire(source: &Source, catalog: &Catalog) {

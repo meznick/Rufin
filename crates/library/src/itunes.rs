@@ -16,20 +16,26 @@ use crate::{LibraryResult, ReadCancellation, SourceKey};
 pub struct ItunesPlayerState {
     /// Full-precision user rating (0..=100), when the user set one.
     pub user_rating: Option<i64>,
-    /// Source rating from the last observation (0..=100).
+    /// The last rating agreed with the `.itl` (the sync base), 0..=100.
     pub native_rating: Option<i64>,
+    /// The native counts the catalog displays: what the last observation
+    /// published into `tracks.native_*`, including local listens bumped
+    /// since. These are absolute values — the write-back sets them verbatim.
     pub play_count: Option<i64>,
     pub skip_count: Option<i64>,
     pub last_played: Option<i64>,
+    /// The `.itl` numeric track id the write-back targets, published by the
+    /// last observation (the catalog keys by the Persistent ID, not by this).
+    pub track_id: Option<i64>,
 }
 
 impl crate::Catalog {
-    /// A local listen on an iTunes-source track: bump the native counters so
-    /// the displayed stats move immediately (the `catalog_index_native_*`
-    /// triggers refresh them) and the delta reaches the `.itl` on the next
-    /// write-back. Skipped listens bump skip_count; played ones bump
-    /// play_count and last_played (iTunes semantics: Last Played moves only
-    /// on real plays).
+    /// A local listen on an iTunes-source track: bump the native counters the
+    /// catalog displays (published by the observation into `tracks.native_*`)
+    /// so the displayed stats move immediately, and the delta reaches the
+    /// `.itl` on the next write-back. Skipped listens bump skip_count; played
+    /// ones bump play_count and last_played (iTunes semantics: Last Played
+    /// moves only on real plays).
     pub async fn record_native_listen(
         &self,
         media_uri: &str,
@@ -40,19 +46,17 @@ impl crate::Catalog {
         let connection = write.connection().await?;
         if skipped {
             sqlx::query(
-                "INSERT INTO native_media_state(media_uri,skip_count) VALUES(?1,1)
-                 ON CONFLICT(media_uri) DO UPDATE SET
-                     skip_count=coalesce(native_media_state.skip_count,0)+1",
+                "UPDATE tracks SET native_skip_count=coalesce(native_skip_count,0)+1
+                  WHERE media_uri=?1",
             )
             .bind(media_uri)
             .execute(&mut *connection)
             .await?;
         } else {
             sqlx::query(
-                "INSERT INTO native_media_state(media_uri,play_count,last_played) VALUES(?1,1,?2)
-                 ON CONFLICT(media_uri) DO UPDATE SET
-                     play_count=coalesce(native_media_state.play_count,0)+1,
-                     last_played=max(coalesce(native_media_state.last_played,0),excluded.last_played)",
+                "UPDATE tracks SET native_play_count=coalesce(native_play_count,0)+1,
+                     native_last_played=max(coalesce(native_last_played,0),?2)
+                  WHERE media_uri=?1",
             )
             .bind(media_uri)
             .bind(started_at)
@@ -71,7 +75,8 @@ impl crate::Catalog {
         _cancellation: &ReadCancellation,
     ) -> LibraryResult<ItunesPlayerState> {
         let mut connection = self.acquire_reader().await?;
-        let (user_rating, native_rating, play_count, skip_count, last_played): (
+        let (user_rating, native_rating, play_count, skip_count, last_played, track_id): (
+            Option<i64>,
             Option<i64>,
             Option<i64>,
             Option<i64>,
@@ -79,10 +84,13 @@ impl crate::Catalog {
             Option<i64>,
         ) = sqlx::query_as(
             "SELECT (SELECT rating FROM user_state WHERE media_uri=?1),
-                    (SELECT rating FROM native_media_state WHERE media_uri=?1),
-                    (SELECT play_count FROM native_media_state WHERE media_uri=?1),
-                    (SELECT skip_count FROM native_media_state WHERE media_uri=?1),
-                    (SELECT last_played FROM native_media_state WHERE media_uri=?1)",
+                    (SELECT rating FROM itunes_sync_base WHERE media_uri=?1),
+                    (SELECT native_play_count FROM tracks WHERE media_uri=?1),
+                    (SELECT native_skip_count FROM tracks WHERE media_uri=?1),
+                    (SELECT native_last_played FROM tracks WHERE media_uri=?1),
+                    (SELECT json_extract(details.metadata,'$.itunes_track_id')
+                       FROM tracks track JOIN track_details details USING(track_key)
+                      WHERE track.media_uri=?1)",
         )
         .bind(media_uri)
         .fetch_one(&mut *connection)
@@ -93,6 +101,7 @@ impl crate::Catalog {
             play_count,
             skip_count,
             last_played,
+            track_id,
         })
     }
 

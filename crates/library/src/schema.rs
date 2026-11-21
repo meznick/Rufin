@@ -531,11 +531,12 @@ CREATE TABLE metadata_lookup_cache (
     written_at INTEGER NOT NULL, expires_at INTEGER NOT NULL
 ) STRICT;
 
--- iTunes write-back slots. `native_media_state` carries the native stats the `.itl` last
--- held: a local listen bumps the counters there so displayed stats move before the next
--- debounced `.itl` flush, and the refresh merge re-derives the pending delta from them.
--- `itunes_sync_base` is the rating sync base: the last rating agreed with the `.itl`;
--- the refresh merge treats `itl != base` as "iTunes moved, iTunes wins".
+-- iTunes write-back slots. `native_media_state` carries the rating a flush
+-- adopted (the same value `itunes_sync_base` holds; the local counters live
+-- in the `tracks.native_*` columns, which a listen bumps directly).
+-- `itunes_sync_base` is the rating sync base: the last rating agreed with
+-- the `.itl`; the refresh merge treats `itl != base` as "iTunes moved,
+-- iTunes wins".
 CREATE TABLE native_media_state (
     media_uri TEXT PRIMARY KEY CHECK (media_uri <> ''),
     favorite INTEGER,
