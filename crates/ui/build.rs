@@ -77,12 +77,42 @@ fn collect(root: &Path, directory: &Path, files: &mut Vec<String>) {
         if path.is_dir() {
             collect(root, &path, files);
         } else {
-            files.push(
-                path.strip_prefix(root)
-                    .expect("resource below its root")
-                    .to_string_lossy()
-                    .replace('\\', "/"),
-            );
+            let source = path
+                .strip_prefix(root)
+                .expect("resource below its root")
+                .to_string_lossy()
+                .replace('\\', "/");
+            // The B-016 crash class: a malformed Builder document only
+            // fails at runtime, when the page template is instantiated and
+            // the whole app aborts. Validate every `.ui` at build time so
+            // a broken template fails `cargo build`, not the running app.
+            // The standalone tool knows no libadwaita/custom types, so its
+            // "Invalid object type" and "Failed to lookup" findings are
+            // filtered — those resolve against the running app's type
+            // registry, while every other error class (bad nesting,
+            // misplaced elements) is fatal.
+            if source.ends_with(".ui") {
+                let output = std::process::Command::new("gtk4-builder-tool")
+                    .arg("validate")
+                    .arg(root.join(&source))
+                    .output()
+                    .expect("run gtk4-builder-tool (ships with the gtk4 dev tools)");
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                let fatal: Vec<&str> = stderr
+                    .lines()
+                    .filter(|line| {
+                        !line.is_empty()
+                            && !line.contains("Invalid object type")
+                            && !line.contains("Failed to lookup")
+                    })
+                    .collect();
+                assert!(
+                    output.status.success() || fatal.is_empty(),
+                    "gtk4-builder-tool rejected the interface resource {source}:\n{}",
+                    fatal.join("\n"),
+                );
+            }
+            files.push(source);
         }
     }
 }
