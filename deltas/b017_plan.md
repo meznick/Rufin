@@ -294,3 +294,22 @@ commit lands, real writes stay feature-gated.
 - Any format fact discovered during phases A/B (e.g. an unexpected
   iTunes byte the engine doesn't model) goes straight into itl-player
   `NOTES.md` with the VERIFIED marker and the measurement.
+
+## 9. Step-0 / phase-A finding: metadata wipe on stat patches (2026-11-22)
+
+First real-pod syncs (2026-11-18/21) left every track without titles:
+the live iTunesDB walk shows 2966/3384 tracks carrying only the path
+mhod. Root cause: `update_track` passed a stats-only `TrackMetadata` to
+libgpod, `replace_string` treated `None` as "clear" (it freed the
+parsed string), and the scalar fields (size/tracklen/cd_nr/…/rating)
+were plain values overwritten with zero. Every stat delta wiped the
+track's metadata, and later syncs re-serialized the wiped state. Fixed
+in `678270f3`: `TrackMetadata` is Option-shaped (`None` = untouched),
+and `merge_stats` emits a metadata repair for fields where the parsed
+device row differs from the host `.itl` facts — the next sync heals the
+wiped rows. Verified against the reference (iTunes-written) DB: mhod
+string layout (16-byte extended header, string at +40) and the mhit
+body fields (artwork_count/size/has_artwork) match byte-for-byte, so
+the wipe was the only metadata loss. Artwork banks and ArtworkDB are
+populated (3367 mhii); on-device art rendering to re-check after the
+re-sync.
