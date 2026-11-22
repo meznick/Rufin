@@ -612,7 +612,7 @@ fn compute_merge(
         .as_ref()
         .map(|library| library.tz_offset_seconds)
         .unwrap_or(0);
-    Ok(merge_stats(&pairs, tz_offset))
+    Ok(merge_stats(&pairs, tz_offset, ctx.options.rebuild))
 }
 
 /// Step 4: all device-side mutations in one write session — transcode and
@@ -650,6 +650,34 @@ fn apply_device_ops(
     // the patch set agrees by construction.
     progress.item(0, 0, "reading device playback counts…");
     let merge = compute_merge(ctx, record)?;
+
+    // Rebuild: reset the artwork side before any mutation so the written
+    // ArtworkDB and ithmb banks regenerate from the host covers alone —
+    // libgpod appends to the existing banks, and a stale broken bank
+    // would keep orphaned blocks and offsets (the 2026-11-22 wipe also
+    // left the linkage suspect). The media files are never touched.
+    if ctx.options.rebuild {
+        let artwork_dir = ctx.mount.join("iPod_Control/Artwork");
+        for entry in std::fs::read_dir(&artwork_dir)
+            .map_err(|error| sync_err(STEP_FILE_OPS, format!("artwork reset failed: {error}")))?
+        {
+            let entry = entry.map_err(|error| {
+                sync_err(STEP_FILE_OPS, format!("artwork reset failed: {error}"))
+            })?;
+            let path = entry.path();
+            let removable = path.is_file()
+                && (path.file_name().and_then(|name| name.to_str()) == Some("ArtworkDB")
+                    || path.extension().and_then(|extension| extension.to_str()) == Some("ithmb"));
+            if removable {
+                std::fs::remove_file(&path).map_err(|error| {
+                    sync_err(
+                        STEP_FILE_OPS,
+                        format!("artwork reset failed on {}: {error}", path.display()),
+                    )
+                })?;
+            }
+        }
+    }
 
     // The phase total: every plan entry plus the stat patches. Skipped
     // iterations still emit their item, so `current` runs 1..=total

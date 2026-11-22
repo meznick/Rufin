@@ -40,6 +40,12 @@ pub struct SyncOptions {
     /// formula for would-add/repair entries.
     pub transcode_aac: bool,
     pub device_only: DeviceOnlyPolicy,
+    /// Full database regeneration (2026-11-22, the metadata-wipe repair
+    /// mode): existing device entries are rewritten in place from the
+    /// `.itl` facts (no media re-transfer), the artwork banks are rebuilt
+    /// from scratch, and genuinely missing files still copy. `false` is
+    /// the normal delta sync.
+    pub rebuild: bool,
 }
 
 /// Host artwork evidence for one track, with the cover byte size — the

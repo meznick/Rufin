@@ -313,3 +313,15 @@ body fields (artwork_count/size/has_artwork) match byte-for-byte, so
 the wipe was the only metadata loss. Artwork banks and ArtworkDB are
 populated (3367 mhii); on-device art rendering to re-check after the
 re-sync.
+
+The repair landed with a **rebuild mode** (`SyncOptions.rebuild`, the
+"Rebuild database" button on the iPod page, confirmation-gated): the
+next sync with it rewrites every matched entry wholesale from the
+`.itl` facts (stats still merge the pending deltas), resets and
+regenerates the artwork banks + ArtworkDB from the host covers, and
+leaves the media files untouched — only genuinely missing files copy.
+Device-only tracks remove normally. The plan drives it through the same
+dry-run/execute flow: the delta's artwork section plans an add for
+every covered host track, and `merge_stats(full)` emits the wholesale
+repair. Corpus-free tests: `rebuild_plans_artwork_for_every_covered_host_track`
+(compute) and `rebuild_rewrites_matching_metadata_wholesale` (merge).

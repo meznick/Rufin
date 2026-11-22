@@ -197,6 +197,7 @@ fn approved_plan(
         source_key: SourceKey("gate".into()),
         transcode_aac: true,
         device_only: DeviceOnlyPolicy::Remove,
+        rebuild: false,
     };
     let report = compute(&host, &device, &options);
     let plan = ExecutionPlan::build(&report, StatMerge::default());
@@ -322,6 +323,7 @@ fn gate_options() -> SyncOptions {
         source_key: SourceKey("gate".into()),
         transcode_aac: true,
         device_only: DeviceOnlyPolicy::Remove,
+        rebuild: false,
     }
 }
 

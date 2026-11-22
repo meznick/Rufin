@@ -711,6 +711,14 @@
                             <property name="valign">center</property>
                           </object>
                         </child>
+                        <child>
+                          <object class="GtkButton" id="rebuild_button">
+                            <property name="label" translatable="yes">Rebuild database</property>
+                            <property name="tooltip-text" translatable="yes">Rewrite the device database from the library without transferring media files</property>
+                            <property name="sensitive">false</property>
+                            <property name="valign">center</property>
+                          </object>
+                        </child>
                       </object>
                     </child>
                   </object>

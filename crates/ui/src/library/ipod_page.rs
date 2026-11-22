@@ -77,6 +77,7 @@ crate::composite_box!(
         storage_bar: gtk::ProgressBar,
         running_spinner: gtk::Spinner,
         sync_button: gtk::Button,
+        rebuild_button: gtk::Button,
         review_card: gtk::Box,
         review_heading: gtk::Label,
         review_summary: gtk::Label,
@@ -552,6 +553,7 @@ impl IpodPageView {
                     // the snapshot + the phase-derived flag.
                     let controls = sync_controls(snapshot, sync_disabled);
                     imp.sync_button.set_sensitive(controls.sync_enabled);
+                    imp.rebuild_button.set_sensitive(controls.sync_enabled);
                 }
                 imp.state_stack.set_visible_child_name(READY_PAGE);
             }
@@ -1191,7 +1193,7 @@ pub fn ipod_route_view(connection: &IpodConnection, sync: &IpodSyncService) -> g
         imp.scan_button.connect_clicked(move |_| {
             connection.scan();
             if let Some(device) = connection.snapshot().device {
-                sync.start(true, &device.mount_point);
+                sync.start(true, false, &device.mount_point);
             }
         });
     }
@@ -1201,7 +1203,7 @@ pub fn ipod_route_view(connection: &IpodConnection, sync: &IpodSyncService) -> g
         imp.unavailable_scan_button.connect_clicked(move |_| {
             connection.scan();
             if let Some(device) = connection.snapshot().device {
-                sync.start(true, &device.mount_point);
+                sync.start(true, false, &device.mount_point);
             }
         });
     }
@@ -1211,7 +1213,7 @@ pub fn ipod_route_view(connection: &IpodConnection, sync: &IpodSyncService) -> g
         imp.error_scan_button.connect_clicked(move |_| {
             connection.scan();
             if let Some(device) = connection.snapshot().device {
-                sync.start(true, &device.mount_point);
+                sync.start(true, false, &device.mount_point);
             }
         });
     }
@@ -1231,7 +1233,7 @@ pub fn ipod_route_view(connection: &IpodConnection, sync: &IpodSyncService) -> g
         imp.sidebar_scan_button.connect_clicked(move |_| {
             connection.scan();
             if let Some(device) = connection.snapshot().device {
-                sync.start(true, &device.mount_point);
+                sync.start(true, false, &device.mount_point);
             }
         });
     }
@@ -1243,8 +1245,45 @@ pub fn ipod_route_view(connection: &IpodConnection, sync: &IpodSyncService) -> g
         let sync = sync.clone();
         imp.sync_button.connect_clicked(move |_| {
             if let Some(device) = connection.snapshot().device {
-                sync.start(false, &device.mount_point);
+                sync.start(false, false, &device.mount_point);
             }
+        });
+    }
+    // Rebuild database: the full regeneration run — rewrite every entry
+    // and the artwork from the library, never re-transfer media. It is
+    // destructive to the device database, so it asks once.
+    {
+        let connection = connection.clone();
+        let sync = sync.clone();
+        let root = imp.rebuild_button.root();
+        imp.rebuild_button.connect_clicked(move |_| {
+            let Some(device) = connection.snapshot().device else {
+                return;
+            };
+            let sync = sync.clone();
+            let mount = device.mount_point.clone();
+            let dialog = adw::AlertDialog::builder()
+                .heading(tr(msgid("Rebuild the device database?")))
+                .body(tr(msgid(
+                    "Every track entry, playlist and cover on the device is rewritten from \
+the library. Media files are not transferred or deleted. This repairs \
+a broken database and can take a while.",
+                )))
+                .build();
+            dialog.add_response("cancel", &tr(msgid("Cancel")));
+            dialog.add_response("rebuild", &tr(msgid("Rebuild")));
+            dialog.set_response_appearance("rebuild", adw::ResponseAppearance::Destructive);
+            dialog.set_default_response(Some("cancel"));
+            dialog.set_close_response("cancel");
+            dialog.choose(
+                root.as_ref(),
+                None::<&gtk::gio::Cancellable>,
+                move |response| {
+                    if response.as_str() == "rebuild" {
+                        sync.start(false, true, &mount);
+                    }
+                },
+            );
         });
     }
     // The floating result panel's Close.
@@ -1291,7 +1330,7 @@ pub fn ipod_route_view(connection: &IpodConnection, sync: &IpodSyncService) -> g
                 return;
             }
             last_preview_mount.borrow_mut().replace(mount.clone());
-            sync.start(true, &mount);
+            sync.start(true, false, &mount);
         }
     };
 

@@ -110,6 +110,7 @@ fn dry_run_pair_gate() {
         source_key: SourceKey("itunes".to_string()),
         transcode_aac: true,
         device_only: DeviceOnlyPolicy::Remove,
+        rebuild: false,
     };
     let report = ipod_sync::dry_run::compute(&host, &device, &options);
 

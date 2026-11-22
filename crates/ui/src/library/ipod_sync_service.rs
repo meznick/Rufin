@@ -106,6 +106,9 @@ impl ArtworkProbe for BoundaryProbe<'_> {
 #[derive(Clone, Debug)]
 pub struct PrepareRequest {
     pub mount: PathBuf,
+    /// Full database regeneration (no media re-transfer): see
+    /// `SyncOptions::rebuild`.
+    pub rebuild: bool,
 }
 
 /// Everything computed by `prepare` and consumed by `execute` — the
@@ -183,6 +186,7 @@ impl Runner for EngineRunner {
             // The owner-rule transcode default: off until an options UI
             // exists (the Параметры box stays furniture, b014_plan D-6).
             transcode_aac: false,
+            rebuild: request.rebuild,
             ..SyncOptions::default()
         };
         let report = compute(&host, &device, &options);
@@ -321,8 +325,12 @@ pub struct SyncState {
 pub enum SyncEvent {
     /// A Sync click or the page's preview refresh: the device mount at
     /// click time. `dry_run` true = the live preview; false = the real
-    /// run.
-    Start { dry_run: bool, mount: PathBuf },
+    /// run. `rebuild` true = the full database regeneration run.
+    Start {
+        dry_run: bool,
+        rebuild: bool,
+        mount: PathBuf,
+    },
     /// The run thread finished collecting.
     Prepared {
         dry_run: bool,
@@ -341,7 +349,11 @@ pub enum SyncEvent {
 #[derive(Debug)]
 pub enum SyncAction {
     /// Spawn the prepare thread.
-    Prepare { dry_run: bool, mount: PathBuf },
+    Prepare {
+        dry_run: bool,
+        rebuild: bool,
+        mount: PathBuf,
+    },
     /// Spawn the execute thread with the prepared sync (boxed — the
     /// prepared inputs dwarf the other variants).
     Execute(Box<PreparedSync>),
@@ -356,14 +368,22 @@ pub fn advance(state: &mut SyncState, event: SyncEvent) -> Option<SyncAction> {
         // click or a preview refresh restarts the collection.
         (
             SyncPhase::Idle | SyncPhase::Done(_) | SyncPhase::Review { .. },
-            SyncEvent::Start { dry_run, mount },
+            SyncEvent::Start {
+                dry_run,
+                rebuild,
+                mount,
+            },
         ) => {
             state.phase = SyncPhase::Collecting;
             // A fresh collection starts with a clean progress surface —
             // the previous run's tail must not bleed into the next one.
             state.progress = SyncProgress::default();
             state.events.clear();
-            Some(SyncAction::Prepare { dry_run, mount })
+            Some(SyncAction::Prepare {
+                dry_run,
+                rebuild,
+                mount,
+            })
         }
         (
             SyncPhase::Collecting,
@@ -870,13 +890,17 @@ impl ServiceInner {
         };
         self.publish();
         match action {
-            Some(SyncAction::Prepare { dry_run, mount }) => {
+            Some(SyncAction::Prepare {
+                dry_run,
+                rebuild,
+                mount,
+            }) => {
                 let runner = self.runner.clone();
                 let inner = self.clone();
                 thread::Builder::new()
                     .name("ipod-sync-prepare".to_string())
                     .spawn(move || {
-                        let result = runner.prepare(&PrepareRequest { mount });
+                        let result = runner.prepare(&PrepareRequest { mount, rebuild });
                         inner.apply(SyncEvent::Prepared { dry_run, result });
                     })
                     .expect("failed to spawn the ipod sync prepare thread");
@@ -950,10 +974,12 @@ impl IpodSyncService {
 
     /// A Sync click (`dry_run` false) or the page's preview refresh
     /// (`dry_run` true): `mount` is the current device's mount point.
-    /// A no-op while collecting or running.
-    pub fn start(&self, dry_run: bool, mount: &Path) {
+    /// `rebuild` true = the full database regeneration run. A no-op
+    /// while collecting or running.
+    pub fn start(&self, dry_run: bool, rebuild: bool, mount: &Path) {
         self.inner.apply(SyncEvent::Start {
             dry_run,
+            rebuild,
             mount: mount.to_path_buf(),
         });
     }
@@ -1132,6 +1158,7 @@ mod tests {
             &mut state,
             SyncEvent::Start {
                 dry_run: false,
+                rebuild: false,
                 mount: PathBuf::from("/mnt/ipod"),
             },
         );
@@ -1209,6 +1236,7 @@ mod tests {
             &mut machine,
             SyncEvent::Start {
                 dry_run: true,
+                rebuild: false,
                 mount: PathBuf::from("/mnt/ipod"),
             },
         );
@@ -1223,6 +1251,7 @@ mod tests {
             &mut machine,
             SyncEvent::Start {
                 dry_run: false,
+                rebuild: false,
                 mount: PathBuf::from("/mnt/ipod"),
             },
         );
@@ -1246,6 +1275,7 @@ mod tests {
             &mut machine,
             SyncEvent::Start {
                 dry_run: false,
+                rebuild: false,
                 mount: PathBuf::from("/mnt/ipod"),
             },
         );
@@ -1274,6 +1304,7 @@ mod tests {
             &mut machine,
             SyncEvent::Start {
                 dry_run: true,
+                rebuild: false,
                 mount: PathBuf::from("/mnt/ipod"),
             },
         );
@@ -1303,6 +1334,7 @@ mod tests {
             &mut state,
             SyncEvent::Start {
                 dry_run: false,
+                rebuild: false,
                 mount: PathBuf::from("/mnt/ipod"),
             },
         );
@@ -1387,7 +1419,7 @@ mod tests {
         let receiver = service.subscribe();
         assert_eq!(service.snapshot().phase, SyncPhase::Idle);
 
-        service.start(false, Path::new("/mnt/ipod"));
+        service.start(false, false, Path::new("/mnt/ipod"));
         wait_for(&receiver, |snapshot| {
             matches!(snapshot.phase, SyncPhase::Done(_))
         });
@@ -1436,7 +1468,7 @@ mod tests {
     fn the_facade_preview_never_executes_and_a_run_starts_from_it() {
         let service = IpodSyncService::new(Arc::new(StubRunner));
         let receiver = service.subscribe();
-        service.start(true, Path::new("/mnt/ipod"));
+        service.start(true, false, Path::new("/mnt/ipod"));
         wait_for(&receiver, |snapshot| {
             matches!(snapshot.phase, SyncPhase::Review { .. })
         });
@@ -1445,7 +1477,7 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(50));
         assert!(matches!(service.snapshot().phase, SyncPhase::Review { .. }));
         // A real run starts straight from the live preview.
-        service.start(false, Path::new("/mnt/ipod"));
+        service.start(false, false, Path::new("/mnt/ipod"));
         wait_for(&receiver, |snapshot| {
             matches!(snapshot.phase, SyncPhase::Done(_))
         });
@@ -1454,7 +1486,7 @@ mod tests {
     #[test]
     fn the_facade_runs_straight_through_on_a_real_start() {
         let service = IpodSyncService::new(Arc::new(StubRunner));
-        service.start(false, Path::new("/mnt/ipod"));
+        service.start(false, false, Path::new("/mnt/ipod"));
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         loop {
             if let SyncPhase::Done(_) = service.snapshot().phase {

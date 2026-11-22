@@ -339,7 +339,11 @@ pub fn compute(host: &HostInputs, device: &DeviceInputs, opts: &SyncOptions) -> 
             };
             match host.artwork.get(&track.track_pid) {
                 Some(CoverEvidence::Present { .. }) => {
-                    if !device_track.has_thumbnail {
+                    // A rebuild re-attaches every cover (the banks are
+                    // reset, so a delta comparison against the stale
+                    // device state would skip intact ones and leave them
+                    // out of the fresh banks).
+                    if opts.rebuild || !device_track.has_thumbnail {
                         report.artwork_adds.push(ArtworkAdd {
                             pid: track.track_pid,
                         });
@@ -742,7 +746,41 @@ mod tests {
             source_key: SourceKey("itunes".to_string()),
             transcode_aac: false,
             device_only: DeviceOnlyPolicy::Remove,
+            rebuild: false,
         }
+    }
+
+    fn rebuild_opts() -> SyncOptions {
+        SyncOptions {
+            rebuild: true,
+            ..opts()
+        }
+    }
+
+    #[test]
+    fn rebuild_plans_artwork_for_every_covered_host_track() {
+        // The rebuild resets the artwork banks, so a delta comparison
+        // against the stale device state would drop intact covers: a
+        // matched track whose device row already has a thumbnail must
+        // still get an artwork add under the rebuild option.
+        let mut host = host_inputs(vec![mapped_track(7, 0xA1)]);
+        host.host_file_present.insert(7, true);
+        host.artwork.insert(
+            0xA1,
+            crate::dry_run::CoverEvidence::Present { bytes: 10_000 },
+        );
+        let device = device_inputs(vec![device_track(0xA1, None, true)]);
+        let delta = compute(&host, &device, &opts());
+        assert!(
+            delta.artwork_adds.is_empty(),
+            "the device already holds the cover: no delta add"
+        );
+        let rebuild = compute(&host, &device, &rebuild_opts());
+        assert_eq!(
+            rebuild.artwork_adds.len(),
+            1,
+            "the rebuild re-attaches every cover"
+        );
     }
 
     #[test]
