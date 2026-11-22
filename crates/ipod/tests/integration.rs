@@ -161,9 +161,9 @@ fn fixture_track_artwork_round_trip() {
             artist: Some("Тест артист".to_string()),
             album: Some("Тест альбом".to_string()),
             filetype: Some("mp3".to_string()),
-            size: 16,
-            tracklen: 1000,
-            rating: 80,
+            size: Some(16),
+            tracklen: Some(1000),
+            rating: Some(80),
             ..Default::default()
         })
         .unwrap();
@@ -646,8 +646,8 @@ fn staged_write_round_trips_stats_playlist_and_dbid() {
         .create_track(&ipod::TrackMetadata {
             title: Some("Стат-трек".to_string()),
             filetype: Some("m4a".to_string()),
-            size: 14,
-            tracklen: 1000,
+            size: Some(14),
+            tracklen: Some(1000),
             dbid: Some(host_pid),
             playcount: Some(7),
             playcount2: Some(7), // the §6 baseline rule's shape

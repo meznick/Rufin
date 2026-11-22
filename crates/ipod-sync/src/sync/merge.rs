@@ -31,7 +31,7 @@
 //! already-merged pair is a no-op (retry idempotency by construction;
 //! the journal watermarks protect the crash windows).
 
-use crate::mapping::HostStats;
+use crate::mapping::{HostStats, HostTrackMetadata};
 use crate::sync::import::PendingTotals;
 
 /// Seconds between the Apple (1904) and Unix (1970) epochs.
@@ -45,6 +45,11 @@ pub struct StatPair {
     /// Track PID = device dbid.
     pub pid: u64,
     pub host: HostStats,
+    /// The host's metadata, for the device-side repair: a field that
+    /// differs from the parsed device value is patched back (the device
+    /// DB can hold wiped metadata from builds before the 2026-11-22
+    /// `update_track` fix).
+    pub host_metadata: HostTrackMetadata,
     /// The wrapper's observation — stored values **plus** the pending
     /// merge libgpod applies at parse time.
     pub device: ipod::TrackInfo,
@@ -63,7 +68,9 @@ pub struct HostStatPatch {
 }
 
 /// One device-side patch. `playcount2` always equals `playcount` — the
-/// baseline rule.
+/// baseline rule. `repair` carries the metadata fields the device DB
+/// holds wrong (empty strings, zeroed scalars): `Some` = write the host
+/// value, `None` = leave the parsed value alone.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DeviceStatPatch {
     pub dbid: u64,
@@ -74,6 +81,36 @@ pub struct DeviceStatPatch {
     pub time_played: i64,
     /// 0–100, iTunes scale — the host value (host-wins).
     pub rating: u32,
+    pub repair: MetadataRepair,
+}
+
+/// The metadata fields `update_track` writes when they differ from what
+/// the device DB holds. `None` = untouched.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MetadataRepair {
+    pub title: Option<String>,
+    pub artist: Option<String>,
+    pub album: Option<String>,
+    pub albumartist: Option<String>,
+    pub composer: Option<String>,
+    pub genre: Option<String>,
+    pub filetype: Option<String>,
+    pub size: Option<u32>,
+    pub tracklen: Option<i32>,
+    pub cd_nr: Option<i32>,
+    pub cds: Option<i32>,
+    pub track_nr: Option<i32>,
+    pub tracks: Option<i32>,
+    pub year: Option<i32>,
+    pub bitrate: Option<i32>,
+    pub samplerate: Option<u16>,
+}
+
+impl MetadataRepair {
+    /// Whether any field carries a repair.
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
 }
 
 /// The merge outcome.
@@ -82,6 +119,46 @@ pub struct StatMerge {
     pub host_patches: Vec<HostStatPatch>,
     pub device_patches: Vec<DeviceStatPatch>,
     pub diagnostics: Vec<String>,
+}
+
+/// The fields whose device DB value differs from the host's — `Some(host)`
+/// where a repair must write. An empty device string counts as missing:
+/// stat patches of builds before the 2026-11-22 `update_track` fix wiped
+/// the parsed strings to null, and the repair heals those rows. A repair
+/// is only ever emitted for a *meaningful* host value (non-empty string,
+/// non-zero scalar): an absent host field never overwrites the device.
+fn metadata_repair(host: &HostTrackMetadata, device: &ipod::TrackInfo) -> MetadataRepair {
+    let changed = |host: &Option<String>, device: &Option<String>| {
+        let host = host.as_deref().unwrap_or("");
+        let device = device.as_deref().unwrap_or("");
+        (!host.is_empty() && host != device).then(|| host.to_string())
+    };
+    let optional_int = |host: Option<i32>, device: i32| {
+        (host.is_some_and(|host| host != 0) && host != Some(device))
+            .then_some(host)
+            .flatten()
+    };
+    MetadataRepair {
+        title: changed(&host.title, &device.title),
+        artist: changed(&host.artist, &device.artist),
+        album: changed(&host.album, &device.album),
+        albumartist: changed(&host.album_artist, &device.albumartist),
+        composer: changed(&host.composer, &device.composer),
+        genre: changed(&host.genre, &device.genre),
+        filetype: changed(&host.file_extension, &device.filetype),
+        size: (host.size_bytes != 0 && device.size != host.size_bytes).then_some(host.size_bytes),
+        tracklen: (host.duration_ms != 0 && device.tracklen != host.duration_ms as i32)
+            .then_some(host.duration_ms as i32),
+        cd_nr: optional_int(host.disc_number.map(i32::from), device.cd_nr),
+        cds: optional_int(host.disc_count.map(i32::from), device.cds),
+        track_nr: optional_int(host.track_number.map(i32::from), device.track_nr),
+        tracks: optional_int(host.track_count.map(i32::from), device.tracks),
+        year: optional_int(host.year.map(i32::from), device.year),
+        bitrate: (host.bit_rate != 0 && device.bitrate != i32::from(host.bit_rate))
+            .then_some(i32::from(host.bit_rate)),
+        samplerate: (host.sample_rate != 0 && device.samplerate != host.sample_rate as u16)
+            .then_some(host.sample_rate as u16),
+    }
 }
 
 /// Compute the merge over the matched pairs.
@@ -129,6 +206,7 @@ pub fn merge_stats(pairs: &[StatPair], tz_offset_seconds: i32) -> StatMerge {
             skip_count: (merged_skips > pair.host.skip_count).then_some(merged_skips),
             play_date_unix: (newest > host_played_unix).then_some(newest),
         };
+        let repair = metadata_repair(&pair.host_metadata, &pair.device);
         let device_patch = DeviceStatPatch {
             dbid: pair.pid,
             playcount: merged_plays,
@@ -136,6 +214,7 @@ pub fn merge_stats(pairs: &[StatPair], tz_offset_seconds: i32) -> StatMerge {
             skipcount: merged_skips,
             time_played: newest,
             rating: u32::from(pair.host.rating),
+            repair,
         };
         merge.host_patches.push(host_patch);
         // Only emit device patches that change something: a re-run over an
@@ -144,7 +223,8 @@ pub fn merge_stats(pairs: &[StatPair], tz_offset_seconds: i32) -> StatMerge {
             || device_patch.playcount2 != pair.device.playcount2
             || device_patch.skipcount != pair.device.skipcount
             || device_patch.time_played != pair.device.time_played
-            || device_patch.rating != pair.device.rating;
+            || device_patch.rating != pair.device.rating
+            || !device_patch.repair.is_empty();
         if device_changed {
             merge.device_patches.push(device_patch);
         }
@@ -167,6 +247,7 @@ mod tests {
             itl_id,
             pid,
             host,
+            host_metadata: HostTrackMetadata::default(),
             device,
             pending,
         }
@@ -497,5 +578,117 @@ mod tests {
         );
         assert_eq!(merge.device_patches[0].playcount, u32::MAX);
         assert_eq!(merge.device_patches[0].playcount2, u32::MAX);
+    }
+
+    fn host_with_metadata(title: &str, artist: &str) -> HostTrackMetadata {
+        HostTrackMetadata {
+            title: Some(title.to_string()),
+            artist: Some(artist.to_string()),
+            album: Some("Album".to_string()),
+            album_artist: Some("Album Artist".to_string()),
+            composer: Some("Composer".to_string()),
+            genre: Some("Genre".to_string()),
+            file_extension: Some("m4a".to_string()),
+            size_bytes: 4096,
+            duration_ms: 201_000,
+            disc_number: Some(1),
+            disc_count: Some(1),
+            track_number: Some(3),
+            track_count: Some(12),
+            year: Some(2024),
+            bit_rate: 256,
+            sample_rate: 44_100,
+            bpm: None,
+        }
+    }
+
+    fn wiped_device_track() -> ipod::TrackInfo {
+        ipod::TrackInfo {
+            dbid: 0xA1,
+            title: None,
+            artist: None,
+            album: None,
+            albumartist: None,
+            composer: None,
+            genre: None,
+            filetype: None,
+            size: 0,
+            tracklen: 0,
+            cd_nr: 0,
+            cds: 0,
+            track_nr: 0,
+            tracks: 0,
+            year: 0,
+            bitrate: 0,
+            samplerate: 0,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn wiped_device_metadata_is_repaired_from_the_host() {
+        // The pre-fix update_track wiped strings and scalars on every stat
+        // patch; the merge must heal them from the host .itl facts.
+        let mut pair = pair(
+            1,
+            0xA1,
+            host_stats(80, 0, 0, 0),
+            wiped_device_track(),
+            PendingTotals::default(),
+        );
+        pair.host_metadata = host_with_metadata("Title", "Artist");
+        let merge = merge_stats(&[pair], 0);
+        assert_eq!(merge.device_patches.len(), 1, "the repair is emitted");
+        let repair = &merge.device_patches[0].repair;
+        assert_eq!(repair.title.as_deref(), Some("Title"));
+        assert_eq!(repair.artist.as_deref(), Some("Artist"));
+        assert_eq!(repair.album.as_deref(), Some("Album"));
+        assert_eq!(repair.albumartist.as_deref(), Some("Album Artist"));
+        assert_eq!(repair.composer.as_deref(), Some("Composer"));
+        assert_eq!(repair.genre.as_deref(), Some("Genre"));
+        assert_eq!(repair.filetype.as_deref(), Some("m4a"));
+        assert_eq!(repair.size, Some(4096));
+        assert_eq!(repair.tracklen, Some(201_000));
+        assert_eq!(repair.track_nr, Some(3));
+        assert_eq!(repair.year, Some(2024));
+        assert_eq!(repair.bitrate, Some(256));
+        assert_eq!(repair.samplerate, Some(44_100));
+    }
+
+    #[test]
+    fn matching_device_metadata_needs_no_repair() {
+        // A healthy device row agrees with the host on every field: no
+        // repair, and with equal stats no patch at all.
+        let mut device = wiped_device_track();
+        device.title = Some("Title".to_string());
+        device.artist = Some("Artist".to_string());
+        device.album = Some("Album".to_string());
+        device.albumartist = Some("Album Artist".to_string());
+        device.composer = Some("Composer".to_string());
+        device.genre = Some("Genre".to_string());
+        device.filetype = Some("m4a".to_string());
+        device.size = 4096;
+        device.tracklen = 201_000;
+        device.cd_nr = 1;
+        device.cds = 1;
+        device.track_nr = 3;
+        device.tracks = 12;
+        device.year = 2024;
+        device.bitrate = 256;
+        device.samplerate = 44_100;
+        device.rating = 80;
+        let mut pair = pair(
+            1,
+            0xA1,
+            host_stats(80, 0, 0, 0),
+            device,
+            PendingTotals::default(),
+        );
+        pair.host_metadata = host_with_metadata("Title", "Artist");
+        let merge = merge_stats(&[pair], 0);
+        assert!(
+            merge.device_patches.is_empty(),
+            "an agreeing row produces no patch"
+        );
     }
 }

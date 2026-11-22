@@ -592,16 +592,36 @@ unsafe fn apply_metadata(
         replace_string(&mut (*track).composer, metadata.composer.as_deref(), glib)?;
         replace_string(&mut (*track).genre, metadata.genre.as_deref(), glib)?;
         replace_string(&mut (*track).filetype, metadata.filetype.as_deref(), glib)?;
-        (*track).size = metadata.size;
-        (*track).tracklen = metadata.tracklen;
-        (*track).cd_nr = metadata.cd_nr;
-        (*track).cds = metadata.cds;
-        (*track).track_nr = metadata.track_nr;
-        (*track).tracks = metadata.tracks;
-        (*track).year = metadata.year;
-        (*track).bitrate = metadata.bitrate;
-        (*track).samplerate = metadata.samplerate;
-        (*track).rating = metadata.rating;
+        if let Some(value) = metadata.size {
+            (*track).size = value;
+        }
+        if let Some(value) = metadata.tracklen {
+            (*track).tracklen = value;
+        }
+        if let Some(value) = metadata.cd_nr {
+            (*track).cd_nr = value;
+        }
+        if let Some(value) = metadata.cds {
+            (*track).cds = value;
+        }
+        if let Some(value) = metadata.track_nr {
+            (*track).track_nr = value;
+        }
+        if let Some(value) = metadata.tracks {
+            (*track).tracks = value;
+        }
+        if let Some(value) = metadata.year {
+            (*track).year = value;
+        }
+        if let Some(value) = metadata.bitrate {
+            (*track).bitrate = value;
+        }
+        if let Some(value) = metadata.samplerate {
+            (*track).samplerate = value;
+        }
+        if let Some(value) = metadata.rating {
+            (*track).rating = value;
+        }
         // B-010 stats: `None` leaves the parsed value alone (update_track
         // semantics); `time_played` is unix-local seconds, converted by
         // libgpod at the file boundary. The playcount2 baseline rule
@@ -625,21 +645,22 @@ unsafe fn apply_metadata(
     Ok(())
 }
 
-/// Replace a track-owned string field: free the old value (`g_free`), then
-/// `g_strdup` the new one (or set null).
+/// Replace a track-owned string field: `None` leaves it untouched (stats
+/// patches must never wipe the parsed metadata — the 2026-11-22 device
+/// bug), `Some` frees the old value (`g_free`) and `g_strdup`s the new.
 unsafe fn replace_string(
     field: &mut *mut c_char,
     new: Option<&str>,
     glib: &crate::ffi::symbols::GlibHelpers,
 ) -> Result<(), OperationFailure> {
+    let Some(value) = new else {
+        return Ok(());
+    };
     // SAFETY: the old pointer is track-owned and this is the one free of it.
     if !field.is_null() {
         unsafe { glib.g_free((*field).cast()) };
         *field = std::ptr::null_mut();
     }
-    let Some(value) = new else {
-        return Ok(());
-    };
     let cvalue = CString::new(value)
         .map_err(|_| OperationFailure::InvalidState("string contains a NUL byte".to_string()))?;
     // SAFETY: `cvalue` is valid NUL-terminated input for g_strdup; the

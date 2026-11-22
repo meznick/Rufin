@@ -106,10 +106,10 @@ fn transcode_chain_gate() {
         .create_track(&ipod::TrackMetadata {
             title: Some("Транскодированный".to_string()),
             filetype: Some("m4a".to_string()),
-            size: encoded_bytes.len() as u32,
-            tracklen: 1000,
-            bitrate: TRANSCODE_TARGET_KBPS as i32,
-            samplerate: 48000,
+            size: Some(encoded_bytes.len() as u32),
+            tracklen: Some(1000),
+            bitrate: Some(TRANSCODE_TARGET_KBPS as i32),
+            samplerate: Some(48000),
             ..Default::default()
         })
         .unwrap();

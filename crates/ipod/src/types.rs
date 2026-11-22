@@ -342,17 +342,22 @@ pub struct TrackMetadata {
     pub genre: Option<String>,
     /// File extension string, e.g. `m4a`.
     pub filetype: Option<String>,
-    pub size: u32,
-    pub tracklen: i32,
-    pub cd_nr: i32,
-    pub cds: i32,
-    pub track_nr: i32,
-    pub tracks: i32,
-    pub year: i32,
-    pub bitrate: i32,
-    pub samplerate: u16,
-    /// 0–100, iTunes scale.
-    pub rating: u32,
+    /// Scalar fields are `Option` for the same reason the strings are:
+    /// `update_track` patches stats only and `None` must leave the parsed
+    /// value alone (a stats patch that zeroed `tracklen`/`track_nr`/… is
+    /// the 2026-11-22 device bug — every stat patch wiped the track's
+    /// duration, numbers, year and bitrate).
+    pub size: Option<u32>,
+    pub tracklen: Option<i32>,
+    pub cd_nr: Option<i32>,
+    pub cds: Option<i32>,
+    pub track_nr: Option<i32>,
+    pub tracks: Option<i32>,
+    pub year: Option<i32>,
+    pub bitrate: Option<i32>,
+    pub samplerate: Option<u16>,
+    /// 0–100, iTunes scale. `None` = leave the parsed value alone.
+    pub rating: Option<u32>,
     /// The device dbid the created track must carry — the host track
     /// persistent id for B-010 (`mith` @0x80 = `mhit` @+0x70), never
     /// libgpod's random assignment. `None` = let `itdb_track_add` assign
