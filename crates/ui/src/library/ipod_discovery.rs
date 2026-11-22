@@ -43,6 +43,7 @@
 
 use std::path::Path;
 
+use gio::prelude::*;
 use ipod_sync::{BackendStatus, DeviceFacts, RetrieveError, ScanReport};
 
 use crate::library::device_manager::{ConnectionState, DeviceInfo, DeviceManager, PreflightError};
@@ -1600,4 +1601,26 @@ mod tests {
         );
         assert_eq!(retrieved.get(), 0, "no retrieval on the unverified rescan");
     }
+}
+
+/// Unmount the device through gio (udisks2 underneath). `done` runs on
+/// the main thread with the outcome; a successful unmount fires the mount
+/// monitor's `mount_removed` handler, which drives the connection FSM
+/// back to No-iPod by itself.
+pub fn eject_device(device: &DeviceInfo, done: impl FnOnce(Result<(), String>) + 'static) {
+    let root = gio::File::for_path(&device.mount_point);
+    let mount = gio::VolumeMonitor::get()
+        .mounts()
+        .into_iter()
+        .find(|mount| mount.root().equal(&root));
+    let Some(mount) = mount else {
+        done(Err(format!("no mount at {}", device.mount_point.display())));
+        return;
+    };
+    mount.unmount_with_operation(
+        gio::MountUnmountFlags::NONE,
+        None::<&gio::MountOperation>,
+        None::<&gio::Cancellable>,
+        move |result| done(result.map_err(|error| error.to_string())),
+    );
 }

@@ -66,6 +66,7 @@ crate::composite_box!(
         unavailable_diagnostic: gtk::Label,
         unavailable_scan_button: gtk::Button,
         ready_heading: gtk::Label,
+        eject_button: gtk::Button,
         sidebar_name: gtk::Label,
         sidebar_badge: gtk::Label,
         sidebar_scan_button: gtk::Button,
@@ -521,6 +522,9 @@ impl IpodPageView {
             }
             RenderedPage::Ready => {
                 if let Some(device) = &snapshot.device {
+                    // Eject follows the device presence and the sync
+                    // phase gate: no eject while a run is in flight.
+                    imp.eject_button.set_sensitive(!sync_disabled);
                     imp.ready_heading.set_label(&tr(&ready_heading(device)));
                     imp.sidebar_name.set_label(&tr(&sidebar_name(device)));
                     match capacity_badge(device) {
@@ -1195,6 +1199,22 @@ pub fn ipod_route_view(connection: &IpodConnection, sync: &IpodSyncService) -> g
             if let Some(device) = connection.snapshot().device {
                 sync.start(true, false, &device.mount_point);
             }
+        });
+    }
+    // Eject: unmount through gio; the mount monitor's removed handler
+    // drives the page back to No-iPod once the unmount lands. A refusal
+    // leaves the device mounted and the page untouched.
+    {
+        let connection = connection.clone();
+        imp.eject_button.connect_clicked(move |_| {
+            let Some(device) = connection.snapshot().device else {
+                return;
+            };
+            crate::library::ipod_discovery::eject_device(&device, |result| {
+                if let Err(error) = result {
+                    tracing::warn!(%error, "could not eject the device");
+                }
+            });
         });
     }
     {
