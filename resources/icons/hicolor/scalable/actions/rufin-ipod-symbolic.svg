@@ -1,7 +1,10 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">
  <g fill="currentColor">
-  <path fill-rule="evenodd" d="M6 1h4a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V3a2 2 0 0 1 2-2zm.25 1.5A.75.75 0 0 0 5.5 3.25v2.5a.75.75 0 0 0 .75.75h3.5a.75.75 0 0 0 .75-.75v-2.5a.75.75 0 0 0-.75-.75h-3.5z"/>
-  <circle cx="8" cy="10.5" r="2.6" fill="none" stroke="currentColor" stroke-width="1.2"/>
-  <circle cx="8" cy="10.5" r="0.85"/>
+  <path fill-rule="evenodd" d="M5 .5h6a2.5 2.5 0 0 1 2.5 2.5v10A2.5 2.5 0 0 1 11 15.5H5a2.5 2.5 0 0 1-2.5-2.5V3A2.5 2.5 0 0 1 5 .5zm1 1.5c-.55 0-1 .45-1 1v1.85c0 .28.22.5.5.5h5a.5.5 0 0 0 .5-.5V3c0-.55-.45-1-1-1H6z"/>
+  <circle cx="8" cy="10.8" r="3.1" fill="none" stroke="currentColor" stroke-width="1.15"/>
+  <rect x="7.5" y="8" width="1" height="1" rx="0.35"/>
+  <rect x="7.25" y="12.25" width="0.62" height="1.35" rx="0.28"/>
+  <rect x="8.13" y="12.25" width="0.62" height="1.35" rx="0.28"/>
+  <circle cx="8" cy="10.8" r="0.8"/>
  </g>
 </svg>
