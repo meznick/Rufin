@@ -1201,19 +1201,38 @@ pub fn ipod_route_view(connection: &IpodConnection, sync: &IpodSyncService) -> g
             }
         });
     }
-    // Eject: unmount through gio; the mount monitor's removed handler
-    // drives the page back to No-iPod once the unmount lands. A refusal
-    // leaves the device mounted and the page untouched.
+    // Eject: unmount through gio, then re-scan the mount table so the
+    // page follows the outcome. Nothing else drives the FSM back to
+    // No-iPod after the unmount lands: B-012 unwired the gio
+    // mount-event monitor (owner decision — mount signals never reach
+    // rufin on this machine), so the follow-up scan is the eject's own
+    // push. The button stays insensitive while the unmount is in
+    // flight; a refusal (busy) leaves the device mounted and the
+    // re-render re-enables the button.
     {
         let connection = connection.clone();
+        let button = imp.eject_button.clone();
         imp.eject_button.connect_clicked(move |_| {
             let Some(device) = connection.snapshot().device else {
                 return;
             };
-            crate::library::ipod_discovery::eject_device(&device, |result| {
+            button.set_sensitive(false);
+            let mount_point = device.mount_point.clone();
+            let connection = connection.clone();
+            let button = button.clone();
+            crate::library::ipod_discovery::eject_device(&device, move |result| {
                 if let Err(error) = result {
-                    tracing::warn!(%error, "could not eject the device");
+                    // A mount that vanished underneath us (file manager,
+                    // cable pull) is not a refusal — someone else
+                    // unmounted first; udisks removes the mount point.
+                    if mount_point.exists() {
+                        tracing::warn!(%error, "could not eject the device");
+                    }
                 }
+                // Re-read the truth: after a successful unmount the
+                // page flips to No-iPod, after a refusal it stays Ready.
+                connection.scan();
+                button.set_sensitive(true);
             });
         });
     }

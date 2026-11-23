@@ -1604,9 +1604,10 @@ mod tests {
 }
 
 /// Unmount the device through gio (udisks2 underneath). `done` runs on
-/// the main thread with the outcome; a successful unmount fires the mount
-/// monitor's `mount_removed` handler, which drives the connection FSM
-/// back to No-iPod by itself.
+/// the main thread with the outcome. Nothing drives the page state
+/// automatically afterwards (B-012 unwired the gio mount-event monitor:
+/// owner decision, manual scan only), so the caller re-scans the mount
+/// table in `done` to make the FSM follow the unmount.
 pub fn eject_device(device: &DeviceInfo, done: impl FnOnce(Result<(), String>) + 'static) {
     let root = gio::File::for_path(&device.mount_point);
     let mount = gio::VolumeMonitor::get()
