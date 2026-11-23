@@ -1603,25 +1603,64 @@ mod tests {
     }
 }
 
-/// Unmount the device through gio (udisks2 underneath). `done` runs on
-/// the main thread with the outcome. Nothing drives the page state
-/// automatically afterwards (B-012 unwired the gio mount-event monitor:
-/// owner decision, manual scan only), so the caller re-scans the mount
-/// table in `done` to make the FSM follow the unmount.
-pub fn eject_device(device: &DeviceInfo, done: impl FnOnce(Result<(), String>) + 'static) {
+/// The outcome of an eject attempt.
+#[derive(Debug)]
+pub enum EjectOutcome {
+    /// Unmount + drive power-off both succeeded (or there was no drive
+    /// to power off): the pod left disk mode and can be unplugged.
+    Ejected,
+    /// The filesystem unmounted but the drive could not be powered
+    /// off: the pod may still be in disk mode ("do not disconnect").
+    UnmountedNotPowered(String),
+    /// No mount at the device's path: already ejected, or unmounted
+    /// externally. Not a refusal.
+    NotFound,
+    /// The unmount was refused (busy etc.); the device stays mounted.
+    Failed(String),
+}
+
+/// Eject the device iTunes-style: unmount the filesystem, then power
+/// the drive off (udisks2 `PowerOff` underneath). Only the power-off
+/// makes a classic iPod leave disk mode — an unmount alone keeps it
+/// showing "do not disconnect" while udisks still lists the drive
+/// (seen live 2026-11-23). `done` runs on the main thread. Nothing
+/// drives the page state automatically afterwards (B-012 unwired the
+/// gio mount-event monitor: owner decision, manual scan only), so the
+/// caller re-scans the mount table in `done` to make the FSM follow
+/// the eject.
+pub fn eject_device(device: &DeviceInfo, done: impl FnOnce(EjectOutcome) + 'static) {
     let root = gio::File::for_path(&device.mount_point);
     let mount = gio::VolumeMonitor::get()
         .mounts()
         .into_iter()
         .find(|mount| mount.root().equal(&root));
     let Some(mount) = mount else {
-        done(Err(format!("no mount at {}", device.mount_point.display())));
+        done(EjectOutcome::NotFound);
         return;
     };
-    mount.unmount_with_operation(
+    mount.clone().unmount_with_operation(
         gio::MountUnmountFlags::NONE,
         None::<&gio::MountOperation>,
         None::<&gio::Cancellable>,
-        move |result| done(result.map_err(|error| error.to_string())),
+        move |result| match result {
+            Err(error) => done(EjectOutcome::Failed(error.to_string())),
+            Ok(()) => {
+                // The mount object stays valid after its own unmount;
+                // its drive is the object udisks powers off.
+                let Some(drive) = mount.drive() else {
+                    done(EjectOutcome::Ejected);
+                    return;
+                };
+                drive.stop(
+                    gio::MountUnmountFlags::NONE,
+                    None::<&gio::MountOperation>,
+                    None::<&gio::Cancellable>,
+                    move |result| match result {
+                        Ok(()) => done(EjectOutcome::Ejected),
+                        Err(error) => done(EjectOutcome::UnmountedNotPowered(error.to_string())),
+                    },
+                );
+            }
+        },
     );
 }

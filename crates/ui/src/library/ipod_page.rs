@@ -1201,13 +1201,13 @@ pub fn ipod_route_view(connection: &IpodConnection, sync: &IpodSyncService) -> g
             }
         });
     }
-    // Eject: unmount through gio, then re-scan the mount table so the
-    // page follows the outcome. Nothing else drives the FSM back to
-    // No-iPod after the unmount lands: B-012 unwired the gio
-    // mount-event monitor (owner decision — mount signals never reach
-    // rufin on this machine), so the follow-up scan is the eject's own
-    // push. The button stays insensitive while the unmount is in
-    // flight; a refusal (busy) leaves the device mounted and the
+    // Eject: unmount + power-off through gio, then re-scan the mount
+    // table so the page follows the outcome. Nothing else drives the
+    // FSM back to No-iPod after the unmount lands: B-012 unwired the
+    // gio mount-event monitor (owner decision — mount signals never
+    // reach rufin on this machine), so the follow-up scan is the
+    // eject's own push. The button stays insensitive while the eject
+    // is in flight; a refusal (busy) leaves the device mounted and the
     // re-render re-enables the button.
     {
         let connection = connection.clone();
@@ -1217,19 +1217,27 @@ pub fn ipod_route_view(connection: &IpodConnection, sync: &IpodSyncService) -> g
                 return;
             };
             button.set_sensitive(false);
-            let mount_point = device.mount_point.clone();
             let connection = connection.clone();
             let button = button.clone();
-            crate::library::ipod_discovery::eject_device(&device, move |result| {
-                if let Err(error) = result {
+            crate::library::ipod_discovery::eject_device(&device, move |outcome| {
+                use crate::library::ipod_discovery::EjectOutcome;
+                match outcome {
                     // A mount that vanished underneath us (file manager,
                     // cable pull) is not a refusal — someone else
-                    // unmounted first; udisks removes the mount point.
-                    if mount_point.exists() {
+                    // ejected first.
+                    EjectOutcome::Ejected | EjectOutcome::NotFound => {}
+                    EjectOutcome::UnmountedNotPowered(error) => {
+                        tracing::warn!(
+                            %error,
+                            "device unmounted but the drive could not be powered off; \
+                             it may still be in disk mode"
+                        );
+                    }
+                    EjectOutcome::Failed(error) => {
                         tracing::warn!(%error, "could not eject the device");
                     }
                 }
-                // Re-read the truth: after a successful unmount the
+                // Re-read the truth: after a successful eject the
                 // page flips to No-iPod, after a refusal it stays Ready.
                 connection.scan();
                 button.set_sensitive(true);
